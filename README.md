@@ -77,6 +77,8 @@ See [the language guide](docs/language.md) for the complete grammar and semantic
 
 See [integrating with a real app](docs/integration.md) for a small, dependency-free Python example covering the specification, implementation, conformance tests, and CI workflow.
 
+The proposed [repository plugin architecture](docs/plugin-architecture.md) describes versioned application adapters, `zin conform`, machine-readable interfaces, and the delivery plan for integrating Zin with any codebase.
+
 ## Develop
 
 ```sh
