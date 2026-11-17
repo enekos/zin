@@ -1,0 +1,42 @@
+system "Delivery"
+
+state
+  paid is a boolean
+  stage is one of received, packed, shipped, cancelled
+
+initially
+  paid is false
+  stage is received
+
+always
+  stage is shipped implies paid
+  stage is packed implies paid
+
+action mark_paid
+  requires not paid
+  requires stage is not cancelled
+  paid becomes true
+
+action pack
+  requires paid
+  requires stage is received
+  stage becomes packed
+
+action ship
+  requires paid
+  requires stage is packed
+  stage becomes shipped
+
+action cancel
+  requires stage is received or stage is packed
+  stage becomes cancelled
+
+scenario "A paid order leaves the building"
+  mark_paid
+  pack
+  ship
+  expect stage is shipped and paid
+
+scenario "An unpaid order can be cancelled"
+  cancel
+  expect stage is cancelled and not paid

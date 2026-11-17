@@ -1,0 +1,48 @@
+system "Bank account"
+explore at most 1000 states
+
+# The model is implementation-neutral: name it, then describe observable behavior.
+state
+  balance is an integer from 0 to 20
+  status is one of open, closed
+
+initially
+  balance is 0
+  status is open
+
+always
+  balance is at least 0
+  balance is at most 20
+  status is closed implies balance is 0
+
+action deposit(amount is an integer from 1 to 5)
+  requires status is open
+  requires balance + amount is at most 20
+  balance becomes balance + amount
+
+action withdraw(amount is an integer from 1 to 5)
+  requires status is open
+  requires amount is at most balance
+  balance becomes balance - amount
+
+action close
+  requires status is open
+  requires balance is 0
+  status becomes closed
+
+action reopen
+  requires status is closed
+  status becomes open
+
+scenario "Deposit, withdraw, and close"
+  deposit with amount = 5
+  expect balance is 5
+  withdraw with amount = 5
+  close
+  expect status is closed
+
+scenario "Close and reopen an empty account"
+  close
+  reopen
+  deposit(3)
+  expect balance is 3 and status is open

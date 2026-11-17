@@ -1,0 +1,13 @@
+[package]
+name = "zin"
+version = "0.1.0"
+edition = "2024"
+description = "English-like, executable behavior specifications with exhaustive checks and Mermaid reports"
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
