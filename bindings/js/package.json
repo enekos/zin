@@ -2,6 +2,16 @@
   "name": "zin-verify",
   "version": "0.2.0",
   "description": "Run Zin specifications as conformance tests in Jest, Vitest, node:test and Mocha",
+  "license": "MIT",
+  "author": "Eneko Sarasola",
+  "keywords": [
+    "specification",
+    "model-checking",
+    "conformance",
+    "jest",
+    "vitest",
+    "mocha"
+  ],
   "type": "module",
   "main": "./index.cjs",
   "types": "./index.d.ts",
@@ -21,13 +31,16 @@
     "index.js",
     "index.cjs",
     "index.d.ts",
-    "index.d.cts"
+    "index.d.cts",
+    "LICENSE"
   ],
   "scripts": {
-    "test": "npm run test:node && npm run test:jest && npm run test:jest:esm",
+    "test": "npm run test:node && npm run test:jest && npm run test:jest:esm && npm run test:vitest && npm run test:mocha",
     "test:node": "node --test test/*.test.js",
     "test:jest": "jest --config jest.config.cjs --runInBand",
-    "test:jest:esm": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config jest.esm.config.cjs --runInBand"
+    "test:jest:esm": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config jest.esm.config.cjs --runInBand",
+    "test:vitest": "vitest run --config vitest.config.js",
+    "test:mocha": "mocha mocha/*.test.cjs"
   },
   "engines": {
     "node": ">=18"
@@ -38,6 +51,8 @@
     "directory": "bindings/js"
   },
   "devDependencies": {
-    "jest": "^30.5.2"
+    "jest": "^30.5.2",
+    "mocha": "^12.0.3",
+    "vitest": "^5.1.1"
   }
 }

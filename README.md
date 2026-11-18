@@ -238,14 +238,14 @@ input could not be used.
 ## Install
 
 ```sh
-cargo install --git https://github.com/enekos/zin      # the zin binary (Rust 1.85+)
-pip install "git+https://github.com/enekos/zin#subdirectory=bindings/python"
+cargo install zin-spec            # the zin binary (Rust 1.85+); crate zin-spec, library `zin`
+pip install zin-verify            # pytest / unittest binding
+npm install --save-dev zin-verify # Jest, Vitest, node:test, Mocha; CommonJS + ESM, types included
 go get github.com/enekos/zin/bindings/go
 ```
 
-The JavaScript binding in `bindings/js` supports CommonJS and ESM with
-TypeScript declarations; it is not on npm yet, so install it from a checkout
-(`npm install ./zin/bindings/js`).
+Prebuilt `zin` binaries for Linux and macOS (x86_64, arm64) are attached to
+each [GitHub release](https://github.com/enekos/zin/releases).
 
 The bindings have no dependencies. They call `zin plan` at test time, or read
 a committed `<spec>.plan.json` so test machines need no Rust toolchain.
@@ -256,6 +256,10 @@ a committed `<spec>.plan.json` so test machines need no Rust toolchain.
 - [Conformance testing](docs/conformance.md): adapters, coverage, CI, traces
 - [Plan format](docs/plan-format.md): the JSON contract for writing a binding
 - [Design](docs/design.md): what is proven, what is not, and why it is built this way
+
+## License
+
+MIT — see [LICENSE](LICENSE).
 
 ## Scope
 

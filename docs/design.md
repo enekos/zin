@@ -89,4 +89,3 @@ minimal, but linear-ish in practice and deterministic.
 - Strong fairness; symmetry reduction for maps keyed by interchangeable ids.
 - Composition: several `system`s with shared actions.
 - Refinement checking between two specifications.
-- Published packages (crates.io, PyPI, npm) and prebuilt binaries.

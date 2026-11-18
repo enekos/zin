@@ -245,7 +245,7 @@ comparison, shift a constant) and re-checks each mutant:
 ## CI
 
 ```yaml
-- run: cargo install --git https://github.com/enekos/zin
+- run: cargo install zin-spec
 - run: zin check specs/*.zin
 - run: zin audit specs/account.zin
 - run: pytest            # or npm test, go test ./..., cargo test
