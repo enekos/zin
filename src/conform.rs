@@ -1,0 +1,232 @@
+//! Run a specification's derived test plan against a Rust implementation,
+//! in-process, from an ordinary `#[test]`.
+
+use crate::ast::Value;
+use crate::check::{Verification, verify};
+use crate::model::named_values;
+use crate::plan::{Plan, PlanOptions, PlanStep};
+use crate::{Error, ErrorKind, Result, State, parse};
+use std::collections::BTreeMap;
+
+pub type Args = BTreeMap<String, Value>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    Accepted,
+    Rejected,
+}
+
+impl From<bool> for Outcome {
+    fn from(accepted: bool) -> Self {
+        if accepted {
+            Self::Accepted
+        } else {
+            Self::Rejected
+        }
+    }
+}
+
+impl<T, E> From<std::result::Result<T, E>> for Outcome {
+    fn from(result: std::result::Result<T, E>) -> Self {
+        Self::from(result.is_ok())
+    }
+}
+
+/// Connects the implementation under test to the specification's actions.
+///
+/// `call` must leave the implementation unchanged when it returns
+/// [`Outcome::Rejected`]. A panic is a crash, never a rejection.
+pub trait Adapter {
+    fn call(&mut self, action: &str, args: &Args) -> Outcome;
+
+    /// The implementation's view of any subset of the specification's state
+    /// fields. Fields left out are not compared.
+    fn observe(&self) -> Option<State> {
+        None
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Conformance {
+    pub tests: usize,
+    pub accepted_steps: usize,
+    pub rejected_steps: usize,
+}
+
+struct Divergence {
+    step: usize,
+    message: String,
+}
+
+fn compare<A: Adapter>(
+    adapter: &A,
+    verification: &Verification,
+    state: u32,
+    after: &str,
+) -> std::result::Result<(), String> {
+    let Some(observed) = adapter.observe() else {
+        return Ok(());
+    };
+    let expected = verification.state(state);
+    for (field, actual) in &observed {
+        let Some(wanted) = expected.get(field) else {
+            return Err(format!(
+                "observe() returned '{field}', which is not a state field of the specification"
+            ));
+        };
+        if wanted != actual {
+            return Err(format!(
+                "{after}, {field} is {}, but the specification says {}",
+                actual.source(),
+                wanted.source()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn run<A: Adapter>(
+    adapter: &mut A,
+    verification: &Verification,
+    steps: &[PlanStep],
+) -> Option<Divergence> {
+    let model = &verification.model;
+    if let Err(message) = compare(adapter, verification, 0, "before any action") {
+        return Some(Divergence { step: 0, message });
+    }
+    let mut state: u32 = 0;
+    for (index, step) in steps.iter().enumerate() {
+        let text = model.call_text(step.call);
+        let outcome = adapter.call(
+            model.call_action(step.call),
+            &named_values(model, step.call),
+        );
+        let message = match (step.to, outcome) {
+            (Some(to), Outcome::Accepted) => {
+                state = to;
+                compare(adapter, verification, state, &format!("after {text}")).err()
+            }
+            (None, Outcome::Rejected) => compare(
+                adapter,
+                verification,
+                state,
+                &format!("after rejecting {text}"),
+            )
+            .err(),
+            (Some(_), Outcome::Rejected) => Some(format!(
+                "the implementation rejected {text}, but the specification allows it"
+            )),
+            (None, Outcome::Accepted) => Some(format!(
+                "the implementation accepted {text}, but the specification rejects it"
+            )),
+        };
+        if let Some(message) = message {
+            return Some(Divergence {
+                step: index + 1,
+                message,
+            });
+        }
+    }
+    None
+}
+
+/// How many of the latest steps a report lists before eliding earlier ones.
+const LISTED_STEPS: usize = 8;
+
+fn listing(verification: &Verification, steps: &[PlanStep]) -> String {
+    let skipped = steps.len().saturating_sub(LISTED_STEPS);
+    let mut lines = Vec::new();
+    if skipped > 0 {
+        lines.push(format!("  ... {skipped} earlier steps"));
+    }
+    for (index, step) in steps.iter().enumerate().skip(skipped) {
+        let text = verification.call_text(step.call);
+        lines.push(match step.to {
+            Some(_) => format!("  {}. {text}", index + 1),
+            None => format!("  {}. reject {text}", index + 1),
+        });
+    }
+    lines.join("\n")
+}
+
+fn shortest(verification: &Verification, steps: &[PlanStep], failed: usize) -> Vec<PlanStep> {
+    let mut state: u32 = 0;
+    for step in steps.iter().take(failed.saturating_sub(1)) {
+        if let Some(to) = step.to {
+            state = to;
+        }
+    }
+    let mut path: Vec<PlanStep> = verification
+        .graph
+        .path_to(state)
+        .into_iter()
+        .map(|edge| PlanStep {
+            call: edge.call,
+            to: Some(edge.to),
+        })
+        .collect();
+    if let Some(step) = failed.checked_sub(1).and_then(|index| steps.get(index)) {
+        path.push(*step);
+    }
+    path
+}
+
+/// Runs every test of the plan derived from `spec_source` against fresh
+/// implementations produced by `factory`.
+pub fn check<A: Adapter>(
+    spec_source: &str,
+    options: &PlanOptions,
+    mut factory: impl FnMut() -> A,
+) -> Result<Conformance> {
+    let verification = verify(&parse(spec_source)?)?;
+    let plan = Plan::build(&verification, options)?;
+    for test in &plan.tests {
+        let Some(divergence) = run(&mut factory(), &verification, &test.steps) else {
+            continue;
+        };
+        let taken = test.steps.get(..divergence.step).unwrap_or(&test.steps);
+        let mut message = format!(
+            "{}: implementation diverges from the specification in test \"{}\" at step {}\n{}\nsteps taken:\n{}",
+            verification.model.name,
+            test.name,
+            divergence.step,
+            divergence.message,
+            listing(&verification, taken)
+        );
+        let short = shortest(&verification, &test.steps, divergence.step);
+        if divergence.step > 0 && short.len() < taken.len() {
+            match run(&mut factory(), &verification, &short) {
+                Some(again) => {
+                    let short = short.get(..again.step).unwrap_or(&short);
+                    message.push_str(&format!(
+                        "\nshortest reproduction:\n{}",
+                        listing(&verification, short)
+                    ));
+                }
+                None => message.push_str(
+                    "\nthe shortest path to the same specification state does not reproduce this: the implementation keeps state the specification does not model",
+                ),
+            }
+        }
+        return Err(Error::of(ErrorKind::Violation, None, message));
+    }
+    Ok(Conformance {
+        tests: plan.tests.len(),
+        accepted_steps: plan.accepted_steps,
+        rejected_steps: plan.rejected_steps,
+    })
+}
+
+/// Panics with a readable report unless the implementation conforms.
+/// Use from a `#[test]` with `include_str!("../spec.zin")`.
+///
+/// # Panics
+///
+/// Panics when the specification is invalid, fails its own checks, or the
+/// implementation diverges from it.
+pub fn assert_conforms<A: Adapter>(spec_source: &str, factory: impl FnMut() -> A) -> Conformance {
+    match check(spec_source, &PlanOptions::default(), factory) {
+        Ok(conformance) => conformance,
+        Err(error) => panic!("{error}"),
+    }
+}

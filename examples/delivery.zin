@@ -32,11 +32,18 @@ action cancel
   stage becomes cancelled
 
 scenario "A paid order leaves the building"
+  reject ship
   mark_paid
+  reject mark_paid
+  reject ship
   pack
+  reject pack
   ship
+  reject cancel
   expect stage is shipped and paid
 
 scenario "An unpaid order can be cancelled"
   cancel
   expect stage is cancelled and not paid
+  reject cancel
+  reject mark_paid

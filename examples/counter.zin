@@ -1,0 +1,50 @@
+system "Shared counter with a lock"
+
+# The fix for examples/broken/lost-update.zin: a worker must hold the lock
+# from its read to its write.
+
+types
+  worker is one of alice, bob
+  phase is one of idle, holding, done
+
+state
+  counter is an integer from 0 to 2
+  seen is a map from worker to an integer from 0 to 2
+  at is a map from worker to phase
+  locked is a boolean
+
+initially
+  counter is 0
+  seen of every worker is 0
+  at of every worker is idle
+  locked is false
+
+always
+  counter is number of w in worker where at of w is done
+  locked is some w in worker satisfies at of w is holding
+
+eventually
+  counter is 2
+
+terminal when every w in worker satisfies at of w is done
+
+action read(w is a worker)
+  requires at of w is idle
+  requires not locked
+  locked becomes true
+  seen of w becomes counter
+  at of w becomes holding
+
+action write(w is a worker)
+  requires at of w is holding
+  counter becomes seen of w + 1
+  at of w becomes done
+  locked becomes false
+
+scenario "One after the other"
+  read(alice)
+  reject read(bob)
+  write(alice)
+  read(bob)
+  write(bob)
+  expect counter is 2

@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zin-verify"
+version = "0.2.0"
+description = "Run Zin specifications as conformance tests in pytest and unittest"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/enekos/zin"
+
+[tool.setuptools]
+packages = ["zin"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

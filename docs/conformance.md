@@ -1,0 +1,249 @@
+# Conformance testing
+
+`zin check` proves things about the model. Conformance testing connects the
+model to your code: the implementation must accept exactly the calls the
+specification accepts, refuse the ones it refuses, and (where you expose it)
+end up in the same state.
+
+## How it works
+
+1. `zin plan spec.zin` verifies the specification and derives a **plan**: a
+   set of call sequences, each starting from the initial state. Scenarios come
+   first, then generated *tours*.
+2. A binding for your test framework loads the plan and registers one test per
+   sequence.
+3. Each test builds a fresh implementation through your **adapter** and
+   replays the sequence. After every step it compares:
+   - **accept / reject**: did the implementation allow the call?
+   - **state**: whatever your optional `observe` returns, against the model.
+     A rejected call must leave the state unchanged.
+4. On a mismatch the test fails with the steps taken and, when a shorter path
+   to the same model state shows the same failure, that shortest reproduction.
+
+With the default coverage the plan takes **every transition of the model**
+(every enabled call in every reachable state) and tries **every rejected call
+in every reachable state**. For a deterministic implementation whose
+observable state matches the model, that is the whole behavior of the model.
+
+## The adapter
+
+An adapter answers three questions.
+
+**How do I perform each action?** One function per action; arguments arrive by
+parameter name. Integers and booleans arrive as such, enum values as their
+name in the specification (a string).
+
+**How does the implementation say no?** A rejection is a normal outcome, not a
+failure. Anything else that goes wrong (an unexpected exception, an error that
+is not a rejection) fails the test as an error; it is never silently counted
+as a rejection.
+
+| Binding | An action is rejected when it |
+| --- | --- |
+| Python | raises `zin.Rejected` or a type listed in `rejects`, or returns `False` |
+| JavaScript | throws `Rejected` or an error for which `rejects(error)` is true, or returns `false` |
+| Go | returns an error wrapping `zin.ErrRejected` |
+| Rust | returns `Outcome::Rejected` (`Result` and `bool` convert) |
+
+**What state can be seen?** `observe` is optional and may return any subset of
+the specification's fields; only the returned fields are compared. Maps are
+dictionaries / objects / Go maps keyed by the specification's key names, and
+may also be partial. Without `observe`, wrong state is still detected once it
+changes which calls are accepted, only later and with a less direct message.
+
+Mapping is the adapter's job. If the implementation stores cents and the
+specification counts whole units, or uses its own enum type, convert in
+`observe`. Python `enum.Enum` members and Go `fmt.Stringer` values are
+converted for you.
+
+### Python (pytest, unittest)
+
+```python
+import zin
+
+@zin.verify("account.zin")           # path relative to this file
+class AccountConformance:
+    rejects = (ValueError,)
+
+    def setup(self): ...             # before each test (optional)
+    def teardown(self): ...          # after each test (optional)
+    def deposit(self, amount): ...
+    def observe(self): return {"balance": ...}
+```
+
+The decorator returns a `unittest.TestCase` subclass with one `test_NNN_...`
+method per plan test, so pytest (`-k`, `-x`, xdist, reports) and plain
+`python -m unittest` treat them as ordinary tests. For other runners,
+`zin.check(spec, factory)` runs everything and raises `zin.Divergence`.
+
+### JavaScript and TypeScript (Jest, Vitest, node:test, Mocha)
+
+```js
+import { verify } from "zin-verify";
+
+verify(new URL("./account.zin", import.meta.url), async () => {
+  const account = await Account.create();
+  return {
+    actions: { deposit: ({ amount }) => account.deposit(amount) },
+    rejects: (error) => error instanceof RangeError,
+    observe: () => ({ balance: account.balance }),
+    teardown: () => account.dispose(),
+  };
+});
+```
+
+`verify` uses the global `describe` / `test` (Jest, Vitest with globals,
+Mocha). Otherwise pass them: `verify(spec, factory, { describe, test })` with
+the imports from `vitest` or `node:test`. The factory, actions, `observe` and
+`teardown` may all be async. `check(spec, factory)` is the framework-free form.
+
+### Go
+
+```go
+type adapter struct{ account Account }
+
+func (a *adapter) Call(action string, args zin.Args) error {
+	switch action {
+	case "deposit":
+		if err := a.account.Deposit(args.Int("amount")); err != nil {
+			return fmt.Errorf("%w: %v", zin.ErrRejected, err)
+		}
+		return nil
+	}
+	return fmt.Errorf("unknown action %s", action)
+}
+
+func (a *adapter) Observe() map[string]any { // optional
+	return map[string]any{"balance": a.account.Balance}
+}
+
+func TestAccount(t *testing.T) {
+	zin.Verify(t, "account.zin", func() zin.Adapter { return &adapter{} })
+}
+```
+
+Each plan test is a subtest (`go test -run 'TestAccount/tour_1'`).
+`zin.Check` returns the failure as an error instead.
+
+### Rust
+
+```rust
+use zin::conform::{Adapter, Args, Outcome, assert_conforms};
+
+impl Adapter for Harness {
+    fn call(&mut self, action: &str, args: &Args) -> Outcome {
+        match action {
+            "close" => self.account.close().into(),
+            other => panic!("unknown action {other}"),
+        }
+    }
+}
+
+#[test]
+fn conforms() {
+    assert_conforms(include_str!("../account.zin"), Harness::default);
+}
+```
+
+The Rust binding is the `zin` crate itself (a dev-dependency); the plan is
+derived in-process, so there is nothing to install or commit.
+
+## Where the plan comes from
+
+The Python, JavaScript and Go bindings look, in order, for:
+
+1. a plan file you pass explicitly (`plan=`, `{ plan }`, `zin.WithPlan`);
+2. `<spec>.plan.json` next to the specification, if its fingerprint and
+   coverage match;
+3. the `zin` binary (`ZIN_BIN`, then `PATH`), which they run as
+   `zin plan <spec>`.
+
+So you choose per project:
+
+- **Derive at test time.** Install `zin` on developer machines and CI. The
+  specification is re-verified on every test run, and a broken specification
+  fails the tests with the checker's counterexample.
+- **Commit the plan.** Run `zin plan spec.zin --out spec.plan.json` and commit
+  it. Test machines need nothing but the binding. The plan records a
+  fingerprint of the specification; if the specification changes and the plan
+  is not regenerated, loading fails with the command to run. Never a stale
+  pass.
+
+## Coverage
+
+`--cover` (or `cover=`) trades thoroughness for time:
+
+| Cover | The plan contains |
+| --- | --- |
+| `transitions` (default) | every transition, and every rejected call in every state |
+| `states` | a visit to every state, and every rejected call in every state |
+| `actions` | every action accepted once and, where possible, rejected once |
+| `scenarios` | only the scenarios you wrote |
+
+Tours are capped at `--max-steps` steps (default 200) so a failure never
+leaves you with a 10,000-step test; more, shorter tours cost more setup.
+
+The number of steps is roughly `states × calls`. When that is too many for a
+slow implementation (a database, a browser), shrink the model's ranges for
+testing, use `states`, or run `transitions` nightly.
+
+## What it does and does not show
+
+- It is exhaustive over the **model**, not over the implementation's code. An
+  implementation that behaves differently for `amount = 6` when the model only
+  goes to 5 is not exercised there.
+- Each test drives the implementation **sequentially**. Concurrency is
+  explored in the model (where interleavings are exhaustive); conformance then
+  checks that each atomic step of the implementation matches. To check real
+  concurrent runs, record them and use `zin trace`.
+- State the specification does not model is invisible, except that the report
+  tells you when a failure depends on it ("the shortest path to the same
+  specification state does not reproduce this").
+- Liveness is proven about the model. A test cannot show that an
+  implementation eventually does something.
+
+## Checking recorded executions
+
+`zin trace spec.zin events.jsonl` replays a log against the model. One JSON
+object per line:
+
+```json
+{"action":"deposit","args":{"amount":5},"outcome":"accepted","state":{"balance":5}}
+{"action":"close","outcome":"rejected"}
+{"reset":true}
+```
+
+- `args`: by name, or positional as an array; may be omitted for none.
+- `outcome`: `accepted` (default) or `rejected`.
+- `state`: optional, any subset of fields, compared after the event.
+- `{"reset":true}`: a new run starts from the initial state.
+
+The log must be a **linearized** history of one instance of the system: the
+order in the file is the order in which the calls took effect. `Recorder` in
+the Python and JavaScript bindings writes this format.
+
+## Auditing the specification
+
+Conformance is only as strong as the specification. `zin audit spec.zin`
+applies small changes (drop a `requires`, drop an assignment, flip a
+comparison, shift a constant) and re-checks each mutant:
+
+- **caught**: a property or scenario fails. Good.
+- **SURVIVED**: the reachable behavior changed and nothing noticed. Add a
+  property or a scenario (a `reject` line is often enough), or delete the
+  redundant rule.
+- **same**: the reachable behavior is unchanged; the rule is implied by others.
+
+`zin audit` exits 1 when a mutant survives, so it can gate CI.
+
+## CI
+
+```yaml
+- run: cargo install --git https://github.com/enekos/zin
+- run: zin check specs/*.zin
+- run: zin audit specs/account.zin
+- run: pytest            # or npm test, go test ./..., cargo test
+```
+
+`zin check --format json` prints one machine-readable result per file,
+including counterexample traces.

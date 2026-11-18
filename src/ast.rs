@@ -1,17 +1,20 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-pub const DEFAULT_STATE_LIMIT: usize = 10_000;
+pub const DEFAULT_STATE_LIMIT: usize = 1_000_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Spec {
     pub name: String,
+    pub state_limit: usize,
+    pub fingerprint: String,
+    pub types: Vec<TypeDecl>,
     pub state: Vec<Field>,
     pub initially: Vec<Assignment>,
-    pub invariants: Vec<Condition>,
+    pub properties: Vec<Property>,
+    pub terminal: Option<Condition>,
     pub actions: Vec<Action>,
     pub scenarios: Vec<Scenario>,
-    pub state_limit: usize,
 }
 
 impl Spec {
@@ -19,36 +22,50 @@ impl Spec {
     pub fn empty() -> Self {
         Self {
             name: String::new(),
+            state_limit: DEFAULT_STATE_LIMIT,
+            fingerprint: String::new(),
+            types: Vec::new(),
             state: Vec::new(),
             initially: Vec::new(),
-            invariants: Vec::new(),
+            properties: Vec::new(),
+            terminal: None,
             actions: Vec::new(),
             scenarios: Vec::new(),
-            state_limit: DEFAULT_STATE_LIMIT,
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Field {
+pub struct TypeDecl {
     pub name: String,
-    pub kind: FieldKind,
+    pub kind: TypeExpr,
     pub line: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FieldKind {
+pub struct Field {
+    pub name: String,
+    pub kind: TypeExpr,
+    pub line: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeExpr {
     Integer { min: i64, max: i64 },
     Enum { values: Vec<String> },
     Boolean,
+    Named(String),
+    Map { key: String, value: Box<TypeExpr> },
 }
 
-impl fmt::Display for FieldKind {
+impl fmt::Display for TypeExpr {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Integer { min, max } => write!(formatter, "an integer from {min} to {max}"),
             Self::Enum { values } => write!(formatter, "one of {}", values.join(", ")),
             Self::Boolean => formatter.write_str("a boolean"),
+            Self::Named(name) => formatter.write_str(name),
+            Self::Map { key, value } => write!(formatter, "a map from {key} to {value}"),
         }
     }
 }
@@ -60,9 +77,62 @@ pub struct Condition {
     pub line: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PropertyKind {
+    Always,
+    Never,
+    Sometimes,
+    Eventually,
+    LeadsTo,
+    AlwaysPossible,
+}
+
+impl PropertyKind {
+    #[must_use]
+    pub fn keyword(self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::Never => "never",
+            Self::Sometimes => "sometimes",
+            Self::Eventually => "eventually",
+            Self::LeadsTo => "whenever",
+            Self::AlwaysPossible => "always possible",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Property {
+    pub kind: PropertyKind,
+    pub premise: Option<Condition>,
+    pub condition: Condition,
+    pub line: usize,
+}
+
+impl Property {
+    #[must_use]
+    pub fn display(&self) -> String {
+        match &self.premise {
+            Some(premise) => format!(
+                "whenever {} eventually {}",
+                premise.source, self.condition.source
+            ),
+            None => format!("{} {}", self.kind.keyword(), self.condition.source),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TargetKey {
+    Whole,
+    At(Expr),
+    Every(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Assignment {
     pub field: String,
+    pub key: TargetKey,
     pub value: Expr,
     pub source: String,
     pub line: usize,
@@ -71,6 +141,7 @@ pub struct Assignment {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Action {
     pub name: String,
+    pub fair: bool,
     pub params: Vec<Field>,
     pub requires: Vec<Condition>,
     pub assignments: Vec<Assignment>,
@@ -87,6 +158,7 @@ pub struct Scenario {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScenarioStep {
     Call(ActionCall),
+    Reject(ActionCall),
     Expect(Condition),
 }
 
@@ -103,55 +175,33 @@ pub enum CallArguments {
     Named(BTreeMap<String, Value>),
 }
 
-impl ActionCall {
-    #[must_use]
-    pub fn display(&self) -> String {
-        let arguments = match &self.arguments {
-            CallArguments::Positional(values) => values
-                .iter()
-                .map(Value::source)
-                .collect::<Vec<_>>()
-                .join(", "),
-            CallArguments::Named(values) => values
-                .iter()
-                .map(|(name, value)| format!("{name} = {}", value.source()))
-                .collect::<Vec<_>>()
-                .join(", "),
-        };
-        if arguments.is_empty() {
-            self.name.clone()
-        } else {
-            format!("{}({arguments})", self.name)
-        }
+#[must_use]
+pub fn display_call(name: &str, arguments: &[Value]) -> String {
+    if arguments.is_empty() {
+        return name.to_string();
     }
+    let arguments = arguments
+        .iter()
+        .map(Value::source)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{name}({arguments})")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Value {
     Integer(i64),
-    Text(String),
+    Symbol(String),
     Boolean(bool),
+    Map(BTreeMap<String, Value>),
 }
 
 impl Value {
     #[must_use]
     pub fn source(&self) -> String {
         match self {
-            Self::Text(value)
-                if !value.is_empty()
-                    && value != "true"
-                    && value != "false"
-                    && value
-                        .chars()
-                        .next()
-                        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
-                    && value
-                        .chars()
-                        .all(|character| character.is_ascii_alphanumeric() || character == '_') =>
-            {
-                value.clone()
-            }
-            Self::Text(value) => format!(
+            Self::Symbol(value) if is_bare_symbol(value) => value.clone(),
+            Self::Symbol(value) => format!(
                 "\"{}\"",
                 value
                     .replace('\\', "\\\\")
@@ -160,17 +210,66 @@ impl Value {
                     .replace('\r', "\\r")
                     .replace('\t', "\\t")
             ),
-            _ => self.to_string(),
+            Self::Map(entries) => {
+                let entries = entries
+                    .iter()
+                    .map(|(key, value)| format!("{key}: {}", value.source()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{{{entries}}}")
+            }
+            Self::Integer(_) | Self::Boolean(_) => self.to_string(),
         }
     }
+}
+
+fn is_bare_symbol(value: &str) -> bool {
+    !is_reserved_word(value)
+        && value
+            .chars()
+            .next()
+            .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_')
+}
+
+#[must_use]
+pub fn is_reserved_word(name: &str) -> bool {
+    matches!(
+        name,
+        "true"
+            | "false"
+            | "not"
+            | "and"
+            | "or"
+            | "implies"
+            | "is"
+            | "equals"
+            | "plus"
+            | "minus"
+            | "times"
+            | "divided"
+            | "of"
+            | "in"
+            | "if"
+            | "then"
+            | "else"
+            | "every"
+            | "some"
+            | "satisfies"
+            | "where"
+            | "eventually"
+    )
 }
 
 impl fmt::Display for Value {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Integer(value) => write!(formatter, "{value}"),
-            Self::Text(value) => formatter.write_str(value),
+            Self::Symbol(value) => formatter.write_str(value),
             Self::Boolean(value) => write!(formatter, "{value}"),
+            Self::Map(_) => formatter.write_str(&self.source()),
         }
     }
 }
@@ -179,6 +278,10 @@ impl fmt::Display for Value {
 pub enum Expr {
     Literal(Value),
     Name(String),
+    Index {
+        map: String,
+        key: Box<Expr>,
+    },
     Unary {
         operator: UnaryOperator,
         value: Box<Expr>,
@@ -188,6 +291,24 @@ pub enum Expr {
         left: Box<Expr>,
         right: Box<Expr>,
     },
+    If {
+        condition: Box<Expr>,
+        then: Box<Expr>,
+        otherwise: Box<Expr>,
+    },
+    Quantified {
+        quantifier: Quantifier,
+        variable: String,
+        domain: String,
+        body: Box<Expr>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Quantifier {
+    Every,
+    Some,
+    Count,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,53 +1,177 @@
-mod analysis;
-mod ast;
+pub mod ast;
+mod audit;
 mod check;
+pub mod cli;
+pub mod conform;
+mod explore;
+mod json;
 mod mermaid;
+mod model;
 mod parser;
+mod plan;
+mod properties;
 mod report;
+mod scaffold;
+mod trace;
 
-pub use ast::{
-    Action, ActionCall, Assignment, BinaryOperator, CallArguments, Condition, Expr, Field,
-    FieldKind, Scenario, ScenarioStep, Spec, UnaryOperator, Value,
-};
-pub use check::{ScenarioResult, State, Transition, Verification, verify};
+pub use ast::{Spec, Value};
+pub use audit::{Audit, Mutant, MutantFate, audit};
+pub use check::{PropertyResult, ScenarioEvent, ScenarioRun, Verification, verify};
+pub use explore::{Edge, Graph};
+pub use json::Json;
 pub use mermaid::{sequence_diagram, state_diagram};
+pub use model::{ActionInfo, Domain, FieldInfo, FieldType, Model, Param};
 pub use parser::parse;
+pub use plan::{Cover, Plan, PlanOptions, PlanStep, PlanTest, TestKind};
 pub use report::render_markdown;
+pub use scaffold::{Framework, scaffold};
+pub use trace::{TraceReport, check_trace};
+
+use std::collections::BTreeMap;
+use std::fmt;
+
+pub type State = BTreeMap<String, Value>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorKind {
+    Usage,
+    Spec,
+    Model,
+    Violation,
+    Limit,
+}
+
+impl ErrorKind {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Usage => "usage",
+            Self::Spec => "spec",
+            Self::Model => "model",
+            Self::Violation => "violation",
+            Self::Limit => "limit",
+        }
+    }
+
+    #[must_use]
+    pub fn exit_code(self) -> u8 {
+        match self {
+            Self::Model | Self::Violation => 1,
+            Self::Usage | Self::Spec | Self::Limit => 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraceStep {
+    pub call: String,
+    pub state: State,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Trace {
+    pub initial: State,
+    pub steps: Vec<TraceStep>,
+    pub loop_from: Option<usize>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {
+    pub kind: ErrorKind,
     pub line: Option<usize>,
     pub message: String,
+    pub trace: Option<Trace>,
 }
 
 impl Error {
-    #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
+        Self::of(ErrorKind::Spec, None, message)
+    }
+
+    pub fn usage(message: impl Into<String>) -> Self {
+        Self::of(ErrorKind::Usage, None, message)
+    }
+
+    pub fn at(line: usize, message: impl Into<String>) -> Self {
+        Self::of(ErrorKind::Spec, Some(line), message)
+    }
+
+    pub fn of(kind: ErrorKind, line: Option<usize>, message: impl Into<String>) -> Self {
         Self {
-            line: None,
+            kind,
+            line,
             message: message.into(),
+            trace: None,
         }
     }
 
     #[must_use]
-    pub fn at(line: usize, message: impl Into<String>) -> Self {
-        Self {
-            line: Some(line),
-            message: message.into(),
-        }
+    pub fn with_trace(mut self, trace: Trace) -> Self {
+        self.trace = Some(trace);
+        self
     }
 }
 
-impl std::fmt::Display for Error {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(line) = self.line {
-            write!(formatter, "line {line}: {}", self.message)
-        } else {
-            formatter.write_str(&self.message)
+#[must_use]
+pub fn display_state(state: &State) -> String {
+    state
+        .iter()
+        .map(|(name, value)| format!("{name}={}", value.source()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn display_changes(before: &State, after: &State) -> String {
+    let changes = after
+        .iter()
+        .filter(|(name, value)| before.get(*name) != Some(value))
+        .map(|(name, value)| format!("{name}={}", value.source()))
+        .collect::<Vec<_>>();
+    if changes.is_empty() {
+        "(no change)".to_string()
+    } else {
+        changes.join(", ")
+    }
+}
+
+impl fmt::Display for Trace {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "  start: {}", display_state(&self.initial))?;
+        let mut before = &self.initial;
+        for (index, step) in self.steps.iter().enumerate() {
+            if self.loop_from == Some(index) {
+                write!(formatter, "\n  then forever:")?;
+            }
+            write!(
+                formatter,
+                "\n  {}. {}  ->  {}",
+                index + 1,
+                step.call,
+                display_changes(before, &step.state)
+            )?;
+            before = &step.state;
         }
+        Ok(())
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(line) = self.line {
+            write!(formatter, "line {line}: ")?;
+        }
+        formatter.write_str(&self.message)?;
+        if let Some(trace) = &self.trace {
+            write!(formatter, "\ncounterexample:\n{trace}")?;
+        }
+        Ok(())
     }
 }
 
 impl std::error::Error for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+pub(crate) fn counted(count: usize, one: &str, many: &str) -> String {
+    format!("{count} {}", if count == 1 { one } else { many })
+}
