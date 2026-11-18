@@ -3,20 +3,31 @@
   "version": "0.2.0",
   "description": "Run Zin specifications as conformance tests in Jest, Vitest, node:test and Mocha",
   "type": "module",
-  "main": "./index.js",
+  "main": "./index.cjs",
   "types": "./index.d.ts",
   "exports": {
     ".": {
-      "types": "./index.d.ts",
-      "default": "./index.js"
+      "import": {
+        "types": "./index.d.ts",
+        "default": "./index.js"
+      },
+      "require": {
+        "types": "./index.d.cts",
+        "default": "./index.cjs"
+      }
     }
   },
   "files": [
     "index.js",
-    "index.d.ts"
+    "index.cjs",
+    "index.d.ts",
+    "index.d.cts"
   ],
   "scripts": {
-    "test": "node --test"
+    "test": "npm run test:node && npm run test:jest && npm run test:jest:esm",
+    "test:node": "node --test test/*.test.js",
+    "test:jest": "jest --config jest.config.cjs --runInBand",
+    "test:jest:esm": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config jest.esm.config.cjs --runInBand"
   },
   "engines": {
     "node": ">=18"
@@ -25,5 +36,8 @@
     "type": "git",
     "url": "git+https://github.com/enekos/zin.git",
     "directory": "bindings/js"
+  },
+  "devDependencies": {
+    "jest": "^30.5.2"
   }
 }

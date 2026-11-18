@@ -243,8 +243,8 @@ pip install "git+https://github.com/enekos/zin#subdirectory=bindings/python"
 go get github.com/enekos/zin/bindings/go
 ```
 
-The JavaScript binding is the two files in `bindings/js` (`index.js`,
-`index.d.ts`); it is not on npm yet, so vendor it or install it from a checkout
+The JavaScript binding in `bindings/js` supports CommonJS and ESM with
+TypeScript declarations; it is not on npm yet, so install it from a checkout
 (`npm install ./zin/bindings/js`).
 
 The bindings have no dependencies. They call `zin plan` at test time, or read
