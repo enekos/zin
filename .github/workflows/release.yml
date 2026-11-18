@@ -2,27 +2,40 @@ name: release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and release, e.g. v0.2.0
+        required: true
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
 permissions:
   contents: read
 jobs:
   binaries:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
-          - { os: macos-14, target: aarch64-apple-darwin }
-          - { os: macos-13, target: x86_64-apple-darwin }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          # No Intel macOS runner is needed: cross-compile from Apple silicon.
+          - { os: macos-latest, target: x86_64-apple-darwin }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --release --locked
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Archive
         run: |
-          name="zin-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          name="zin-${TAG}-${{ matrix.target }}"
           mkdir "$name"
-          cp target/release/zin LICENSE README.md "$name/"
+          cp "target/${{ matrix.target }}/release/zin" LICENSE README.md "$name/"
           tar czf "$name.tar.gz" "$name"
       - uses: actions/upload-artifact@v4
         with:
@@ -41,7 +54,7 @@ jobs:
       - run: sha256sum zin-*.tar.gz > SHA256SUMS
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" zin-*.tar.gz SHA256SUMS --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$TAG" zin-*.tar.gz SHA256SUMS --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes --verify-tag
 
   # Each registry publishes only once it is set up, so a release never fails
   # on a registry that is not configured yet.
@@ -51,6 +64,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo publish --locked
         env:
@@ -65,6 +80,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -79,6 +96,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
