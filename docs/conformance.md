@@ -97,6 +97,12 @@ Mocha). Otherwise pass them: `verify(spec, factory, { describe, test })` with
 the imports from `vitest` or `node:test`. The factory, actions, `observe` and
 `teardown` may all be async. `check(spec, factory)` is the framework-free form.
 
+For CommonJS Jest projects, use `const { verify } = require("zin-verify")`
+and `path.join(__dirname, "account.zin")`. Call `verify` at file scope: each
+scenario and tour is collected as its own native Jest test, with a fresh
+adapter and awaited cleanup. ESM Jest projects need Jest's VM-module setup;
+see the [complete Jest setup and example](../bindings/js/README.md#jest).
+
 ### Go
 
 ```go

@@ -34,7 +34,9 @@ jobs:
           node-version: 22
       - name: JavaScript binding
         working-directory: bindings/js
-        run: node --test
+        run: |
+          npm ci
+          npm test
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
