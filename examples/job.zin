@@ -1,0 +1,60 @@
+system "Background job"
+
+# A job is retried until it succeeds or runs out of attempts. Either way it
+# must reach a final status: nothing may be left "running" forever.
+
+state
+  status is one of queued, running, succeeded, failed
+  attempts is an integer from 0 to 3
+
+initially
+  status is queued
+  attempts is 0
+
+always
+  status is failed implies attempts is 3
+
+sometimes
+  status is succeeded
+  status is failed
+
+eventually
+  status is succeeded or status is failed
+
+whenever status is running eventually status is not running
+
+terminal when status is succeeded or status is failed
+
+fair action start
+  requires status is queued
+  status becomes running
+  attempts becomes attempts + 1
+
+action succeed
+  requires status is running
+  status becomes succeeded
+
+action crash
+  requires status is running
+  status becomes if attempts is 3 then failed else queued
+
+scenario "Third time lucky"
+  start
+  crash
+  start
+  crash
+  start
+  succeed
+  expect status is succeeded and attempts is 3
+
+scenario "Out of attempts"
+  start
+  crash
+  start
+  crash
+  start
+  crash
+  expect status is failed
+  reject start
+  reject succeed
+  reject crash

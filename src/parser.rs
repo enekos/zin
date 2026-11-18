@@ -1,11 +1,16 @@
 use crate::ast::{
     Action, ActionCall, Assignment, BinaryOperator, CallArguments, Condition, Expr, Field,
-    FieldKind, Scenario, ScenarioStep, Spec, UnaryOperator, Value,
+    Property, PropertyKind, Quantifier, Scenario, ScenarioStep, Spec, TargetKey, TypeDecl,
+    TypeExpr, UnaryOperator, Value, is_reserved_word,
 };
 use crate::{Error, Result};
 use std::collections::BTreeMap;
 
 const I64_MIN_MAGNITUDE: u64 = 9_223_372_036_854_775_808;
+const MAX_NESTING: usize = 64;
+const MAX_TOKENS_PER_LINE: usize = 1024;
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Token {
@@ -14,6 +19,8 @@ enum Token {
     Text(String),
     LeftParen,
     RightParen,
+    LeftBracket,
+    RightBracket,
     Comma,
     Plus,
     Minus,
@@ -38,151 +45,184 @@ struct Line {
 #[derive(Debug, Clone, Copy)]
 enum Section {
     None,
+    Types,
     State,
     Initially,
-    Always,
+    Properties(PropertyKind),
     Action(usize),
     Scenario(usize),
+}
+
+#[derive(Default)]
+struct Seen {
+    system: bool,
+    state: bool,
+    initially: bool,
+}
+
+pub(crate) fn fingerprint(source: &str) -> String {
+    let mut hash = FNV_OFFSET;
+    for byte in source.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{hash:016x}")
 }
 
 pub fn parse(source: &str) -> Result<Spec> {
     let lines = logical_lines(source)?;
     let mut spec = Spec::empty();
+    spec.fingerprint = fingerprint(source);
     let mut section = Section::None;
-    let mut has_system = false;
-    let mut has_state = false;
-    let mut has_initially = false;
+    let mut seen = Seen::default();
 
     for line in lines {
         if line.indent == 0 {
-            section = parse_top_level(
-                &mut spec,
-                &line,
-                &mut has_system,
-                &mut has_state,
-                &mut has_initially,
-            )?;
+            section = parse_top_level(&mut spec, &line, &mut seen)?;
             continue;
         }
-
-        match section {
-            Section::State => spec.state.push(parse_field(&line.content, line.number)?),
-            Section::Initially => {
-                spec.initially
-                    .push(parse_assignment(&line.content, "is", line.number)?)
-            }
-            Section::Always => spec
-                .invariants
-                .push(parse_condition(&line.content, line.number)?),
-            Section::Action(index) => {
-                let action = spec
-                    .actions
-                    .get_mut(index)
-                    .ok_or_else(|| Error::at(line.number, "missing action"))?;
-                if let Some(source) = after_keyword(&line.content, "requires") {
-                    if source.is_empty() {
-                        return Err(Error::at(line.number, "requires needs a condition"));
-                    }
-                    action.requires.push(parse_condition(source, line.number)?);
-                } else {
-                    action.assignments.push(parse_assignment(
-                        &line.content,
-                        "becomes",
-                        line.number,
-                    )?);
-                }
-            }
-            Section::Scenario(index) => {
-                let scenario = spec
-                    .scenarios
-                    .get_mut(index)
-                    .ok_or_else(|| Error::at(line.number, "missing scenario"))?;
-                if let Some(source) = after_keyword(&line.content, "expect") {
-                    if source.is_empty() {
-                        return Err(Error::at(line.number, "expect needs a condition"));
-                    }
-                    scenario
-                        .steps
-                        .push(ScenarioStep::Expect(parse_condition(source, line.number)?));
-                } else {
-                    scenario
-                        .steps
-                        .push(ScenarioStep::Call(parse_call(&line.content, line.number)?));
-                }
-            }
-            Section::None => {
-                return Err(Error::at(
-                    line.number,
-                    "this indented line does not belong to a block",
-                ));
-            }
-        }
+        parse_block_line(&mut spec, section, &line)?;
     }
 
-    if !has_system {
+    if !seen.system {
         return Err(Error::new("a specification must start with system \"...\""));
     }
-    if !has_state || spec.state.is_empty() {
+    if !seen.state || spec.state.is_empty() {
         return Err(Error::new("declare at least one field in a state block"));
     }
-    if !has_initially {
+    if !seen.initially {
         return Err(Error::new("declare an initially block"));
     }
     Ok(spec)
 }
 
-fn parse_top_level(
-    spec: &mut Spec,
-    line: &Line,
-    has_system: &mut bool,
-    has_state: &mut bool,
-    has_initially: &mut bool,
-) -> Result<Section> {
+fn parse_block_line(spec: &mut Spec, section: Section, line: &Line) -> Result<()> {
+    let content = line.content.as_str();
+    match section {
+        Section::Types => {
+            let field = parse_field(content, line.number)?;
+            spec.types.push(TypeDecl {
+                name: field.name,
+                kind: field.kind,
+                line: field.line,
+            });
+        }
+        Section::State => spec.state.push(parse_field(content, line.number)?),
+        Section::Initially => spec
+            .initially
+            .push(parse_assignment(content, "is", line.number)?),
+        Section::Properties(kind) => spec.properties.push(Property {
+            kind,
+            premise: None,
+            condition: parse_condition(content, line.number)?,
+            line: line.number,
+        }),
+        Section::Action(index) => {
+            let action = spec
+                .actions
+                .get_mut(index)
+                .ok_or_else(|| Error::at(line.number, "missing action"))?;
+            if let Some(source) = after_keyword(content, "requires") {
+                if source.is_empty() {
+                    return Err(Error::at(line.number, "requires needs a condition"));
+                }
+                action.requires.push(parse_condition(source, line.number)?);
+            } else {
+                action
+                    .assignments
+                    .push(parse_assignment(content, "becomes", line.number)?);
+            }
+        }
+        Section::Scenario(index) => {
+            let scenario = spec
+                .scenarios
+                .get_mut(index)
+                .ok_or_else(|| Error::at(line.number, "missing scenario"))?;
+            let step = if let Some(source) = after_keyword(content, "expect") {
+                if source.is_empty() {
+                    return Err(Error::at(line.number, "expect needs a condition"));
+                }
+                ScenarioStep::Expect(parse_condition(source, line.number)?)
+            } else if let Some(source) = after_keyword(content, "reject") {
+                if source.is_empty() {
+                    return Err(Error::at(line.number, "reject needs an action call"));
+                }
+                ScenarioStep::Reject(parse_call(source, line.number)?)
+            } else {
+                ScenarioStep::Call(parse_call(content, line.number)?)
+            };
+            scenario.steps.push(step);
+        }
+        Section::None => {
+            return Err(Error::at(
+                line.number,
+                "this indented line does not belong to a block",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn parse_top_level(spec: &mut Spec, line: &Line, seen: &mut Seen) -> Result<Section> {
     let content = line.content.as_str();
     if let Some(rest) = after_keyword(content, "system") {
-        if *has_system {
+        if seen.system {
             return Err(Error::at(line.number, "system may only be declared once"));
         }
         spec.name = parse_standalone_name(rest, line.number)?;
-        *has_system = true;
+        seen.system = true;
         return Ok(Section::None);
     }
-    if !*has_system {
+    if !seen.system {
         return Err(Error::at(
             line.number,
             "the first declaration must be system \"...\"",
         ));
     }
-    if content == "state" {
-        if *has_state {
-            return Err(Error::at(line.number, "state may only be declared once"));
+    match content {
+        "types" => return Ok(Section::Types),
+        "state" => {
+            if seen.state {
+                return Err(Error::at(line.number, "state may only be declared once"));
+            }
+            seen.state = true;
+            return Ok(Section::State);
         }
-        *has_state = true;
-        return Ok(Section::State);
-    }
-    if content == "initially" {
-        if *has_initially {
-            return Err(Error::at(
-                line.number,
-                "initially may only be declared once",
-            ));
+        "initially" => {
+            if seen.initially {
+                return Err(Error::at(
+                    line.number,
+                    "initially may only be declared once",
+                ));
+            }
+            seen.initially = true;
+            return Ok(Section::Initially);
         }
-        *has_initially = true;
-        return Ok(Section::Initially);
+        _ => {}
     }
-    if content == "always" {
-        return Ok(Section::Always);
+    if let Some(section) = parse_property_declaration(spec, content, line.number)? {
+        return Ok(section);
     }
-    if let Some(source) = after_keyword(content, "always") {
-        if source.is_empty() {
-            return Ok(Section::Always);
+    if let Some(rest) = after_keyword(content, "terminal") {
+        let source = after_keyword(rest, "when")
+            .filter(|source| !source.is_empty())
+            .ok_or_else(|| Error::at(line.number, "expected 'terminal when <condition>'"))?;
+        if spec.terminal.is_some() {
+            return Err(Error::at(line.number, "terminal may only be declared once"));
         }
-        spec.invariants.push(parse_condition(source, line.number)?);
+        spec.terminal = Some(parse_condition(source, line.number)?);
         return Ok(Section::None);
     }
-    if let Some(rest) = after_keyword(content, "action") {
-        let action = parse_action(rest, line.number)?;
+    if let Some(rest) = after_keyword(content, "fair") {
+        let rest = after_keyword(rest, "action")
+            .ok_or_else(|| Error::at(line.number, "expected 'fair action <name>'"))?;
+        let mut action = parse_action(rest, line.number)?;
+        action.fair = true;
         spec.actions.push(action);
+        return Ok(Section::Action(spec.actions.len() - 1));
+    }
+    if let Some(rest) = after_keyword(content, "action") {
+        spec.actions.push(parse_action(rest, line.number)?);
         return Ok(Section::Action(spec.actions.len() - 1));
     }
     if let Some(rest) = after_keyword(content, "scenario") {
@@ -217,6 +257,54 @@ fn parse_top_level(
     ))
 }
 
+fn parse_property_declaration(
+    spec: &mut Spec,
+    content: &str,
+    line: usize,
+) -> Result<Option<Section>> {
+    if let Some(rest) = after_keyword(content, "whenever") {
+        let (premise, condition) = split_at_word(rest, "eventually")
+            .filter(|(premise, condition)| !premise.is_empty() && !condition.is_empty())
+            .ok_or_else(|| {
+                Error::at(
+                    line,
+                    "expected 'whenever <condition> eventually <condition>'",
+                )
+            })?;
+        spec.properties.push(Property {
+            kind: PropertyKind::LeadsTo,
+            premise: Some(parse_condition(premise, line)?),
+            condition: parse_condition(condition, line)?,
+            line,
+        });
+        return Ok(Some(Section::None));
+    }
+    let (kind, source) = if let Some(rest) = after_keyword(content, "always") {
+        match after_keyword(rest, "possible") {
+            Some(rest) => (PropertyKind::AlwaysPossible, rest),
+            None => (PropertyKind::Always, rest),
+        }
+    } else if let Some(rest) = after_keyword(content, "never") {
+        (PropertyKind::Never, rest)
+    } else if let Some(rest) = after_keyword(content, "sometimes") {
+        (PropertyKind::Sometimes, rest)
+    } else if let Some(rest) = after_keyword(content, "eventually") {
+        (PropertyKind::Eventually, rest)
+    } else {
+        return Ok(None);
+    };
+    if source.is_empty() {
+        return Ok(Some(Section::Properties(kind)));
+    }
+    spec.properties.push(Property {
+        kind,
+        premise: None,
+        condition: parse_condition(source, line)?,
+        line,
+    });
+    Ok(Some(Section::None))
+}
+
 fn logical_lines(source: &str) -> Result<Vec<Line>> {
     let mut result = Vec::new();
     for (index, raw) in source.lines().enumerate() {
@@ -229,8 +317,7 @@ fn logical_lines(source: &str) -> Result<Vec<Line>> {
                 _ => break,
             }
         }
-        let without_comment = strip_comment(raw);
-        let content = without_comment.trim();
+        let content = strip_comment(raw).trim();
         if content.is_empty() {
             continue;
         }
@@ -258,10 +345,51 @@ fn strip_comment(line: &str) -> &str {
         if character == '"' {
             quoted = !quoted;
         } else if character == '#' && !quoted {
-            return &line[..index];
+            return line.get(..index).unwrap_or(line);
         }
     }
     line
+}
+
+fn split_at_word<'a>(source: &'a str, word: &str) -> Option<(&'a str, &'a str)> {
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut boundary = true;
+    for (index, character) in source.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if quoted {
+            match character {
+                '\\' => escaped = true,
+                '"' => quoted = false,
+                _ => {}
+            }
+            boundary = false;
+            continue;
+        }
+        if character == '"' {
+            quoted = true;
+            boundary = false;
+            continue;
+        }
+        let is_word_character = character.is_ascii_alphanumeric() || character == '_';
+        if boundary && is_word_character {
+            let rest = source.get(index..)?;
+            if let Some(after) = rest.strip_prefix(word) {
+                let ends = after
+                    .chars()
+                    .next()
+                    .is_none_or(|next| !(next.is_ascii_alphanumeric() || next == '_'));
+                if ends {
+                    return Some((source.get(..index)?.trim(), after.trim()));
+                }
+            }
+        }
+        boundary = !is_word_character;
+    }
+    None
 }
 
 fn after_keyword<'a>(source: &'a str, keyword: &str) -> Option<&'a str> {
@@ -284,7 +412,7 @@ fn parse_standalone_name(source: &str, line: usize) -> Result<String> {
 
 fn parse_condition(source: &str, line: usize) -> Result<Condition> {
     let mut tokens = Tokens::new(source, line)?;
-    let expr = parse_expression_tokens(&mut tokens)?;
+    let expr = parse_expression(&mut tokens)?;
     tokens.finish()?;
     Ok(Condition {
         expr,
@@ -296,11 +424,25 @@ fn parse_condition(source: &str, line: usize) -> Result<Condition> {
 fn parse_assignment(source: &str, keyword: &str, line: usize) -> Result<Assignment> {
     let mut tokens = Tokens::new(source, line)?;
     let field = tokens.take_word()?;
+    let key = if tokens.eat(&Token::LeftBracket) {
+        let key = parse_expression(&mut tokens)?;
+        tokens.expect(&Token::RightBracket)?;
+        TargetKey::At(key)
+    } else if tokens.eat_word("of") {
+        if tokens.eat_word("every") {
+            TargetKey::Every(tokens.take_word()?)
+        } else {
+            TargetKey::At(parse_primary(&mut tokens)?)
+        }
+    } else {
+        TargetKey::Whole
+    };
     tokens.expect_word(keyword)?;
-    let value = parse_expression_tokens(&mut tokens)?;
+    let value = parse_expression(&mut tokens)?;
     tokens.finish()?;
     Ok(Assignment {
         field,
+        key,
         value,
         source: source.trim().to_string(),
         line,
@@ -331,6 +473,7 @@ fn parse_action(source: &str, line: usize) -> Result<Action> {
     tokens.finish()?;
     Ok(Action {
         name,
+        fair: false,
         params,
         requires: Vec::new(),
         assignments: Vec::new(),
@@ -384,19 +527,47 @@ struct Tokens {
     values: Vec<Token>,
     index: usize,
     line: usize,
+    depth: usize,
 }
 
 impl Tokens {
     fn new(source: &str, line: usize) -> Result<Self> {
+        let values = lex(source, line)?;
+        if values.len() > MAX_TOKENS_PER_LINE {
+            return Err(Error::at(
+                line,
+                format!("a line may hold at most {MAX_TOKENS_PER_LINE} tokens"),
+            ));
+        }
         Ok(Self {
-            values: lex(source, line)?,
+            values,
             index: 0,
             line,
+            depth: 0,
         })
+    }
+
+    fn nested<T>(&mut self, parse: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        if self.depth == MAX_NESTING {
+            return Err(self.error(format!(
+                "expressions may nest at most {MAX_NESTING} levels deep"
+            )));
+        }
+        self.depth += 1;
+        let result = parse(self);
+        self.depth -= 1;
+        result
     }
 
     fn peek(&self) -> Option<&Token> {
         self.values.get(self.index)
+    }
+
+    fn peek_word(&self, offset: usize) -> Option<&str> {
+        match self.values.get(self.index + offset) {
+            Some(Token::Word(word)) => Some(word),
+            _ => None,
+        }
     }
 
     fn next(&mut self) -> Option<Token> {
@@ -429,7 +600,7 @@ impl Tokens {
     }
 
     fn eat_word(&mut self, expected: &str) -> bool {
-        if matches!(self.peek(), Some(Token::Word(word)) if word == expected) {
+        if self.peek_word(0) == Some(expected) {
             self.index += 1;
             true
         } else {
@@ -490,10 +661,10 @@ impl Tokens {
             return self.take_signed_integer().map(Value::Integer);
         }
         match self.next() {
-            Some(Token::Text(value)) => Ok(Value::Text(value)),
+            Some(Token::Text(value)) => Ok(Value::Symbol(value)),
             Some(Token::Word(value)) if value == "true" => Ok(Value::Boolean(true)),
             Some(Token::Word(value)) if value == "false" => Ok(Value::Boolean(false)),
-            Some(Token::Word(value)) => Ok(Value::Text(value)),
+            Some(Token::Word(value)) => Ok(Value::Symbol(value)),
             _ => Err(self.error("expected an integer, boolean, or enum value")),
         }
     }
@@ -515,16 +686,25 @@ impl Tokens {
 
     fn take_field(&mut self, parameter_list: bool) -> Result<Field> {
         let name = self.take_word()?;
-        if is_reserved_identifier(&name) {
+        if is_reserved_word(&name) {
             return Err(self.error(format!(
-                "{name} is reserved for expressions; choose another field or parameter name"
+                "{name} is reserved for expressions; choose another name"
             )));
         }
         self.expect_word("is")?;
-        self.eat_word("a");
-        self.eat_word("an");
+        let kind = self.take_type(&name, parameter_list)?;
+        Ok(Field {
+            name,
+            kind,
+            line: self.line,
+        })
+    }
 
-        let kind = if self.eat_word("integer") {
+    fn take_type(&mut self, name: &str, parameter_list: bool) -> Result<TypeExpr> {
+        if !self.eat_word("a") {
+            self.eat_word("an");
+        }
+        if self.eat_word("integer") {
             self.expect_word("from")?;
             let min = self.take_signed_integer()?;
             self.expect_word("to")?;
@@ -532,10 +712,12 @@ impl Tokens {
             if min > max {
                 return Err(self.error(format!("{name} has an empty range")));
             }
-            FieldKind::Integer { min, max }
-        } else if self.eat_word("boolean") {
-            FieldKind::Boolean
-        } else if self.eat_word("one") {
+            return Ok(TypeExpr::Integer { min, max });
+        }
+        if self.eat_word("boolean") {
+            return Ok(TypeExpr::Boolean);
+        }
+        if self.eat_word("one") {
             self.expect_word("of")?;
             let mut values = vec![self.take_name()?];
             loop {
@@ -552,27 +734,33 @@ impl Tokens {
                 }
                 break;
             }
-            FieldKind::Enum { values }
-        } else {
-            return Err(
-                self.error("expected 'an integer from ... to ...', 'a boolean', or 'one of ...'")
-            );
-        };
-        Ok(Field {
-            name,
-            kind,
-            line: self.line,
-        })
+            return Ok(TypeExpr::Enum { values });
+        }
+        if self.eat_word("map") {
+            self.expect_word("from")?;
+            if !self.eat_word("a") {
+                self.eat_word("an");
+            }
+            let key = self.take_word()?;
+            self.expect_word("to")?;
+            let value = self.take_type(name, parameter_list)?;
+            return Ok(TypeExpr::Map {
+                key,
+                value: Box::new(value),
+            });
+        }
+        match self.next() {
+            Some(Token::Word(word)) if !is_reserved_word(&word) => Ok(TypeExpr::Named(word)),
+            _ => Err(self.error(
+                "expected 'an integer from ... to ...', 'a boolean', 'one of ...', 'a map from ... to ...', or a declared type",
+            )),
+        }
     }
 
     fn parameter_boundary(&self) -> bool {
-        if self.peek() != Some(&Token::Comma) {
-            return false;
-        }
-        matches!(
-            (self.values.get(self.index + 1), self.values.get(self.index + 2)),
-            (Some(Token::Word(_)), Some(Token::Word(keyword))) if keyword == "is"
-        )
+        self.peek() == Some(&Token::Comma)
+            && self.peek_word(1).is_some()
+            && self.peek_word(2) == Some("is")
     }
 
     fn finish(&self) -> Result<()> {
@@ -600,44 +788,29 @@ impl Tokens {
     }
 }
 
-fn is_reserved_identifier(name: &str) -> bool {
-    matches!(
-        name,
-        "true"
-            | "false"
-            | "not"
-            | "and"
-            | "or"
-            | "implies"
-            | "is"
-            | "equals"
-            | "plus"
-            | "minus"
-            | "times"
-            | "divided"
-    )
-}
-
 fn token_name(token: &Token) -> String {
-    match token {
-        Token::Word(value) => format!("'{value}'"),
-        Token::Integer(value) => format!("'{value}'"),
-        Token::Text(_) => "a quoted string".to_string(),
-        Token::LeftParen => "'('".to_string(),
-        Token::RightParen => "')'".to_string(),
-        Token::Comma => "','".to_string(),
-        Token::Plus => "'+'".to_string(),
-        Token::Minus => "'-'".to_string(),
-        Token::Star => "'*'".to_string(),
-        Token::Slash => "'/'".to_string(),
-        Token::Equal => "'='".to_string(),
-        Token::EqualEqual => "'=='".to_string(),
-        Token::NotEqual => "'!='".to_string(),
-        Token::Less => "'<'".to_string(),
-        Token::LessEqual => "'<='".to_string(),
-        Token::Greater => "'>'".to_string(),
-        Token::GreaterEqual => "'>='".to_string(),
-    }
+    let symbol = match token {
+        Token::Word(value) => return format!("'{value}'"),
+        Token::Integer(value) => return format!("'{value}'"),
+        Token::Text(_) => return "a quoted string".to_string(),
+        Token::LeftParen => "(",
+        Token::RightParen => ")",
+        Token::LeftBracket => "[",
+        Token::RightBracket => "]",
+        Token::Comma => ",",
+        Token::Plus => "+",
+        Token::Minus => "-",
+        Token::Star => "*",
+        Token::Slash => "/",
+        Token::Equal => "=",
+        Token::EqualEqual => "==",
+        Token::NotEqual => "!=",
+        Token::Less => "<",
+        Token::LessEqual => "<=",
+        Token::Greater => ">",
+        Token::GreaterEqual => ">=",
+    };
+    format!("'{symbol}'")
 }
 
 fn lex(source: &str, line: usize) -> Result<Vec<Token>> {
@@ -649,143 +822,93 @@ fn lex(source: &str, line: usize) -> Result<Vec<Token>> {
             index += 1;
             continue;
         }
-        let token = match character {
-            '(' => {
-                index += 1;
-                Token::LeftParen
-            }
-            ')' => {
-                index += 1;
-                Token::RightParen
-            }
-            ',' => {
-                index += 1;
-                Token::Comma
-            }
-            '+' => {
-                index += 1;
-                Token::Plus
-            }
-            '-' => {
-                index += 1;
-                Token::Minus
-            }
-            '*' => {
-                index += 1;
-                Token::Star
-            }
-            '/' => {
-                index += 1;
-                Token::Slash
-            }
-            '=' => {
-                index += 1;
-                if characters.get(index) == Some(&'=') {
-                    index += 1;
-                    Token::EqualEqual
-                } else {
-                    Token::Equal
-                }
-            }
-            '!' if characters.get(index + 1) == Some(&'=') => {
-                index += 2;
-                Token::NotEqual
-            }
-            '<' => {
-                index += 1;
-                if characters.get(index) == Some(&'=') {
-                    index += 1;
-                    Token::LessEqual
-                } else {
-                    Token::Less
-                }
-            }
-            '>' => {
-                index += 1;
-                if characters.get(index) == Some(&'=') {
-                    index += 1;
-                    Token::GreaterEqual
-                } else {
-                    Token::Greater
-                }
-            }
+        let followed_by_equal = characters.get(index + 1) == Some(&'=');
+        let (token, width) = match character {
+            '(' => (Token::LeftParen, 1),
+            ')' => (Token::RightParen, 1),
+            '[' => (Token::LeftBracket, 1),
+            ']' => (Token::RightBracket, 1),
+            ',' => (Token::Comma, 1),
+            '+' => (Token::Plus, 1),
+            '-' => (Token::Minus, 1),
+            '*' => (Token::Star, 1),
+            '/' => (Token::Slash, 1),
+            '=' if followed_by_equal => (Token::EqualEqual, 2),
+            '=' => (Token::Equal, 1),
+            '!' if followed_by_equal => (Token::NotEqual, 2),
+            '<' if followed_by_equal => (Token::LessEqual, 2),
+            '<' => (Token::Less, 1),
+            '>' if followed_by_equal => (Token::GreaterEqual, 2),
+            '>' => (Token::Greater, 1),
             '"' => {
-                index += 1;
-                let mut value = String::new();
-                let mut closed = false;
-                while let Some(next) = characters.get(index).copied() {
-                    index += 1;
-                    match next {
-                        '"' => {
-                            closed = true;
-                            break;
-                        }
-                        '\\' => {
-                            let Some(escaped) = characters.get(index).copied() else {
-                                return Err(Error::at(line, "unfinished escape in quoted string"));
-                            };
-                            index += 1;
-                            value.push(match escaped {
-                                'n' => '\n',
-                                'r' => '\r',
-                                't' => '\t',
-                                '"' => '"',
-                                '\\' => '\\',
-                                other => {
-                                    return Err(Error::at(
-                                        line,
-                                        format!("unsupported escape \\{other}"),
-                                    ));
-                                }
-                            });
-                        }
-                        other => value.push(other),
-                    }
-                }
-                if !closed {
-                    return Err(Error::at(line, "unterminated quoted string"));
-                }
-                Token::Text(value)
+                let (text, width) = lex_text(characters.get(index + 1..).unwrap_or(&[]), line)?;
+                (Token::Text(text), width + 1)
             }
             '0'..='9' => {
-                let start = index;
-                index += 1;
-                while characters.get(index).is_some_and(char::is_ascii_digit) {
-                    index += 1;
-                }
-                let value: String = characters[start..index].iter().collect();
-                Token::Integer(
-                    value
-                        .parse()
-                        .map_err(|_| Error::at(line, "integer is above the supported range"))?,
-                )
+                let digits: String = characters
+                    .iter()
+                    .skip(index)
+                    .take_while(|next| next.is_ascii_digit())
+                    .collect();
+                let value = digits
+                    .parse()
+                    .map_err(|_| Error::at(line, "integer is above the supported range"))?;
+                (Token::Integer(value), digits.len())
             }
             character if character.is_ascii_alphabetic() || character == '_' => {
-                let start = index;
-                index += 1;
-                while characters
-                    .get(index)
-                    .is_some_and(|next| next.is_ascii_alphanumeric() || *next == '_')
-                {
-                    index += 1;
-                }
-                Token::Word(characters[start..index].iter().collect())
+                let word: String = characters
+                    .iter()
+                    .skip(index)
+                    .take_while(|next| next.is_ascii_alphanumeric() || **next == '_')
+                    .collect();
+                let width = word.len();
+                (Token::Word(word), width)
             }
             other => return Err(Error::at(line, format!("unexpected character '{other}'"))),
         };
+        index += width;
         tokens.push(token);
     }
     Ok(tokens)
 }
 
-fn parse_expression_tokens(tokens: &mut Tokens) -> Result<Expr> {
-    parse_implication(tokens)
+fn lex_text(characters: &[char], line: usize) -> Result<(String, usize)> {
+    let mut value = String::new();
+    let mut index = 0;
+    while let Some(next) = characters.get(index).copied() {
+        index += 1;
+        match next {
+            '"' => return Ok((value, index)),
+            '\\' => {
+                let Some(escaped) = characters.get(index).copied() else {
+                    return Err(Error::at(line, "unfinished escape in quoted string"));
+                };
+                index += 1;
+                value.push(match escaped {
+                    'n' => '\n',
+                    'r' => '\r',
+                    't' => '\t',
+                    '"' => '"',
+                    '\\' => '\\',
+                    other => {
+                        return Err(Error::at(line, format!("unsupported escape \\{other}")));
+                    }
+                });
+            }
+            other => value.push(other),
+        }
+    }
+    Err(Error::at(line, "unterminated quoted string"))
+}
+
+fn parse_expression(tokens: &mut Tokens) -> Result<Expr> {
+    tokens.nested(parse_implication)
 }
 
 fn parse_implication(tokens: &mut Tokens) -> Result<Expr> {
     let left = parse_or(tokens)?;
     if tokens.eat_word("implies") {
-        let right = parse_implication(tokens)?;
+        let right = parse_expression(tokens)?;
         Ok(binary(BinaryOperator::Implies, left, right))
     } else {
         Ok(left)
@@ -812,7 +935,7 @@ fn parse_not(tokens: &mut Tokens) -> Result<Expr> {
     if tokens.eat_word("not") {
         Ok(Expr::Unary {
             operator: UnaryOperator::Not,
-            value: Box::new(parse_not(tokens)?),
+            value: Box::new(tokens.nested(parse_not)?),
         })
     } else {
         parse_comparison(tokens)
@@ -836,34 +959,7 @@ fn parse_comparison(tokens: &mut Tokens) -> Result<Expr> {
         } else if tokens.eat(&Token::Greater) {
             Some(BinaryOperator::Greater)
         } else if tokens.eat_word("is") {
-            if tokens.eat_word("at") {
-                if tokens.eat_word("least") {
-                    Some(BinaryOperator::GreaterEqual)
-                } else if tokens.eat_word("most") {
-                    Some(BinaryOperator::LessEqual)
-                } else {
-                    return Err(tokens.error("expected 'least' or 'most' after 'is at'"));
-                }
-            } else if tokens.eat_word("less") {
-                tokens.expect_word("than")?;
-                Some(BinaryOperator::Less)
-            } else if tokens.eat_word("greater") || tokens.eat_word("more") {
-                tokens.expect_word("than")?;
-                Some(BinaryOperator::Greater)
-            } else if tokens.eat_word("not") {
-                if tokens.eat_word("equal") {
-                    tokens.eat_word("to");
-                }
-                Some(BinaryOperator::NotEqual)
-            } else if tokens.eat_word("different") {
-                tokens.expect_word("from")?;
-                Some(BinaryOperator::NotEqual)
-            } else {
-                if tokens.eat_word("equal") {
-                    tokens.eat_word("to");
-                }
-                Some(BinaryOperator::Equal)
-            }
+            Some(parse_english_comparison(tokens)?)
         } else {
             None
         };
@@ -874,17 +970,47 @@ fn parse_comparison(tokens: &mut Tokens) -> Result<Expr> {
     }
 }
 
+fn parse_english_comparison(tokens: &mut Tokens) -> Result<BinaryOperator> {
+    if tokens.eat_word("at") {
+        if tokens.eat_word("least") {
+            Ok(BinaryOperator::GreaterEqual)
+        } else if tokens.eat_word("most") {
+            Ok(BinaryOperator::LessEqual)
+        } else {
+            Err(tokens.error("expected 'least' or 'most' after 'is at'"))
+        }
+    } else if tokens.eat_word("less") {
+        tokens.expect_word("than")?;
+        Ok(BinaryOperator::Less)
+    } else if tokens.eat_word("greater") || tokens.eat_word("more") {
+        tokens.expect_word("than")?;
+        Ok(BinaryOperator::Greater)
+    } else if tokens.eat_word("not") {
+        if tokens.eat_word("equal") {
+            tokens.eat_word("to");
+        }
+        Ok(BinaryOperator::NotEqual)
+    } else if tokens.eat_word("different") {
+        tokens.expect_word("from")?;
+        Ok(BinaryOperator::NotEqual)
+    } else {
+        if tokens.eat_word("equal") {
+            tokens.eat_word("to");
+        }
+        Ok(BinaryOperator::Equal)
+    }
+}
+
 fn parse_additive(tokens: &mut Tokens) -> Result<Expr> {
     let mut expression = parse_multiplicative(tokens)?;
     loop {
         let operator = if tokens.eat(&Token::Plus) || tokens.eat_word("plus") {
-            Some(BinaryOperator::Add)
+            BinaryOperator::Add
         } else if tokens.eat(&Token::Minus) || tokens.eat_word("minus") {
-            Some(BinaryOperator::Subtract)
+            BinaryOperator::Subtract
         } else {
-            None
+            break;
         };
-        let Some(operator) = operator else { break };
         expression = binary(operator, expression, parse_multiplicative(tokens)?);
     }
     Ok(expression)
@@ -894,18 +1020,15 @@ fn parse_multiplicative(tokens: &mut Tokens) -> Result<Expr> {
     let mut expression = parse_unary(tokens)?;
     loop {
         let operator = if tokens.eat(&Token::Star) || tokens.eat_word("times") {
-            Some(BinaryOperator::Multiply)
-        } else if tokens.eat(&Token::Slash) || tokens.eat_word("divided") {
-            if tokens.values.get(tokens.index.wrapping_sub(1))
-                == Some(&Token::Word("divided".to_string()))
-            {
-                tokens.expect_word("by")?;
-            }
-            Some(BinaryOperator::Divide)
+            BinaryOperator::Multiply
+        } else if tokens.eat(&Token::Slash) {
+            BinaryOperator::Divide
+        } else if tokens.eat_word("divided") {
+            tokens.expect_word("by")?;
+            BinaryOperator::Divide
         } else {
-            None
+            break;
         };
-        let Some(operator) = operator else { break };
         expression = binary(operator, expression, parse_unary(tokens)?);
     }
     Ok(expression)
@@ -919,7 +1042,7 @@ fn parse_unary(tokens: &mut Tokens) -> Result<Expr> {
     } else if tokens.eat(&Token::Minus) {
         Ok(Expr::Unary {
             operator: UnaryOperator::Negate,
-            value: Box::new(parse_unary(tokens)?),
+            value: Box::new(tokens.nested(parse_unary)?),
         })
     } else {
         parse_primary(tokens)
@@ -927,21 +1050,86 @@ fn parse_unary(tokens: &mut Tokens) -> Result<Expr> {
 }
 
 fn parse_primary(tokens: &mut Tokens) -> Result<Expr> {
+    if tokens.peek_word(0) == Some("number")
+        && tokens.peek_word(1) == Some("of")
+        && tokens.peek_word(2).is_some()
+        && tokens.peek_word(3) == Some("in")
+    {
+        tokens.index += 2;
+        return parse_quantified(tokens, Quantifier::Count, "where");
+    }
     match tokens.next() {
         Some(Token::Integer(value)) => Ok(Expr::Literal(Value::Integer(
             tokens.convert_integer(value, false)?,
         ))),
-        Some(Token::Text(value)) => Ok(Expr::Literal(Value::Text(value))),
-        Some(Token::Word(value)) if value == "true" => Ok(Expr::Literal(Value::Boolean(true))),
-        Some(Token::Word(value)) if value == "false" => Ok(Expr::Literal(Value::Boolean(false))),
-        Some(Token::Word(value)) => Ok(Expr::Name(value)),
+        Some(Token::Text(value)) => Ok(Expr::Literal(Value::Symbol(value))),
+        Some(Token::Word(word)) => match word.as_str() {
+            "true" => Ok(Expr::Literal(Value::Boolean(true))),
+            "false" => Ok(Expr::Literal(Value::Boolean(false))),
+            "if" => {
+                let condition = parse_expression(tokens)?;
+                tokens.expect_word("then")?;
+                let then = parse_expression(tokens)?;
+                tokens.expect_word("else")?;
+                let otherwise = parse_expression(tokens)?;
+                Ok(Expr::If {
+                    condition: Box::new(condition),
+                    then: Box::new(then),
+                    otherwise: Box::new(otherwise),
+                })
+            }
+            "every" => parse_quantified(tokens, Quantifier::Every, "satisfies"),
+            "some" => parse_quantified(tokens, Quantifier::Some, "satisfies"),
+            _ if is_reserved_word(&word) => {
+                Err(tokens.error(format!("expected a value or name, found '{word}'")))
+            }
+            _ => parse_name(tokens, word),
+        },
         Some(Token::LeftParen) => {
-            let expression = parse_expression_tokens(tokens)?;
+            let expression = parse_expression(tokens)?;
             tokens.expect(&Token::RightParen)?;
             Ok(expression)
         }
         _ => Err(tokens.error("expected a value, name, or parenthesized expression")),
     }
+}
+
+fn parse_name(tokens: &mut Tokens, name: String) -> Result<Expr> {
+    if tokens.eat(&Token::LeftBracket) {
+        let key = parse_expression(tokens)?;
+        tokens.expect(&Token::RightBracket)?;
+        return Ok(Expr::Index {
+            map: name,
+            key: Box::new(key),
+        });
+    }
+    if tokens.eat_word("of") {
+        let key = tokens.nested(parse_primary)?;
+        return Ok(Expr::Index {
+            map: name,
+            key: Box::new(key),
+        });
+    }
+    Ok(Expr::Name(name))
+}
+
+fn parse_quantified(tokens: &mut Tokens, quantifier: Quantifier, link: &str) -> Result<Expr> {
+    let variable = tokens.take_word()?;
+    if is_reserved_word(&variable) {
+        return Err(tokens.error(format!(
+            "{variable} is reserved for expressions; choose another name"
+        )));
+    }
+    tokens.expect_word("in")?;
+    let domain = tokens.take_word()?;
+    tokens.expect_word(link)?;
+    let body = parse_expression(tokens)?;
+    Ok(Expr::Quantified {
+        quantifier,
+        variable,
+        domain,
+        body: Box::new(body),
+    })
 }
 
 fn binary(operator: BinaryOperator, left: Expr, right: Expr) -> Expr {

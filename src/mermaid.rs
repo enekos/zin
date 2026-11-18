@@ -1,79 +1,101 @@
-use crate::check::{ScenarioResult, State, Verification};
+use crate::check::{ScenarioEvent, ScenarioRun, Verification};
+use crate::display_state;
+use crate::model::index32;
+use std::fmt::Write as _;
 
-const MAX_DIAGRAM_STATES: usize = 40;
-const MAX_DIAGRAM_TRANSITIONS: usize = 120;
+pub const MAX_DIAGRAM_STATES: usize = 60;
 
+fn label(text: &str) -> String {
+    text.replace('"', "'").replace(['\n', '\r'], " ")
+}
+
+/// A Mermaid state diagram of the reachable states, in discovery order.
+/// Large graphs are cut off after [`MAX_DIAGRAM_STATES`] states.
 #[must_use]
 pub fn state_diagram(verification: &Verification) -> String {
-    let state_count = verification.states.len().min(MAX_DIAGRAM_STATES);
-    let mut output = String::from("stateDiagram-v2\n  direction LR\n");
-    output.push_str("  [*] --> s0\n");
-    for (index, state) in verification.states.iter().take(state_count).enumerate() {
-        output.push_str(&format!("  state \"{}\" as s{index}\n", state_label(state)));
+    let graph = &verification.graph;
+    let shown = graph.state_count().min(MAX_DIAGRAM_STATES);
+    let mut out = String::from("stateDiagram-v2\n");
+    for state in 0..shown {
+        let _ = writeln!(
+            out,
+            "    state \"{}\" as s{state}",
+            label(&display_state(&verification.state(index32(state))))
+        );
     }
-    let mut shown = 0;
-    for transition in &verification.transitions {
-        if transition.from >= state_count || transition.to >= state_count {
-            continue;
+    out.push_str("    [*] --> s0\n");
+    for state in 0..shown {
+        let id = index32(state);
+        let out_edges = graph.out(id);
+        if out_edges.is_empty() {
+            let _ = writeln!(out, "    s{state} --> [*]");
         }
-        if shown == MAX_DIAGRAM_TRANSITIONS {
-            break;
+        let mut targets: Vec<u32> = out_edges.iter().map(|edge| edge.to).collect();
+        targets.sort_unstable();
+        targets.dedup();
+        for to in targets {
+            if crate::model::at(to) >= shown {
+                continue;
+            }
+            let calls = out_edges
+                .iter()
+                .filter(|edge| edge.to == to)
+                .map(|edge| verification.call_text(edge.call))
+                .collect::<Vec<_>>()
+                .join(" / ");
+            let _ = writeln!(out, "    s{state} --> s{to}: {}", label(&calls));
         }
-        output.push_str(&format!(
-            "  s{} --> s{} : {}\n",
-            transition.from,
-            transition.to,
-            escape(&transition.call.display())
-        ));
-        shown += 1;
     }
-    if state_count < verification.states.len() || shown < verification.transitions.len() {
-        output.push_str(&format!(
-            "  %% Diagram limited to {state_count} states and {shown} transitions; verification covered {} states and {} transitions.\n",
-            verification.states.len(),
-            verification.transitions.len()
-        ));
+    if shown < graph.state_count() {
+        let _ = writeln!(
+            out,
+            "    note right of s0: showing {shown} of {} states",
+            graph.state_count()
+        );
     }
-    output
+    out
 }
 
+/// A Mermaid sequence diagram of one scenario run.
 #[must_use]
-pub fn sequence_diagram(system_name: &str, scenario: &ScenarioResult) -> String {
-    let mut output =
-        String::from("sequenceDiagram\n  autonumber\n  participant reviewer as Reviewer\n");
-    output.push_str(&format!(
-        "  participant system as {}\n",
-        escape(system_name)
-    ));
-    if let Some(initial) = scenario.states.first() {
-        output.push_str(&format!(
-            "  Note over system: Initially<br/>{}\n",
-            state_label(initial)
-        ));
+pub fn sequence_diagram(verification: &Verification, scenario: &ScenarioRun) -> String {
+    let mut out = String::from("sequenceDiagram\n");
+    let _ = writeln!(out, "    participant Client");
+    let _ = writeln!(
+        out,
+        "    participant System as {}",
+        label(&verification.model.name)
+    );
+    let _ = writeln!(
+        out,
+        "    Note over System: {}",
+        label(&display_state(&verification.state(0)))
+    );
+    for event in &scenario.events {
+        match event {
+            ScenarioEvent::Call { call, to } => {
+                let _ = writeln!(
+                    out,
+                    "    Client->>System: {}",
+                    label(&verification.call_text(*call))
+                );
+                let _ = writeln!(
+                    out,
+                    "    Note over System: {}",
+                    label(&display_state(&verification.state(*to)))
+                );
+            }
+            ScenarioEvent::Reject { call } => {
+                let _ = writeln!(
+                    out,
+                    "    Client-xSystem: {} (rejected)",
+                    label(&verification.call_text(*call))
+                );
+            }
+            ScenarioEvent::Expect { source } => {
+                let _ = writeln!(out, "    Note right of System: expect {}", label(source));
+            }
+        }
     }
-    for (call, state) in scenario.calls.iter().zip(scenario.states.iter().skip(1)) {
-        output.push_str(&format!(
-            "  reviewer->>system: {}\n",
-            escape(&call.display())
-        ));
-        output.push_str(&format!("  Note over system: {}\n", state_label(state)));
-    }
-    output
-}
-
-fn state_label(state: &State) -> String {
-    state
-        .iter()
-        .map(|(name, value)| format!("{} = {}", escape(name), escape(&value.source())))
-        .collect::<Vec<_>>()
-        .join("<br/>")
-}
-
-fn escape(source: &str) -> String {
-    source
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace(['\n', '\r'], " ")
+    out
 }

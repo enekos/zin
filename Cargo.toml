@@ -1,8 +1,8 @@
 [package]
 name = "zin"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
-description = "English-like, executable behavior specifications with exhaustive checks and Mermaid reports"
+description = "English-like specifications, exhaustively model checked, then run as conformance tests inside your test framework"
 
 [dependencies]
 

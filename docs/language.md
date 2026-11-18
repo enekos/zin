@@ -1,144 +1,236 @@
 # The Zin language
 
-A Zin file describes a finite-state system in six kinds of declarations: identity, state, initial values, promises, actions, and scenarios. Blank lines and `#` comments are free-form. Blocks use spaces for indentation; two spaces are conventional.
-
-## A complete skeleton
+A specification is a UTF-8 text file. Structure comes from indentation: a
+heading line at the left margin, its body indented beneath it. `#` starts a
+comment. Blank lines are ignored.
 
 ```zin
-system "Reservations"
-explore at most 5000 states
+system "Name"                      # required, first
+explore at most 100000 states      # optional; default 1,000,000
 
-state
-  seats is an integer from 0 to 2
-  phase is one of booking, closed
-  audited is a boolean
+types                              # optional named types
+  worker is one of alice, bob
 
-initially
-  seats is 2
-  phase is booking
-  audited is false
+state                              # the variables
+  ...
+initially                          # one value for every variable
+  ...
 
-always
-  seats is at least 0
-  phase is closed implies seats is 0
+always / never / sometimes / eventually     # properties
+whenever <p> eventually <q>
+always possible <condition>
+terminal when <condition>
 
-action reserve
-  requires phase is booking
-  requires seats is greater than 0
-  seats becomes seats - 1
-
-scenario "The last reservation"
-  reserve
-  reserve
-  expect seats is 0
+action name(parameters)            # how the state can change
+  ...
+scenario "Name"                    # worked examples, checked and turned into tests
+  ...
 ```
 
-`system` must come first. `state` and `initially` are each required and may appear once. `explore` is optional and defaults to 10,000 states. Multiple `always` blocks are allowed. Action and scenario names may be identifiers or quoted strings; field and parameter names are identifiers. Expression keywords (`true`, `false`, `not`, `and`, `or`, `implies`, `is`, `equals`, `plus`, `minus`, `times`, and `divided`) are reserved and cannot be field or parameter names.
+## Types
+
+| Type | Written as |
+| --- | --- |
+| Bounded integer | `an integer from 0 to 20` |
+| Boolean | `a boolean` |
+| Enumeration | `one of open, closed` or `one of open, closed or frozen` |
+| Named type | `a worker` / `worker` (declared under `types`) |
+| Map | `a map from worker to a boolean` |
+
+Map keys must be finite (an enum, a boolean, or a bounded integer); map values
+are any non-map type. Every key always has a value.
+
+Enum values are plain words. Quote one (`"on"`) when it would otherwise read as
+a keyword or as another name. An enum value may belong to several enums; where
+that makes an expression ambiguous the checker says so.
 
 ## State and initial values
 
-Three finite types are available:
-
 ```zin
-count is an integer from -10 to 10
-mode is one of idle, active, stopped
-enabled is a boolean
+state
+  balance is an integer from 0 to 20
+  at is a map from worker to phase
+
+initially
+  balance is 0
+  at of every worker is idle
+  at of alice is holding         # single entries refine 'of every'
 ```
 
-Integers are signed 64-bit values. Literals cover the complete range from `-9223372036854775808` through `9223372036854775807`; arithmetic overflow is always an error.
-
-Enum values may be quoted when they contain spaces, punctuation, or reserved words. Quote values such as `"true"`, `"false"`, and `"not"` when they could be confused with expression syntax. Every state field must have exactly one initial assignment. Initial right-hand sides must not refer to state or parameters. Initial values and every later assignment are checked against the declared domain.
-
-Domains are semantic constraints, not promises. An enabled action that tries to leave a domain is a model error. Use `requires` to make the action unavailable instead.
-
-## Promises
-
-An `always` block contains boolean expressions that must hold in the initial state and every reachable state:
-
-```zin
-always
-  balance is at least 0
-  status is closed implies balance is 0
-```
-
-A promise can also be written on one line:
-
-```zin
-always balance is at least 0
-```
-
-On failure, Zin returns the promise, complete state, and a shortest action trace from the initial state.
-
-## Actions
-
-An action has optional finite-domain parameters, any number of preconditions, and deterministic assignments:
-
-```zin
-action transfer(amount is an integer from 1 to 10)
-  requires phase is open
-  requires amount is at most balance
-  balance becomes balance - amount
-  sent becomes sent + amount
-```
-
-An action is enabled only when all its `requires` conditions are true. The checker tries every parameter combination in every reachable state. A call with no preconditions is always enabled.
-
-All right-hand sides read the **pre-action state**. Assignments then commit simultaneously, making swaps and other coupled updates unambiguous. Fields not assigned by the action remain unchanged.
-
-Every expression is statically typed before exploration, including expressions inside unreachable actions. Conditions must be boolean; arithmetic and ordering require integers; assignments must match the target field. Enum assignments and comparisons also check their declared value domains, catching misspellings even when written as quoted literals.
+Every variable, and every key of every map, must receive an initial value.
 
 ## Expressions
 
-English operators and symbolic operators are interchangeable:
+From loosest to tightest binding:
 
-| Meaning | English | Symbol |
-|---|---|---|
-| Equal | `is`, `is equal to`, `equals` | `=`, `==` |
-| Not equal | `is not`, `is different from` | `!=` |
-| Less / at most | `is less than`, `is at most` | `<`, `<=` |
-| Greater / at least | `is greater than`, `is at least` | `>`, `>=` |
-| Add / subtract | `plus`, `minus` | `+`, `-` |
-| Multiply / divide | `times`, `divided by` | `*`, `/` |
-| Logic | `not`, `and`, `or`, `implies` | — |
+| | |
+| --- | --- |
+| `a implies b` | right-associative |
+| `a or b` | |
+| `a and b` | |
+| `not a` | |
+| comparisons | `is`, `=`, `==`, `equals`, `is not`, `!=`, `is different from`, `<`, `<=`, `>`, `>=`, `is less than`, `is at most`, `is greater than` / `is more than`, `is at least` |
+| `a + b`, `a - b` | also `plus`, `minus` |
+| `a * b`, `a / b` | also `times`, `divided by`; division truncates toward zero |
+| `-a` | |
 
-Parentheses override precedence. From tightest to loosest: numeric negation; multiplication; addition; comparisons; `not`; `and`; `or`; `implies`. Thus `not status is open` means `not (status is open)`. Implication is right-associative. `and`, `or`, and `implies` short-circuit at runtime, but both sides are always statically type-checked. Arithmetic is checked for overflow and division by zero.
+Comparisons do not chain; parenthesize (`(a < b) is flag`).
 
-Bare names resolve to state fields or parameters first, then to declared enum values. Unknown names are rejected so a misspelled field or enum cannot quietly change a proof.
+Primary forms:
+
+```zin
+balance                       # a variable or parameter
+5   true   closed             # literals
+(balance + 1)
+at of w        at[w]          # a map entry
+if c then a else b            # both branches must have the same type
+every w in worker satisfies at of w is done
+some w in worker satisfies at of w is holding
+number of w in worker where at of w is done
+```
+
+Quantifiers range over a named type (declare `small is an integer from 1 to 3`
+under `types` to range over numbers) and extend as far to the right as
+possible; parenthesize them inside larger expressions.
+
+Expressions are statically typed. Integers, booleans and each enum are
+distinct: `balance is open` is an error, reported before anything runs, even
+in actions that can never be enabled.
+
+## Actions
+
+```zin
+fair action deposit(amount is an integer from 1 to 5, w is a worker)
+  requires status is open
+  requires balance + amount is at most 20
+  balance becomes balance + amount
+  seen of w becomes balance
+  at of every worker becomes idle
+```
+
+- An action is **enabled** for given arguments when every `requires` holds.
+  Otherwise it is **rejected** and the state does not change.
+- All assignments read the state **before** the action: `a becomes b` and
+  `b becomes a` in one action swap the two.
+- Assigning the same variable or map entry twice in one action is an error.
+  The one exception: `m of every <type>` sets a default that assignments to
+  single entries refine.
+- A variable not assigned keeps its value.
+- An assignment that leaves a variable's declared range is a **model fault**,
+  reported with the trace that reaches it. Add a `requires` to rule it out.
+  The same applies to division by zero.
+- Actions are deterministic. Model a choice made by the environment as a
+  parameter, or as two actions.
+
+Parameters range over finite types, so the checker tries every combination of
+arguments in every state.
+
+## Properties
+
+Properties are written one per line under a heading, or on the heading line
+(`never balance is 21`).
+
+### Safety
+
+```zin
+always
+  status is closed implies balance is 0
+never
+  balance is more than 20
+```
+
+Checked in every reachable state. A violation comes with the shortest sequence
+of calls that reaches it.
+
+### Reachability
+
+```zin
+sometimes
+  status is closed
+```
+
+At least one reachable state satisfies the condition. Use this to make sure
+the model is not vacuous: properties about closed accounts are worthless if no
+account can be closed.
+
+```zin
+always possible status is open
+```
+
+From **every** reachable state some sequence of calls reaches the condition:
+there is no point of no return.
+
+### Liveness
+
+```zin
+eventually
+  status is succeeded or status is failed
+
+whenever status is running eventually status is not running
+```
+
+`eventually q` says every execution reaches `q`. `whenever p eventually q`
+says that from every reachable state satisfying `p`, every execution reaches
+`q` (possibly at once).
+
+An **execution** is a path from a state that keeps taking steps for as long as
+any call is enabled. Two consequences:
+
+- A state where nothing is enabled ends the execution. If `q` has not happened
+  by then, the property fails ("can stop before it happens").
+- The system never idles while something is enabled. If your system may
+  legitimately wait forever, model the waiting as an action.
+
+Without fairness, a loop that avoids `q` is a violation even when an exit is
+always available. Declare what the environment guarantees:
+
+```zin
+fair action finish
+  requires not done
+  done becomes true
+```
+
+`fair` is weak fairness, per call: if a call of a fair action stays enabled
+forever, it is eventually taken. A violation then needs a loop in which, for
+every fair call, the call is disabled somewhere on the loop or taken on it.
+Fairness does not help when the call is only enabled on and off
+(`examples/broken/stuck-job.zin`).
+
+A liveness counterexample is a path followed by `then forever:` and a loop.
+
+### Deadlock
+
+```zin
+terminal when status is closed
+```
+
+Without this line, states with no enabled call are allowed. With it, every
+such state must satisfy the condition; any other is reported as a deadlock.
 
 ## Scenarios
 
-Scenarios are executable review journeys from the common initial state:
-
 ```zin
-scenario "Reserve the last seat"
-  reserve
-  expect seats is 1
-  reserve
-  expect seats is 0
+scenario "Close and reopen an empty account"
+  reject reopen                     # must be refused here
+  close
+  deposit with amount = 3           # named arguments
+  deposit(3)                        # positional
+  expect balance is 6 and status is open
 ```
 
-Call actions positionally or by name:
+Each scenario starts from the initial state. A call must be enabled, a
+`reject` must be refused, an `expect` must hold. Scenarios document intended
+behavior, pin it against regressions in the specification, and become the
+first tests of every derived plan.
 
-```zin
-transfer(5)
-transfer with amount = 5
-move with target = away and speed = 2
-```
+## Limits
 
-`expect` checks a condition at the current point. Calling a disabled action, supplying wrong arguments, breaking a promise, or failing an expectation stops verification with the journey and state in the error.
+Exploration stops with an error, never a partial answer, at the declared state
+limit or at 20 million transitions. A specification may have at most 100,000
+distinct calls (action × arguments) and 4,096 scalar slots. Nesting depth is
+limited to 64.
 
-Scenarios supplement exhaustive exploration; they do not replace it. They are useful as executable examples, review narratives, and blueprints for implementation conformance tests.
+## Notes
 
-## Mermaid output
-
-`zin diagram FILE` emits a `stateDiagram-v2` chart of reachable states and enabled transitions. Large charts are visually capped at 40 states and 120 transitions with an explicit Mermaid comment; verification itself is never capped by those display limits.
-
-`zin diagram FILE --scenario NAME` emits a `sequenceDiagram` with every call and resulting state. `zin report` embeds both in a Markdown document containing domains, promises, action contracts, coverage notes, journeys, and verification totals.
-
-## Formal envelope
-
-Zin currently proves finite **safety** properties over deterministic models. State and action domains must be finite. The default limit is 10,000 reachable states; argument-product and transition guards prevent accidental resource exhaustion. Any reached guard is an explicit error.
-
-The model does not execute implementation code and makes no assumptions about Rust or any other language. Concurrency, time, external services, and retries must be modeled explicitly as state and actions. Liveness and unbounded verification are intentionally outside the current proof envelope.
-
-For a practical specification-to-implementation workflow, see [integrating with a real app](integration.md).
+After a successful check the tool also notes actions that are never enabled in
+any reachable state, since these are usually mistakes.

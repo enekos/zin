@@ -1,411 +1,332 @@
-use zin::{
-    CallArguments, Result, ScenarioStep, Spec, parse, render_markdown, sequence_diagram,
-    state_diagram, verify,
-};
+use zin::{ErrorKind, parse, verify};
 
-fn parse_spec(source: &str) -> Result<Spec> {
-    let indentation = source
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| {
-            line.chars()
-                .take_while(|character| *character == ' ')
-                .count()
-        })
-        .min()
-        .unwrap_or(0);
-    let normalized = source
-        .lines()
-        .map(|line| line.get(indentation..).unwrap_or(line))
-        .collect::<Vec<_>>()
-        .join("\n");
-    parse(&normalized)
+fn check(source: &str) -> zin::Result<zin::Verification> {
+    verify(&parse(source)?)
+}
+
+fn failure(source: &str) -> zin::Error {
+    check(source).expect_err("the specification should be rejected")
+}
+
+const LIGHT: &str = r#"system "Light"
+state
+  on is a boolean
+initially
+  on is false
+action toggle
+  on becomes not on
+"#;
+
+#[test]
+fn shipped_examples_verify() {
+    for (name, source) in [
+        ("account", include_str!("../examples/account.zin")),
+        ("counter", include_str!("../examples/counter.zin")),
+        ("delivery", include_str!("../examples/delivery.zin")),
+        ("job", include_str!("../examples/job.zin")),
+    ] {
+        check(source).unwrap_or_else(|error| panic!("{name}: {error}"));
+    }
 }
 
 #[test]
-fn bundled_examples_verify() {
-    let account = parse(include_str!("../examples/account.zin")).expect("account parses");
-    let account = verify(&account).expect("account verifies");
-    assert_eq!(account.states.len(), 22);
-    assert_eq!(account.transitions.len(), 182);
-    assert_eq!(account.scenarios.len(), 2);
-
-    let delivery = parse(include_str!("../examples/delivery.zin")).expect("delivery parses");
-    let delivery = verify(&delivery).expect("delivery verifies");
-    assert_eq!(delivery.states.len(), 6);
-    assert_eq!(delivery.terminal_states(), 3);
+fn explores_every_reachable_state() {
+    let verification = check(LIGHT).unwrap();
+    assert_eq!(verification.graph.state_count(), 2);
+    assert_eq!(verification.graph.transition_count(), 2);
 }
 
 #[test]
-fn a_broken_promise_produces_the_shortest_counterexample() {
-    let spec = parse_spec(
-        r#"
-        system "Counter"
-        state
-          count is an integer from 0 to 2
-        initially
-          count is 0
-        always
-          count is less than 2
-        action increment
-          requires count is less than 2
-          count becomes count + 1
-    "#,
-    )
-    .expect("spec parses");
-    let error = verify(&spec).expect_err("the second increment breaks the promise");
-    let message = error.to_string();
-    assert!(message.contains("promise failed"), "{message}");
-    assert!(message.contains("count = 2"), "{message}");
+fn safety_violation_reports_the_shortest_counterexample() {
+    let error = failure(include_str!("../examples/broken/lost-update.zin"));
+    assert_eq!(error.kind, ErrorKind::Violation);
+    let trace = error.trace.expect("a counterexample");
+    let calls: Vec<&str> = trace.steps.iter().map(|step| step.call.as_str()).collect();
+    assert_eq!(calls.len(), 4);
     assert!(
-        message.contains("1. increment\n  2. increment"),
-        "{message}"
+        calls.starts_with(&["read(alice)", "read(bob)"]),
+        "{calls:?}"
     );
+    assert_eq!(trace.loop_from, None);
 }
 
 #[test]
-fn assignments_in_an_action_are_simultaneous() {
-    let spec = parse_spec(
-        r#"
-        system "Swap"
-        state
-          left is an integer from 0 to 1
-          right is an integer from 0 to 1
-        initially
-          left is 0
-          right is 1
-        always
-          left is at least 0
-        action swap
-          left becomes right
-          right becomes left
-        scenario "One swap"
-          swap
-          expect left is 1 and right is 0
-    "#,
-    )
-    .expect("spec parses");
-    verify(&spec).expect("both right-hand sides read the old state");
+fn liveness_violation_reports_a_lasso() {
+    let error = failure(include_str!("../examples/broken/stuck-job.zin"));
+    assert_eq!(error.kind, ErrorKind::Violation);
+    assert!(error.message.contains("can run forever"), "{error}");
+    let trace = error.trace.as_ref().expect("a counterexample");
+    assert_eq!(trace.loop_from, Some(0));
+    assert!(error.to_string().contains("then forever:"), "{error}");
 }
 
 #[test]
-fn named_arguments_and_multiple_parameter_domains_work() {
-    let spec = parse_spec(
-        r#"
-        system "Named calls"
-        state
-          location is one of home, away
-        initially
-          location is home
-        always
-          location is home or location is away
-        action move(delta is an integer from 0 to 1, target is one of home, away)
-          location becomes target
-        scenario "Named arguments"
-          move with target = away and delta = 1
-          expect location is away
-    "#,
-    )
-    .expect("parameter boundary after enum comma is recognized");
-    let result = verify(&spec).expect("named call verifies");
-    assert_eq!(result.scenarios[0].calls[0].display(), "move(1, away)");
-}
-
-#[test]
-fn disabled_actions_and_false_expectations_explain_the_state() {
-    let source = r#"
-        system "Door"
-        state
-          open is a boolean
-        initially
-          open is false
-        always
-          open is true or open is false
-        action open_door
-          requires not open
-          open becomes true
-        scenario "Already open"
-          open_door
-          open_door
-    "#;
-    let disabled = parse_spec(source).expect("spec parses");
-    let message = verify(&disabled)
-        .expect_err("second open is disabled")
-        .to_string();
-    assert!(message.contains("is not enabled"), "{message}");
-    assert!(message.contains("open = true"), "{message}");
-
-    let wrong_expectation = parse_spec(&source.replace(
-        "          open_door\n          open_door",
-        "          open_door\n          expect open is false",
-    ))
-    .expect("expectation spec parses");
-    let message = verify(&wrong_expectation)
-        .expect_err("expectation should fail")
-        .to_string();
-    assert!(message.contains("expectation failed"), "{message}");
-    assert!(message.contains("open = true"), "{message}");
-}
-
-#[test]
-fn leaving_a_declared_domain_is_a_model_error() {
-    let spec = parse_spec(
-        r#"
-        system "Tiny counter"
-        state
-          count is an integer from 0 to 1
-        initially
-          count is 0
-        action increment
-          count becomes count + 1
-    "#,
-    )
-    .expect("spec parses");
-    let message = verify(&spec)
-        .expect_err("two is outside the field domain")
-        .to_string();
-    assert!(message.contains("would assign 2"), "{message}");
-}
-
-#[test]
-fn unknown_names_and_enum_typos_are_rejected() {
-    let source = r#"
-        system "Typo"
-        state
-          status is one of open, closed
-        initially
-          status is open
-        always
-          status is cloesd
-    "#;
-    let spec = parse_spec(source).expect("syntax is valid");
-    let message = verify(&spec).expect_err("unknown enum value").to_string();
-    assert!(message.contains("unknown name cloesd"), "{message}");
-}
-
-#[test]
-fn logic_short_circuits_and_comments_do_not_eat_hashes_in_strings() {
-    let spec = parse_spec(
-        r#"
-        system "A # in a name" # a real comment
-        state
-          count is an integer from 0 to 0
-        initially
-          count is 0
-        always count is 0 or 1 divided by count is 1
-    "#,
-    )
-    .expect("spec parses");
-    assert_eq!(spec.name, "A # in a name");
-    verify(&spec).expect("the right side is never evaluated at zero");
-}
-
-#[test]
-fn state_limits_fail_loudly_instead_of_truncating_the_proof() {
-    let spec = parse_spec(
-        r#"
-        system "Bounded exploration"
-        explore at most 2 states
-        state
-          count is an integer from 0 to 3
-        initially
-          count is 0
-        action increment
-          requires count is less than 3
-          count becomes count + 1
-    "#,
-    )
-    .expect("spec parses");
-    let message = verify(&spec)
-        .expect_err("third state exceeds the limit")
-        .to_string();
-    assert!(message.contains("state limit"), "{message}");
-}
-
-#[test]
-fn reports_embed_portable_mermaid_and_review_details() {
-    let spec = parse(include_str!("../examples/account.zin")).expect("account parses");
-    let verification = verify(&spec).expect("account verifies");
-    let report = render_markdown(&spec, &verification);
-    assert!(report.contains("```mermaid\nstateDiagram-v2"));
-    assert!(report.contains("```mermaid\nsequenceDiagram"));
-    assert!(report.contains("All 22 reachable states satisfy 3 promises"));
-    assert!(report.contains("Deposit, withdraw, and close"));
-
-    let diagram = state_diagram(&verification);
-    assert!(diagram.contains("[*] --> s0"));
-    let journey = sequence_diagram(&spec.name, &verification.scenarios[0]);
-    assert!(journey.contains("reviewer->>system: deposit(5)"));
-}
-
-#[test]
-fn positional_and_named_calls_remain_distinct_in_the_syntax_tree() {
-    let spec = parse(include_str!("../examples/account.zin")).expect("account parses");
-    let Some(ScenarioStep::Call(call)) = spec.scenarios[0].steps.first() else {
-        panic!("first journey step is a call")
+fn fairness_rules_out_starving_a_continuously_enabled_action() {
+    let spec = |fair: &str| {
+        format!(
+            r#"system "Spinner"
+state
+  done is a boolean
+  ticks is an integer from 0 to 1
+initially
+  done is false
+  ticks is 0
+eventually
+  done
+terminal when done
+action tick
+  requires not done
+  ticks becomes 1 - ticks
+{fair}action finish
+  requires not done
+  done becomes true
+"#
+        )
     };
-    assert!(
-        matches!(&call.arguments, CallArguments::Named(arguments) if arguments.contains_key("amount"))
-    );
+    let error = failure(&spec(""));
+    assert!(error.message.contains("can run forever"), "{error}");
+    check(&spec("fair ")).unwrap();
 }
 
 #[test]
-fn unreachable_actions_are_still_fully_type_checked() {
-    let cases = [
-        ("count becomes false", "cannot assign a boolean"),
-        ("requires count + true is 1", "expected an integer"),
-    ];
-    for (statement, expected) in cases {
-        let source = format!(
-            "system \"Static typing\"\nstate\n  count is an integer from 0 to 1\ninitially\n  count is 0\naction impossible\n  requires false\n  {statement}\n"
-        );
-        let spec = parse(&source).expect("spec parses");
-        let message = verify(&spec)
-            .expect_err("dead code must still be well typed")
-            .to_string();
-        assert!(message.contains(expected), "{message}");
+fn stopping_before_the_goal_violates_eventually() {
+    let error = failure(
+        r#"system "Stops short"
+state
+  step is an integer from 0 to 2
+initially
+  step is 0
+eventually
+  step is 2
+action advance
+  requires step is 0
+  step becomes 1
+"#,
+    );
+    assert!(error.message.contains("stop"), "{error}");
+    assert_eq!(error.trace.expect("a counterexample").steps.len(), 1);
+}
+
+#[test]
+fn leads_to_holds_only_when_every_premise_state_recovers() {
+    let spec = |recover: &str| {
+        format!(
+            r#"system "Alarm"
+state
+  alarm is one of quiet, ringing
+initially
+  alarm is quiet
+whenever alarm is ringing eventually alarm is quiet
+fair action trip
+  requires alarm is quiet
+  alarm becomes ringing
+{recover}action silence
+  requires alarm is ringing
+  alarm becomes quiet
+"#
+        )
+    };
+    check(&spec("fair ")).unwrap();
+    // Without `silence` the alarm rings with nothing left to do.
+    let stuck = spec("fair ").replace("  alarm becomes quiet", "  alarm becomes ringing");
+    assert_eq!(failure(&stuck).kind, ErrorKind::Violation);
+}
+
+#[test]
+fn always_possible_finds_a_state_with_no_way_back() {
+    let error = failure(
+        r#"system "Trapdoor"
+state
+  room is one of hall, cellar
+initially
+  room is hall
+always possible room is hall
+action fall
+  requires room is hall
+  room becomes cellar
+action pace
+  requires room is cellar
+  room becomes cellar
+"#,
+    );
+    assert_eq!(error.kind, ErrorKind::Violation);
+    assert!(error.message.contains("always possible"), "{error}");
+}
+
+#[test]
+fn sometimes_needs_a_witness() {
+    let error = failure(&format!("{LIGHT}sometimes\n  on and not on\n"));
+    assert_eq!(error.kind, ErrorKind::Violation);
+    assert!(error.message.contains("no reachable state"), "{error}");
+}
+
+#[test]
+fn deadlock_is_reported_when_terminal_states_are_declared() {
+    let error = failure(
+        r#"system "Door"
+state
+  door is one of open, closed, jammed
+initially
+  door is closed
+terminal when door is open
+action open
+  requires door is closed
+  door becomes open
+action jam
+  requires door is closed
+  door becomes jammed
+"#,
+    );
+    assert_eq!(error.kind, ErrorKind::Violation);
+    assert!(error.message.contains("deadlock"), "{error}");
+}
+
+#[test]
+fn out_of_range_assignment_is_a_model_fault_with_a_trace() {
+    let error = failure(
+        r#"system "Overflow"
+state
+  n is an integer from 0 to 2
+initially
+  n is 0
+action bump
+  n becomes n + 1
+"#,
+    );
+    assert_eq!(error.kind, ErrorKind::Model);
+    assert!(error.message.contains("add a 'requires'"), "{error}");
+    assert_eq!(error.trace.expect("a trace").steps.len(), 2);
+}
+
+#[test]
+fn state_limit_is_enforced() {
+    let error = failure(
+        r#"system "Big"
+explore at most 10 states
+state
+  n is an integer from 0 to 100
+initially
+  n is 0
+action bump
+  requires n < 100
+  n becomes n + 1
+"#,
+    );
+    assert_eq!(error.kind, ErrorKind::Limit);
+}
+
+#[test]
+fn maps_quantifiers_and_conditionals_evaluate() {
+    let verification = check(
+        r#"system "Votes"
+types
+  voter is one of ann, ben, cat
+state
+  vote is a map from voter to a boolean
+  passed is a boolean
+initially
+  vote of every voter is false
+  passed is false
+always
+  passed is ((number of v in voter where vote of v) >= 2)
+sometimes
+  every v in voter satisfies vote[v]
+  passed and some v in voter satisfies not vote of v
+action approve(v is a voter)
+  requires not vote of v
+  vote of v becomes true
+  passed becomes if (number of w in voter where vote of w) >= 1 then true else false
+"#,
+    )
+    .unwrap();
+    assert_eq!(verification.graph.state_count(), 8);
+}
+
+#[test]
+fn assignments_in_one_action_read_the_state_before_the_action() {
+    check(
+        r#"system "Swap"
+state
+  a is an integer from 0 to 1
+  b is an integer from 0 to 1
+initially
+  a is 0
+  b is 1
+always
+  a + b is 1
+action swap
+  a becomes b
+  b becomes a
+scenario "Swap twice"
+  swap
+  expect a is 1 and b is 0
+  swap
+  expect a is 0 and b is 1
+"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn scenario_failures_name_the_scenario() {
+    let error = failure(&format!(
+        "{LIGHT}scenario \"Wrong\"\n  toggle\n  expect not on\n"
+    ));
+    assert_eq!(error.kind, ErrorKind::Violation);
+    assert!(error.message.contains("Wrong"), "{error}");
+    let error = failure(&format!("{LIGHT}scenario \"Refused\"\n  reject toggle\n"));
+    assert!(error.message.contains("Refused"), "{error}");
+}
+
+#[test]
+fn parse_errors_carry_line_numbers() {
+    for (source, line, needle) in [
+        ("state\n  x is a boolean\n", 1, "system"),
+        (
+            "system \"S\"\nstate\n  x is a frog\ninitially\n  x is 1\n",
+            3,
+            "frog",
+        ),
+        (
+            "system \"S\"\nstate\n  x is a boolean\ninitially\n  x is false\naction a\n  y becomes true\n",
+            7,
+            "y",
+        ),
+        (
+            "system \"S\"\nstate\n  x is a boolean\ninitially\n  x is 3\n",
+            5,
+            "",
+        ),
+        (
+            "system \"S\"\nstate\n  x is a boolean\n  x is a boolean\ninitially\n  x is false\n",
+            4,
+            "x",
+        ),
+    ] {
+        let error = failure(source);
+        assert_eq!(error.kind, ErrorKind::Spec, "{source}: {error}");
+        assert_eq!(error.line, Some(line), "{source}: {error}");
+        assert!(error.message.contains(needle), "{source}: {error}");
     }
 }
 
 #[test]
-fn enum_domains_are_checked_even_behind_false_and_inside_quotes() {
-    let source = r#"
-        system "Enum safety"
-        state
-          status is one of open, closed
-        initially
-          status is open
-        action impossible
-          requires false
-          status becomes "cloesd"
-    "#;
-    let spec = parse_spec(source).expect("spec parses");
-    let message = verify(&spec)
-        .expect_err("quoted enum typo must be rejected")
-        .to_string();
-    assert!(message.contains("cannot assign enum {cloesd}"), "{message}");
-
-    let comparison = source.replace("status becomes \"cloesd\"", "requires status is \"cloesd\"");
-    let spec = parse_spec(&comparison).expect("spec parses");
-    let message = verify(&spec)
-        .expect_err("disjoint enum comparison must be rejected")
-        .to_string();
-    assert!(message.contains("cannot compare"), "{message}");
-}
-
-#[test]
-fn not_negates_the_complete_comparison() {
-    let spec = parse_spec(
-        r#"
-        system "Natural negation"
-        state
-          status is one of open, closed
-        initially
-          status is closed
-        always
-          not status is open implies status is closed
-        action close
-          requires not status is open
-          status becomes closed
-        scenario "Already closed"
-          close
-          expect not status is open
-    "#,
-    )
-    .expect("spec parses");
-    verify(&spec).expect("not applies to status is open, not to status itself");
-}
-
-#[test]
-fn quoted_enum_values_round_trip_in_calls_and_traces() {
-    let spec = parse_spec(
-        r#"
-        system "Quoted values"
-        state
-          status is one of "needs review", "true", done
-        initially
-          status is "needs review"
-        always
-          status is "needs review" or status is "true" or status is done
-        action set(target is one of "needs review", "true", done)
-          status becomes target
-        scenario "Quoted arguments"
-          set with target = "needs review"
-          set("true")
-          expect status is "true"
-    "#,
-    )
-    .expect("spec parses");
-    let result = verify(&spec).expect("quoted enum values verify");
-    assert_eq!(
-        result.scenarios[0].calls[0].display(),
-        "set(\"needs review\")"
+fn hostile_input_is_rejected_without_panicking() {
+    let deep = format!(
+        "system \"S\"\nstate\n  x is a boolean\ninitially\n  x is false\nalways\n  {}x{}\n",
+        "(".repeat(10_000),
+        ")".repeat(10_000)
     );
-    assert_eq!(result.scenarios[0].calls[1].display(), "set(\"true\")");
-}
-
-#[test]
-fn short_circuiting_does_not_hide_static_type_errors() {
-    let spec = parse_spec(
-        r#"
-        system "Static short circuit"
-        state
-          count is an integer from 0 to 0
-        initially
-          count is 0
-        always count is 0 or true + 1 is 2
-    "#,
-    )
-    .expect("spec parses");
-    let message = verify(&spec)
-        .expect_err("right side is ill typed")
-        .to_string();
-    assert!(message.contains("expected an integer"), "{message}");
-}
-
-#[test]
-fn expression_keywords_cannot_be_unreferenceable_field_names() {
-    for keyword in ["true", "not", "and", "plus"] {
-        let source = format!(
-            "system \"Reserved names\"\nstate\n  {keyword} is a boolean\ninitially\n  {keyword} is false\n"
-        );
-        let message = parse(&source)
-            .expect_err("reserved field name must be rejected")
-            .to_string();
-        assert!(message.contains("reserved for expressions"), "{message}");
+    assert_eq!(failure(&deep).kind, ErrorKind::Spec);
+    for source in [
+        "",
+        "\u{0}",
+        "system",
+        "system \"",
+        "action",
+        "💥",
+        "state\n\tx",
+    ] {
+        let _ = check(source);
     }
-}
-
-#[test]
-fn signed_integer_literals_cover_the_complete_domain() {
-    let spec = parse_spec(
-        r#"
-        system "Integer boundaries"
-        state
-          floor is an integer from -9223372036854775808 to -9223372036854775808
-          ceiling is an integer from 9223372036854775807 to 9223372036854775807
-        initially
-          floor is -9223372036854775808
-          ceiling is 9223372036854775807
-        always
-          floor is -9223372036854775808 and ceiling is 9223372036854775807
-    "#,
-    )
-    .expect("both signed 64-bit boundaries parse");
-    let result = verify(&spec).expect("boundary values verify");
-    assert_eq!(result.states.len(), 1);
-
-    let overflow = parse_spec(
-        r#"
-        system "Integer overflow"
-        state
-          count is an integer from 0 to 1
-        initially
-          count is 9223372036854775808
-    "#,
-    );
-    assert!(
-        overflow.is_err(),
-        "a positive value above i64::MAX must be rejected"
-    );
 }

@@ -1,0 +1,25 @@
+system "Background job that can hang"
+
+# Like examples/job.zin, but a crashed job goes back to the queue forever and
+# a worker may keep heartbeating without ever finishing.
+
+state
+  status is one of queued, running, succeeded
+
+initially
+  status is queued
+
+eventually
+  status is succeeded
+
+fair action start
+  requires status is queued
+  status becomes running
+
+fair action succeed
+  requires status is running
+  status becomes succeeded
+
+action crash
+  requires status is running
+  status becomes queued

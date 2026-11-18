@@ -1,0 +1,31 @@
+system "Shared counter"
+
+# Two workers each add one to a shared counter by reading it, then writing
+# back what they read plus one. Nothing stops them from interleaving.
+
+types
+  worker is one of alice, bob
+  phase is one of idle, holding, done
+
+state
+  counter is an integer from 0 to 2
+  seen is a map from worker to an integer from 0 to 2
+  at is a map from worker to phase
+
+initially
+  counter is 0
+  seen of every worker is 0
+  at of every worker is idle
+
+always
+  (every w in worker satisfies at of w is done) implies counter is 2
+
+action read(w is a worker)
+  requires at of w is idle
+  seen of w becomes counter
+  at of w becomes holding
+
+action write(w is a worker)
+  requires at of w is holding
+  counter becomes seen of w + 1
+  at of w becomes done
