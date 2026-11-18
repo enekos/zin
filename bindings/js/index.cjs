@@ -122,7 +122,7 @@ function loadPlan(spec, options = {}) {
     if (error.code === "ENOENT") {
       const hint = stale ? `${basename(sibling)} is out of date and ` : "";
       throw new PlanError(
-        `${hint}the zin binary was not found. Install it (cargo install zin), set ZIN_BIN, ` +
+        `${hint}the zin binary was not found. Install it (cargo install zin-spec), set ZIN_BIN, ` +
           `or commit a plan: zin plan ${path} --out ${sibling}`,
       );
     }

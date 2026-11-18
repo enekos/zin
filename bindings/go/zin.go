@@ -232,7 +232,7 @@ func LoadPlan(spec string, options ...Option) (*Plan, error) {
 	resolved, err := exec.LookPath(binary)
 	if err != nil {
 		return nil, fmt.Errorf(
-			"zin: %sthe zin binary was not found. Install it (cargo install zin), set ZIN_BIN, or commit a plan: zin plan %s --out %s",
+			"zin: %sthe zin binary was not found. Install it (cargo install zin-spec), set ZIN_BIN, or commit a plan: zin plan %s --out %s",
 			stale, spec, sibling)
 	}
 	command := exec.Command(resolved, "plan", spec, "--cover", settings.cover)

@@ -126,7 +126,7 @@ def load_plan(
     if not binary:
         hint = f"{sibling.name} is out of date and " if stale else ""
         raise PlanError(
-            f"{hint}the zin binary was not found. Install it (cargo install zin), set ZIN_BIN, "
+            f"{hint}the zin binary was not found. Install it (cargo install zin-spec), set ZIN_BIN, "
             f"or commit a plan: zin plan {spec} --out {sibling}"
         )
     try:
