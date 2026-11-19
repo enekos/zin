@@ -22,7 +22,8 @@ The plan comes from the `zin` binary (`ZIN_BIN` or `PATH`) or from a committed
 [conformance testing](https://github.com/enekos/zin/blob/main/docs/conformance.md).
 
 API: `verify`, `check`, `loadPlan`, `runTest`, `Recorder`, `Rejected`,
-`Divergence`, `PlanError`.
+`Divergence`, `PlanError`. `zin-verify/recorder` exports the `Recorder` alone,
+with no Node.js dependency, for recording in a browser.
 
 For an implementation that reaches its new state after the action returns,
 give the adapter a `settle()` and pass `{ observeTimeout: 2000 }`; see

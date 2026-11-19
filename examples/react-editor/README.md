@@ -3,15 +3,16 @@
 `src/Editor.tsx` is a small form: edit a quantity, save it, keep editing
 while the save is in flight. [`../editor.zin`](../editor.zin) says what it
 must do, including what happens when the server answers late or fails. The
-same specification drives two test suites, and neither contains a written
+same specification drives three test suites, and none contains a written
 test case:
 
 | Suite | Runs | Implementation under test |
 | --- | --- | --- |
 | `tests/Editor.test.tsx` | Vitest, jsdom, Testing Library | the component, `fetch` stubbed |
 | `e2e/editor.spec.ts` | Playwright, Chromium | the application served by Vite, requests held by a `gate` |
+| `e2e/session.spec.ts` | Playwright, Chromium | the same application, clicked at random; the page records what it did and `zin trace` checks the log |
 
-Both replay the derived plan: 36 states, every transition, every refused
+The first two replay the derived plan: 36 states, every transition, every refused
 action in every state, with the server's answers ordered by the plan.
 
 ```sh

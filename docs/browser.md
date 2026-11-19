@@ -180,6 +180,39 @@ integration matters: routing, real requests, focus, what the bundle actually
 ships. [`examples/react-editor`](../examples/react-editor) has both against
 one React application.
 
+## Sessions nobody scripted
+
+A plan visits what the model says is reachable. The other direction is to
+let the page run (a random walk, an end-to-end suite you already have, a
+staging session) and ask afterwards whether what happened is a behavior of the
+specification. `zin-verify/recorder` is the `Recorder` with no Node.js
+dependency, so the page itself can keep the log:
+
+```tsx
+import { Recorder } from "zin-verify/recorder";
+
+const session = new Recorder();          // or new Recorder((line) => send(line))
+<Editor onEvent={(action) => session.event(action)} />
+```
+
+Record an action where it takes effect: the click handler for the user's
+actions, the resolved request for the server's. Then check the log:
+
+```sh
+zin trace editor.zin session.jsonl
+```
+
+```
+violation: trace line 10: the implementation accepted save, but the
+specification rejects it in state draft=2, saved=1, sent=2, status=saving
+```
+
+`e2e/session.spec.ts` in the example clicks 150 random enabled buttons against
+a server that answers late and fails one time in four, reads
+`session.text()` from the page and runs `zin trace` on it. Pass
+`{ state: {...} }` to `event` to have the state compared as well; see
+[checking recorded executions](conformance.md#checking-recorded-executions).
+
 ## Cost
 
 A step is a click and a few reads: a few milliseconds against a local page.

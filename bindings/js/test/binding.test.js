@@ -142,6 +142,34 @@ test("Recorder output is accepted by zin trace", async () => {
   assert.match(bad.stderr, /trace line 6/);
 });
 
+test("zin-verify/recorder runs without Node.js and matches its CommonJS twin", async () => {
+  // Everything between the header comment and the export line.
+  const body = (file) => {
+    const source = readFileSync(new URL(file, import.meta.url), "utf8");
+    return source.slice(source.indexOf("/** Maps"), source.lastIndexOf("\n", source.length - 2));
+  };
+  assert.equal(body("../recorder.js"), body("../recorder.cjs"));
+  assert.doesNotMatch(readFileSync(new URL("../recorder.js", import.meta.url), "utf8"), /require\(|from "|node:/);
+
+  const { Recorder: Plain } = await import("zin-verify/recorder");
+  const recorder = new Plain();
+  recorder.event("deposit", { amount: 5 }, { state: { balance: 5, owners: new Map([["a", 1]]) } });
+  recorder.event("close", [], { accepted: false });
+  recorder.reset();
+  assert.equal(recorder.lines.length, 3);
+  assert.equal(
+    recorder.text(),
+    '{"action":"deposit","args":{"amount":5},"outcome":"accepted","state":{"balance":5,"owners":{"a":1}}}\n' +
+      '{"action":"close","args":[],"outcome":"rejected"}\n{"reset":true}\n',
+  );
+  const streamed = [];
+  new Plain((line) => streamed.push(line)).event("close");
+  assert.equal(streamed.length, 1);
+  const kept = new Recorder();
+  kept.event("close");
+  assert.equal(kept.text(), '{"action":"close","args":[],"outcome":"accepted"}\n');
+});
+
 // A light that takes a moment to change, as a rendered interface does.
 const LIGHT = {
   zin: "plan/1",

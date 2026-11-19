@@ -85,11 +85,14 @@ export function check(spec: string | URL, factory: Factory, options?: PlanOption
 export function verify(spec: string | URL, factory: Factory, options?: VerifyOptions): Plan;
 
 export class Recorder {
-  constructor(target: string | URL | ((line: string) => void));
+  /** A file to append to, a function that receives each line, or nothing to keep the lines in `lines`. */
+  constructor(target?: string | URL | ((line: string) => void));
+  readonly lines: string[];
   event(
     action: string,
     args?: Scalar[] | Record<string, Scalar>,
     options?: { accepted?: boolean; state?: Observed },
   ): void;
   reset(): void;
+  text(): string;
 }

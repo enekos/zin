@@ -13,27 +13,37 @@ async function putQuantity(quantity: number): Promise<boolean> {
   return response.ok;
 }
 
-/** The implementation of ../../editor.zin: edit a quantity, save it, keep editing while it saves. */
-export function Editor() {
+/**
+ * The implementation of ../../editor.zin: edit a quantity, save it, keep editing while it saves.
+ * `onEvent` hears every action of the specification as it takes effect.
+ */
+export function Editor({ onEvent }: { onEvent?: (action: string) => void }) {
   const [draft, setDraft] = useState(0);
   const [saved, setSaved] = useState(0);
   const [status, setStatus] = useState<Status>("idle");
 
+  function change(by: number, action: string) {
+    setDraft(draft + by);
+    onEvent?.(action);
+  }
+
   async function save() {
     const sent = draft;
     setStatus("saving");
+    onEvent?.("save");
     const ok = await putQuantity(sent).catch(() => false);
+    onEvent?.(ok ? "server_ok" : "server_fails");
     if (ok) setSaved(sent);
     setStatus(ok ? "idle" : "failed");
   }
 
   return (
     <main>
-      <button aria-label="Less" disabled={draft === 0} onClick={() => setDraft(draft - 1)}>
+      <button aria-label="Less" disabled={draft === 0} onClick={() => change(-1, "decrease")}>
         −
       </button>
       <span data-testid="draft">{draft}</span>
-      <button aria-label="More" disabled={draft === MAXIMUM} onClick={() => setDraft(draft + 1)}>
+      <button aria-label="More" disabled={draft === MAXIMUM} onClick={() => change(1, "increase")}>
         +
       </button>
       <button disabled={status === "saving" || draft === saved} onClick={save}>

@@ -248,7 +248,8 @@ object per line:
 
 The log must be a **linearized** history of one instance of the system: the
 order in the file is the order in which the calls took effect. `Recorder` in
-the Python and JavaScript bindings writes this format.
+the Python and JavaScript bindings writes this format; `zin-verify/recorder`
+is the same recorder for code that runs in a browser.
 
 ## Auditing the specification
 

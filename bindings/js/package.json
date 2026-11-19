@@ -36,6 +36,16 @@
         "types": "./playwright.d.cts",
         "default": "./playwright.cjs"
       }
+    },
+    "./recorder": {
+      "import": {
+        "types": "./recorder.d.ts",
+        "default": "./recorder.js"
+      },
+      "require": {
+        "types": "./recorder.d.cts",
+        "default": "./recorder.cjs"
+      }
     }
   },
   "files": [
@@ -47,6 +57,10 @@
     "playwright.cjs",
     "playwright.d.ts",
     "playwright.d.cts",
+    "recorder.js",
+    "recorder.cjs",
+    "recorder.d.ts",
+    "recorder.d.cts",
     "LICENSE"
   ],
   "scripts": {

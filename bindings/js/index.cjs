@@ -19,6 +19,9 @@ const { execFileSync } = require("node:child_process");
 const { appendFileSync, existsSync, readFileSync } = require("node:fs");
 const { basename } = require("node:path");
 const { fileURLToPath } = require("node:url");
+const recorder = require("./recorder.cjs");
+
+const { plain } = recorder;
 
 const PLAN_FORMAT = "plan/1";
 // How many of the latest steps a report lists before eliding earlier ones.
@@ -140,16 +143,6 @@ function loadPlan(spec, options = {}) {
     throw new PlanError(`${binary} produced ${plan.zin}, but this package reads ${PLAN_FORMAT}`);
   }
   return plan;
-}
-
-function plain(value) {
-  if (value instanceof Map) {
-    return Object.fromEntries([...value].map(([key, item]) => [String(key), plain(item)]));
-  }
-  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, plain(item)]));
-  }
-  return value;
 }
 
 function show(value) {
@@ -363,21 +356,14 @@ function verify(spec, factory, options = {}) {
 }
 
 /** Writes the JSON-lines event log that `zin trace <spec> <log>` checks. */
-class Recorder {
+/** The recorder, which here also appends to a file given by path or URL. */
+class Recorder extends recorder.Recorder {
   constructor(target) {
-    this.write =
-      typeof target === "function" ? target : (line) => appendFileSync(toPath(target), line);
-  }
-
-  event(action, args = [], { accepted = true, state } = {}) {
-    const record = { action, args: plain(args), outcome: accepted ? "accepted" : "rejected" };
-    if (state !== undefined) record.state = plain(state);
-    this.write(`${JSON.stringify(record)}\n`);
-  }
-
-  /** Marks the start of a new run from the initial state. */
-  reset() {
-    this.write('{"reset":true}\n');
+    super(
+      target === undefined || typeof target === "function"
+        ? target
+        : (line) => appendFileSync(toPath(target), line),
+    );
   }
 }
 
