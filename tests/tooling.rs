@@ -394,6 +394,8 @@ fn scaffolds_name_every_action() {
         Framework::Jest,
         Framework::Vitest,
         Framework::Node,
+        Framework::Playwright,
+        Framework::TestingLibrary,
         Framework::Go,
         Framework::Rust,
     ] {
@@ -403,6 +405,34 @@ fn scaffolds_name_every_action() {
         }
         assert!(text.contains("account.zin"), "{framework:?}");
     }
+}
+
+#[test]
+fn browser_scaffolds_use_their_own_entry_points() {
+    let model = verified(ACCOUNT).model;
+    let playwright = scaffold(&model, "account.zin", Framework::Playwright);
+    assert!(
+        playwright.contains("from \"zin-verify/playwright\""),
+        "{playwright}"
+    );
+    assert!(playwright.contains("async ({ page }) =>"), "{playwright}");
+    assert!(
+        playwright.contains("async deposit({ amount })"),
+        "{playwright}"
+    );
+    assert!(playwright.ends_with("}, { test });\n"), "{playwright}");
+
+    let component = scaffold(&model, "account.zin", Framework::TestingLibrary);
+    assert!(component.contains("@testing-library/react"), "{component}");
+    assert!(
+        component.contains("join(import.meta.dirname, \"account.zin\")"),
+        "{component}"
+    );
+    assert!(component.contains("      close() {"), "{component}");
+    assert_eq!(
+        cli(&["init", "testing-library", "examples/account.zin"]).code,
+        0
+    );
 }
 
 fn cli(args: &[&str]) -> zin::cli::Output {

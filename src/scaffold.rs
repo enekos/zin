@@ -9,12 +9,15 @@ pub enum Framework {
     Jest,
     Vitest,
     Node,
+    Playwright,
+    TestingLibrary,
     Go,
     Rust,
 }
 
 impl Framework {
-    pub const NAMES: &'static str = "pytest, unittest, jest, vitest, node, go, rust";
+    pub const NAMES: &'static str =
+        "pytest, unittest, jest, vitest, node, playwright, testing-library, go, rust";
 
     pub fn parse(name: &str) -> Result<Self> {
         match name {
@@ -23,6 +26,8 @@ impl Framework {
             "jest" => Ok(Self::Jest),
             "vitest" => Ok(Self::Vitest),
             "node" => Ok(Self::Node),
+            "playwright" => Ok(Self::Playwright),
+            "testing-library" => Ok(Self::TestingLibrary),
             "go" => Ok(Self::Go),
             "rust" => Ok(Self::Rust),
             other => Err(Error::usage(format!(
@@ -92,6 +97,8 @@ pub fn scaffold(model: &Model, spec_path: &str, framework: Framework) -> String 
         Framework::Jest | Framework::Vitest | Framework::Node => {
             javascript(model, spec_path, framework)
         }
+        Framework::Playwright => playwright(model, spec_path),
+        Framework::TestingLibrary => testing_library(model, spec_path),
         Framework::Go => go(model, spec_path),
         Framework::Rust => rust(model, spec_path),
     }
@@ -149,6 +156,18 @@ fn javascript(model: &Model, spec_path: &str, framework: Framework) -> String {
         "verify(new URL(\"./{spec_path}\", import.meta.url), () => {{"
     );
     out.push_str("  // Runs before every generated test: build a fresh implementation.\n  const impl = null;\n  return {\n    actions: {\n");
+    javascript_actions(&mut out, model, false, "on impl");
+    let _ = writeln!(
+        out,
+        "    }},\n    // Errors that mean \"the implementation refused this action\".\n    rejects: (error) => error instanceof RangeError,\n    // Return any subset of the specification's state: {}\n    observe: () => ({{}}),\n  }};\n}}{hooks});",
+        field_names(model)
+    );
+    out
+}
+
+/// The `actions` entries of a JavaScript adapter: one failing stub per action.
+fn javascript_actions(out: &mut String, model: &Model, asynchronous: bool, hint: &str) {
+    let keyword = if asynchronous { "async " } else { "" };
     for action in &model.actions {
         let arguments = params(action);
         let signature = if arguments.is_empty() {
@@ -158,14 +177,53 @@ fn javascript(model: &Model, spec_path: &str, framework: Framework) -> String {
         };
         let _ = writeln!(
             out,
-            "      {}({signature}) {{\n        throw new Error(\"perform {} on impl\");\n      }},",
+            "      {keyword}{}({signature}) {{\n        throw new Error(\"perform {} {hint}\");\n      }},",
             identifier(&action.name),
             action.name
         );
     }
+}
+
+fn playwright(model: &Model, spec_path: &str) -> String {
+    let mut out = String::from(
+        "import { test } from \"@playwright/test\";\nimport { verify, click } from \"zin-verify/playwright\";\n\n",
+    );
     let _ = writeln!(
         out,
-        "    }},\n    // Errors that mean \"the implementation refused this action\".\n    rejects: (error) => error instanceof RangeError,\n    // Return any subset of the specification's state: {}\n    observe: () => ({{}}),\n  }};\n}}{hooks});",
+        "verify(new URL(\"./{spec_path}\", import.meta.url), async ({{ page }}) => {{"
+    );
+    out.push_str(
+        "  // Runs before every generated test, and again to replay a failure:\n  // start the application from scratch.\n  await page.goto(\"/\");\n  // For actions that are the server's answer, hold the requests (import gate):\n  //   const server = await gate(page, \"**/api/...\");\n  //   save: () => server.request(() => click(...)),\n  //   server_ok: () => server.fulfill({ status: 200 }),\n  return {\n    actions: {\n      // click(locator) and fill(locator, value) refuse the action when the\n      // control is missing, hidden or disabled.\n",
+    );
+    javascript_actions(
+        &mut out,
+        model,
+        true,
+        "on the page: await click(page.getByRole('button', { name: '...' }))",
+    );
+    let _ = writeln!(
+        out,
+        "    }},\n    // Read from the page any subset of the specification's state: {}\n    observe: async () => ({{}}),\n    // teardown: () => server.dispose(),\n  }};\n}}, {{ test }});",
+        field_names(model)
+    );
+    out
+}
+
+fn testing_library(model: &Model, spec_path: &str) -> String {
+    let mut out = String::from(
+        "// TypeScript with JSX (.test.tsx), for Vitest with the jsdom environment.\nimport { join } from \"node:path\";\nimport { cleanup, fireEvent, render, screen } from \"@testing-library/react\";\nimport { describe, test } from \"vitest\";\nimport { Rejected, verify } from \"zin-verify\";\n\n/** Clicks as a user would: a disabled control refuses the action. */\nfunction press(name: string) {\n  const button = screen.getByRole<HTMLButtonElement>(\"button\", { name });\n  if (button.disabled) throw new Rejected();\n  fireEvent.click(button);\n}\n\n",
+    );
+    let _ = writeln!(
+        out,
+        "verify(join(import.meta.dirname, \"{spec_path}\"), () => {{"
+    );
+    out.push_str(
+        "  // Runs before every generated test: render a fresh component.\n  // render(<Component />);\n  return {\n    actions: {\n",
+    );
+    javascript_actions(&mut out, model, false, "on the component: press('...')");
+    let _ = writeln!(
+        out,
+        "    }},\n    // Read from the screen any subset of the specification's state: {}\n    observe: () => ({{}}),\n    teardown: cleanup,\n  }};\n}}, {{ describe, test }});",
         field_names(model)
     );
     out

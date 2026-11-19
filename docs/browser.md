@@ -42,6 +42,9 @@ deterministically, with no sleeping and no luck. The full specification is
 
 ## The adapter
 
+`zin init playwright <spec>` prints this skeleton for your specification, and
+`zin init testing-library <spec>` the one for a component test.
+
 ```js
 import { test } from "@playwright/test";
 import { verify, click, gate } from "zin-verify/playwright";

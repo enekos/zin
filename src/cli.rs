@@ -25,7 +25,8 @@ usage:
   zin trace <spec> <events.jsonl|->     check a recorded execution against the specification
   zin audit <spec>                      mutate the specification; list changes nothing notices
   zin init <framework> <spec>           print a conformance test skeleton
-                                        (pytest, unittest, jest, vitest, node, go, rust)
+                                        (pytest, unittest, jest, vitest, node, playwright,
+                                        testing-library, go, rust)
   zin report <spec>                     Markdown report with Mermaid diagrams
   zin diagram <spec> [scenario]         Mermaid state diagram, or one scenario's sequence diagram
 
