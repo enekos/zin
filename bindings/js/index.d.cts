@@ -63,7 +63,8 @@ export interface RunOptions {
   step?: <T>(text: string, body: () => Promise<T>) => Awaitable<T>;
 }
 
-type Register = (name: string, body: () => unknown) => unknown;
+// `any`, so that a framework's own `describe` and `test` types fit whatever they expect a body to return.
+type Register = (name: string, body: () => any) => unknown;
 
 export interface VerifyOptions extends PlanOptions, RunOptions {
   describe?: Register;
