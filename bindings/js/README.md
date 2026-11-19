@@ -24,6 +24,10 @@ The plan comes from the `zin` binary (`ZIN_BIN` or `PATH`) or from a committed
 API: `verify`, `check`, `loadPlan`, `runTest`, `Recorder`, `Rejected`,
 `Divergence`, `PlanError`.
 
+For an implementation that reaches its new state after the action returns,
+give the adapter a `settle()` and pass `{ observeTimeout: 2000 }`; see
+[implementations that settle later](https://github.com/enekos/zin/blob/main/docs/conformance.md#implementations-that-settle-later).
+
 ## Jest
 
 Install from a checkout (the package is not published on npm yet):

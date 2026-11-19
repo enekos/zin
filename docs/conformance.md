@@ -103,6 +103,24 @@ scenario and tour is collected as its own native Jest test, with a fresh
 adapter and awaited cleanup. ESM Jest projects need Jest's VM-module setup;
 see the [complete Jest setup and example](../bindings/js/README.md#jest).
 
+#### Implementations that settle later
+
+A synchronous implementation is in its new state when the action returns. One
+that is not (a rendered interface, a queue, anything behind a network) gets
+two tools, both off by default:
+
+- `settle` on the adapter is awaited after every action, before the state is
+  observed. Wait there for whatever "at rest" means: no request in flight, a
+  job drained.
+- `observeTimeout` (milliseconds) keeps calling `observe` until the state
+  matches the specification, and fails with the last observation when it never
+  does: `verify(spec, factory, { observeTimeout: 2000 })`.
+
+`observeTimeout` cannot notice a state that changes *after* it matched, so a
+rejected call that takes effect late needs `settle`. `maxSteps` passes
+`--max-steps` to `zin plan`, and `step: (text, body) => body()` wraps every
+step for frameworks that report steps.
+
 ### Go
 
 ```go

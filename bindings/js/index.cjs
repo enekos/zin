@@ -23,6 +23,8 @@ const { fileURLToPath } = require("node:url");
 const PLAN_FORMAT = "plan/1";
 // How many of the latest steps a report lists before eliding earlier ones.
 const LISTED_STEPS = 8;
+// Pause between two observations while waiting for the expected state.
+const OBSERVE_INTERVAL_MS = 20;
 
 /** Throw from an action to say the implementation refused it. */
 class Rejected extends Error {
@@ -105,15 +107,20 @@ function loadPlan(spec, options = {}) {
   }
   const sibling = path.replace(/\.[^./\\]+$/, "") + ".plan.json";
   let stale = false;
+  const maxSteps = options.maxSteps;
+  if (maxSteps !== undefined && !(Number.isInteger(maxSteps) && maxSteps > 0)) {
+    throw new PlanError(`maxSteps must be a positive integer, not ${maxSteps}`);
+  }
   if (existsSync(sibling)) {
     const plan = readPlan(sibling);
     if (plan.fingerprint === wanted && plan.cover === cover) return plan;
     stale = true;
   }
   const binary = options.bin || process.env.ZIN_BIN || "zin";
+  const limit = maxSteps === undefined ? [] : ["--max-steps", String(maxSteps)];
   let output;
   try {
-    output = execFileSync(binary, ["plan", path, "--cover", cover], {
+    output = execFileSync(binary, ["plan", path, "--cover", cover, ...limit], {
       encoding: "utf8",
       maxBuffer: 1024 * 1024 * 1024,
       stdio: ["ignore", "pipe", "pipe"],
@@ -123,7 +130,7 @@ function loadPlan(spec, options = {}) {
       const hint = stale ? `${basename(sibling)} is out of date and ` : "";
       throw new PlanError(
         `${hint}the zin binary was not found. Install it (cargo install zin-spec), set ZIN_BIN, ` +
-          `or commit a plan: zin plan ${path} --out ${sibling}`,
+          `or commit a plan: zin plan ${path} --out ${sibling}${limit.length ? ` ${limit.join(" ")}` : ""}`,
       );
     }
     throw new PlanError(`zin plan ${path} failed:\n${String(error.stderr ?? error.message).trim()}`);
@@ -165,9 +172,14 @@ function same(expected, observed) {
   return expected === observed;
 }
 
+const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
 class Runner {
-  constructor(plan) {
+  constructor(plan, options = {}) {
     this.plan = plan;
+    this.step = options.step ?? ((_text, body) => body());
+    this.observeTimeout = options.observeTimeout ?? 0;
+    this.observeInterval = options.observeInterval ?? OBSERVE_INTERVAL_MS;
     this.params = new Map(
       plan.actions.map((action) => [action.name, action.params.map((param) => param.name)]),
     );
@@ -187,23 +199,39 @@ class Runner {
     return lines.join("\n");
   }
 
-  async compare(adapter, state, after) {
-    if (typeof adapter.observe !== "function") return null;
+  /** One observation: `{ message, waitable }`; only a wrong value can still become right. */
+  async mismatch(adapter, state, after) {
     const observed = await adapter.observe();
     if (observed === null || observed === undefined) return null;
     if (typeof observed !== "object") {
-      return `observe() must return an object of state fields, not ${typeof observed}`;
+      return { message: `observe() must return an object of state fields, not ${typeof observed}` };
     }
     const expected = this.plan.states[state];
     for (const [field, raw] of Object.entries(plain(observed))) {
       if (!(field in expected)) {
-        return `observe() returned '${field}', which is not a state field of the specification`;
+        return { message: `observe() returned '${field}', which is not a state field of the specification` };
       }
       if (!same(expected[field], raw)) {
-        return `${after}, ${field} is ${show(raw)}, but the specification says ${show(expected[field])}`;
+        return {
+          message: `${after}, ${field} is ${show(raw)}, but the specification says ${show(expected[field])}`,
+          waitable: true,
+        };
       }
     }
     return null;
+  }
+
+  /** Compares what the adapter observes with a model state, waiting up to `observeTimeout` for it to match. */
+  async compare(adapter, state, after) {
+    if (typeof adapter.observe !== "function") return null;
+    const deadline = Date.now() + this.observeTimeout;
+    for (;;) {
+      const found = await this.mismatch(adapter, state, after);
+      if (found === null) return null;
+      if (!found.waitable || this.observeTimeout <= 0) return found.message;
+      if (Date.now() >= deadline) return `${found.message} (waited ${this.observeTimeout} ms)`;
+      await sleep(this.observeInterval);
+    }
   }
 
   async perform(adapter, call) {
@@ -228,19 +256,21 @@ class Runner {
     let message = await this.compare(adapter, 0, "before any action");
     if (message) return [0, message];
     let state = 0;
-    for (const [index, [callId, to]] of steps.entries()) {
+    for (const [index, step] of steps.entries()) {
+      const [callId, to] = step;
       const call = this.plan.calls[callId];
-      const accepted = await this.perform(adapter, call);
-      if (to >= 0 && accepted) {
-        state = to;
-        message = await this.compare(adapter, state, `after ${call.text}`);
-      } else if (to < 0 && !accepted) {
-        message = await this.compare(adapter, state, `after rejecting ${call.text}`);
-      } else if (accepted) {
-        message = `the implementation accepted ${call.text}, but the specification rejects it`;
-      } else {
-        message = `the implementation rejected ${call.text}, but the specification allows it`;
-      }
+      message = await this.step(this.text(step), async () => {
+        const accepted = await this.perform(adapter, call);
+        if (typeof adapter.settle === "function") await adapter.settle();
+        if (to >= 0 && accepted) {
+          state = to;
+          return this.compare(adapter, state, `after ${call.text}`);
+        }
+        if (to < 0 && !accepted) return this.compare(adapter, state, `after rejecting ${call.text}`);
+        return accepted
+          ? `the implementation accepted ${call.text}, but the specification rejects it`
+          : `the implementation rejected ${call.text}, but the specification allows it`;
+      });
       if (message) return [index + 1, message];
     }
     return null;
@@ -295,14 +325,14 @@ class Runner {
 }
 
 /** Runs one plan test against fresh adapters from `factory`. */
-async function runTest(plan, test, factory) {
-  await new Runner(plan).check(test, factory);
+async function runTest(plan, test, factory, options = {}) {
+  await new Runner(plan, options).check(test, factory);
 }
 
 /** Runs every plan test; rejects with `Divergence` on the first failure. */
 async function check(spec, factory, options = {}) {
   const plan = loadPlan(spec, options);
-  const runner = new Runner(plan);
+  const runner = new Runner(plan, options);
   for (const test of plan.tests) {
     await runner.check(test, factory);
   }
@@ -323,7 +353,7 @@ function verify(spec, factory, options = {}) {
     );
   }
   const plan = loadPlan(spec, options);
-  const runner = new Runner(plan);
+  const runner = new Runner(plan, options);
   describe(options.name ?? `${plan.system} conforms to ${basename(toPath(spec))}`, () => {
     for (const planTest of plan.tests) {
       test(planTest.name, () => runner.check(planTest, factory));
