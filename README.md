@@ -11,7 +11,7 @@ behavioral contract, and the `zin` tool does three things with it:
 2. **Turns it into tests.** From the proven model, Zin derives a test plan that
    exercises every transition and every refusal, and runs it inside the test
    framework you already use: pytest, unittest, Jest, Vitest, `node:test`,
-   Mocha, `go test`, `cargo test`.
+   Mocha, Playwright, `go test`, `cargo test`.
 3. **Keeps it honest.** `zin audit` mutates the specification to show which
    rules nothing checks; `zin trace` checks logs of real executions against it.
 
@@ -240,7 +240,7 @@ input could not be used.
 ```sh
 cargo install zin-spec            # the zin binary (Rust 1.85+); crate zin-spec, library `zin`
 pip install zin-verify            # pytest / unittest binding
-npm install --save-dev zin-verify # Jest, Vitest, node:test, Mocha; CommonJS + ESM, types included
+npm install --save-dev zin-verify # Jest, Vitest, node:test, Mocha, Playwright; CommonJS + ESM, types included
 go get github.com/enekos/zin/bindings/go
 ```
 
@@ -254,6 +254,7 @@ a committed `<spec>.plan.json` so test machines need no Rust toolchain.
 
 - [Language guide](docs/language.md): the complete grammar and semantics
 - [Conformance testing](docs/conformance.md): adapters, coverage, CI, traces
+- [Checking a web interface](docs/browser.md): Playwright, clicks, held requests
 - [Plan format](docs/plan-format.md): the JSON contract for writing a binding
 - [Design](docs/design.md): what is proven, what is not, and why it is built this way
 

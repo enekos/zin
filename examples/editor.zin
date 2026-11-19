@@ -1,0 +1,96 @@
+system "Quantity editor"
+
+# A form in a browser. The user edits a quantity and saves it; the server
+# answers later and may fail. Editing stays possible while a save is in
+# flight, so an answer can be about an older draft than the one on screen.
+# The server's answers are actions too: a test decides when each one arrives.
+
+types
+  quantity is an integer from 0 to 2
+
+state
+  draft is a quantity
+  saved is a quantity
+  sent is a quantity
+  status is one of idle, saving, failed
+
+initially
+  draft is 0
+  saved is 0
+  sent is 0
+  status is idle
+
+always
+  (status is saving) is (sent is not saved)
+
+sometimes
+  status is failed
+  status is saving and draft is not sent
+
+always possible draft is saved and status is idle
+
+whenever status is saving eventually status is not saving
+
+action increase
+  requires draft is less than 2
+  draft becomes draft + 1
+
+action decrease
+  requires draft is more than 0
+  draft becomes draft - 1
+
+action save
+  requires status is not saving
+  requires draft is not saved
+  sent becomes draft
+  status becomes saving
+
+fair action server_ok
+  requires status is saving
+  saved becomes sent
+  status becomes idle
+
+action server_fails
+  requires status is saving
+  sent becomes saved
+  status becomes failed
+
+scenario "Save a change"
+  reject save
+  reject server_ok
+  increase
+  save
+  reject save
+  server_ok
+  expect saved is 1 and status is idle
+  reject save
+
+scenario "An answer is about what was sent, not what is on screen"
+  increase
+  save
+  increase
+  server_ok
+  expect saved is 1 and draft is 2 and status is idle
+  save
+  server_ok
+  expect saved is 2
+
+scenario "A failed save can be retried"
+  increase
+  save
+  server_fails
+  expect saved is 0 and status is failed
+  reject server_fails
+  save
+  server_ok
+  expect saved is 1 and status is idle
+
+scenario "The quantity stays in range"
+  reject decrease
+  increase
+  increase
+  reject increase
+  decrease
+  expect draft is 1
+  decrease
+  reject decrease

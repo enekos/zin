@@ -103,6 +103,10 @@ scenario and tour is collected as its own native Jest test, with a fresh
 adapter and awaited cleanup. ESM Jest projects need Jest's VM-module setup;
 see the [complete Jest setup and example](../bindings/js/README.md#jest).
 
+For a page in a browser, `zin-verify/playwright` registers the plan with
+Playwright Test and adds helpers for clicks and held requests; see
+[checking a web interface](browser.md).
+
 #### Implementations that settle later
 
 A synchronous implementation is in its new state when the action returns. One

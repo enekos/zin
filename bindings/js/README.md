@@ -1,7 +1,7 @@
 # zin-verify (JavaScript / TypeScript)
 
 Run a [Zin](https://github.com/enekos/zin) specification as conformance tests
-in Jest, Vitest, `node:test` or Mocha. No runtime dependencies; CommonJS and ESM; types included.
+in Jest, Vitest, `node:test`, Mocha or Playwright. No runtime dependencies; CommonJS and ESM; types included.
 
 ```js
 import { describe, test } from "vitest"; // or node:test; omit for Jest/Mocha globals
@@ -27,6 +27,34 @@ API: `verify`, `check`, `loadPlan`, `runTest`, `Recorder`, `Rejected`,
 For an implementation that reaches its new state after the action returns,
 give the adapter a `settle()` and pass `{ observeTimeout: 2000 }`; see
 [implementations that settle later](https://github.com/enekos/zin/blob/main/docs/conformance.md#implementations-that-settle-later).
+
+## Playwright
+
+`zin-verify/playwright` runs the plan against a page: one Playwright test per
+scenario and tour, one `test.step` per step.
+
+```js
+import { test } from "@playwright/test";
+import { verify, click, gate } from "zin-verify/playwright";
+
+verify(new URL("./editor.zin", import.meta.url), async ({ page }) => {
+  const server = await gate(page, "**/api/quantity");
+  await page.goto("/");
+  return {
+    actions: {
+      save: () => server.request(() => click(page.getByRole("button", { name: "Save" }))),
+      server_ok: () => server.fulfill({ json: { ok: true } }),
+    },
+    observe: async () => ({ status: await page.getByRole("status").textContent() }),
+    teardown: () => server.dispose(),
+  };
+}, { test });
+```
+
+`click` and `fill` refuse an action a user could not perform (missing, hidden
+or disabled); `gate` holds requests so that the server's answer is a step of
+the plan. `@playwright/test` is an optional peer dependency. See
+[checking a web interface](https://github.com/enekos/zin/blob/main/docs/browser.md).
 
 ## Jest
 

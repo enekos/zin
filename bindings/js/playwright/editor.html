@@ -1,0 +1,46 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Quantity editor</title>
+<!-- The page under test: a hand-written implementation of examples/editor.zin.
+     ?bug=stale|double|silent switches on a defect the conformance tests must catch. -->
+<button id="less" aria-label="Less">−</button>
+<span data-testid="draft" id="draft">0</span>
+<button id="more" aria-label="More">+</button>
+<button id="save">Save</button>
+<p>Saved: <span data-testid="saved" id="saved">0</span></p>
+<p id="status" role="status">idle</p>
+<script>
+  const MAXIMUM = 2;
+  const bug = new URLSearchParams(location.search).get("bug");
+  const state = { draft: 0, saved: 0, status: "idle" };
+  const element = (id) => document.getElementById(id);
+
+  function render() {
+    element("draft").textContent = state.draft;
+    element("saved").textContent = state.saved;
+    element("status").textContent = state.status;
+    element("less").disabled = state.draft === 0;
+    element("more").disabled = state.draft === MAXIMUM;
+    element("save").disabled =
+      state.draft === state.saved || (state.status === "saving" && bug !== "double");
+  }
+
+  async function save() {
+    const sent = state.draft;
+    state.status = "saving";
+    render();
+    const response = await fetch("/api/quantity", { method: "PUT", body: JSON.stringify({ quantity: sent }) });
+    if (response.ok) {
+      state.saved = bug === "stale" ? state.draft : sent;
+      state.status = "idle";
+    } else {
+      state.status = bug === "silent" ? "idle" : "failed";
+    }
+    render();
+  }
+
+  element("less").addEventListener("click", () => { state.draft -= 1; render(); });
+  element("more").addEventListener("click", () => { state.draft += 1; render(); });
+  element("save").addEventListener("click", save);
+  render();
+</script>
