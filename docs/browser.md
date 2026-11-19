@@ -136,6 +136,47 @@ is what the model says about `server_ok` when nothing is being saved. Each
 takes a last argument `match` (a predicate on the request) to answer a
 particular request, for models in which answers overtake each other.
 
+## Components, without a browser
+
+The same specification checks a component in jsdom with the plain `verify`,
+at a fraction of the cost: the whole plan for the example runs in well under
+a second. Refusal is a disabled control, and the server is a stubbed `fetch`
+whose promises the adapter resolves:
+
+```tsx
+function press(name: string) {
+  const button = screen.getByRole<HTMLButtonElement>("button", { name });
+  if (button.disabled) throw new Rejected();
+  fireEvent.click(button);
+}
+
+verify(join(import.meta.dirname, "editor.zin"), () => {
+  const waiting: ((response: Response) => void)[] = [];
+  vi.stubGlobal("fetch", () => new Promise<Response>((resolve) => waiting.push(resolve)));
+  render(<Editor />);
+
+  async function answer(status: number) {
+    const resolve = waiting.shift();
+    if (!resolve) throw new Rejected();
+    await act(async () => resolve(new Response(null, { status })));
+  }
+
+  return {
+    actions: { save: () => press("Save"), server_ok: () => answer(204), server_fails: () => answer(500) },
+    observe: () => ({ status: screen.getByRole("status").textContent }),
+    teardown: () => { cleanup(); vi.unstubAllGlobals(); },
+  };
+}, { describe, test });
+```
+
+Under Vitest with jsdom, give the specification as a path: Vite resolves
+`new URL("./editor.zin", import.meta.url)` to an `http:` address there.
+
+Run the component suite on every change and the browser suite where the
+integration matters: routing, real requests, focus, what the bundle actually
+ships. [`examples/react-editor`](../examples/react-editor) has both against
+one React application.
+
 ## Cost
 
 A step is a click and a few reads: a few milliseconds against a local page.
