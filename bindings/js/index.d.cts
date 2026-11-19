@@ -9,6 +9,8 @@ export interface Adapter {
   rejects?: (error: unknown) => boolean;
   /** Any subset of the specification's state fields. */
   observe?: () => Awaitable<Observed | null | undefined>;
+  /** Awaited after every action, before the state is observed: wait here for the implementation to come to rest. */
+  settle?: () => Awaitable<void>;
   teardown?: () => Awaitable<void>;
 }
 
@@ -43,11 +45,28 @@ export interface PlanOptions {
   plan?: string | URL;
   /** Path of the `zin` binary; defaults to `$ZIN_BIN`, then `zin` on PATH. */
   bin?: string;
+  /** Step limit for generated tours, passed to `zin plan --max-steps`. A committed plan keeps the limit it was derived with. */
+  maxSteps?: number;
 }
 
-type Register = (name: string, body: () => unknown) => unknown;
+export interface RunOptions {
+  /**
+   * How long, in milliseconds, to keep observing until the state matches the
+   * specification. 0 (the default) observes once: right for synchronous
+   * implementations. Set it for one that settles on its own schedule, such as
+   * a rendered user interface.
+   */
+  observeTimeout?: number;
+  /** Pause between two observations, in milliseconds (default 20). */
+  observeInterval?: number;
+  /** Wraps every step, for frameworks that report steps; must return what `body` returns. */
+  step?: <T>(text: string, body: () => Promise<T>) => Awaitable<T>;
+}
 
-export interface VerifyOptions extends PlanOptions {
+// `any`, so that a framework's own `describe` and `test` types fit whatever they expect a body to return.
+type Register = (name: string, body: () => any) => unknown;
+
+export interface VerifyOptions extends PlanOptions, RunOptions {
   describe?: Register;
   test?: Register;
   it?: Register;
@@ -61,16 +80,19 @@ export class Divergence extends Error {}
 export class PlanError extends Error {}
 export function fingerprint(bytes: Uint8Array): string;
 export function loadPlan(spec: string | URL, options?: PlanOptions): Plan;
-export function runTest(plan: Plan, test: PlanTest, factory: Factory): Promise<void>;
-export function check(spec: string | URL, factory: Factory, options?: PlanOptions): Promise<Plan["summary"]>;
+export function runTest(plan: Plan, test: PlanTest, factory: Factory, options?: RunOptions): Promise<void>;
+export function check(spec: string | URL, factory: Factory, options?: PlanOptions & RunOptions): Promise<Plan["summary"]>;
 export function verify(spec: string | URL, factory: Factory, options?: VerifyOptions): Plan;
 
 export class Recorder {
-  constructor(target: string | URL | ((line: string) => void));
+  /** A file to append to, a function that receives each line, or nothing to keep the lines in `lines`. */
+  constructor(target?: string | URL | ((line: string) => void));
+  readonly lines: string[];
   event(
     action: string,
     args?: Scalar[] | Record<string, Scalar>,
     options?: { accepted?: boolean; state?: Observed },
   ): void;
   reset(): void;
+  text(): string;
 }

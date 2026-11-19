@@ -36,6 +36,13 @@ jobs:
         working-directory: bindings/js
         run: |
           npm ci
+          npx playwright install --with-deps --only-shell chromium
+          npm test
+      - name: React example
+        working-directory: examples/react-editor
+        run: |
+          npm ci
+          npx playwright install --with-deps --only-shell chromium
           npm test
       - uses: actions/setup-go@v5
         with:

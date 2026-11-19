@@ -103,6 +103,28 @@ scenario and tour is collected as its own native Jest test, with a fresh
 adapter and awaited cleanup. ESM Jest projects need Jest's VM-module setup;
 see the [complete Jest setup and example](../bindings/js/README.md#jest).
 
+For a page in a browser, `zin-verify/playwright` registers the plan with
+Playwright Test and adds helpers for clicks and held requests; see
+[checking a web interface](browser.md).
+
+#### Implementations that settle later
+
+A synchronous implementation is in its new state when the action returns. One
+that is not (a rendered interface, a queue, anything behind a network) gets
+two tools, both off by default:
+
+- `settle` on the adapter is awaited after every action, before the state is
+  observed. Wait there for whatever "at rest" means: no request in flight, a
+  job drained.
+- `observeTimeout` (milliseconds) keeps calling `observe` until the state
+  matches the specification, and fails with the last observation when it never
+  does: `verify(spec, factory, { observeTimeout: 2000 })`.
+
+`observeTimeout` cannot notice a state that changes *after* it matched, so a
+rejected call that takes effect late needs `settle`. `maxSteps` passes
+`--max-steps` to `zin plan`, and `step: (text, body) => body()` wraps every
+step for frameworks that report steps.
+
 ### Go
 
 ```go
@@ -226,7 +248,8 @@ object per line:
 
 The log must be a **linearized** history of one instance of the system: the
 order in the file is the order in which the calls took effect. `Recorder` in
-the Python and JavaScript bindings writes this format.
+the Python and JavaScript bindings writes this format; `zin-verify/recorder`
+is the same recorder for code that runs in a browser.
 
 ## Auditing the specification
 

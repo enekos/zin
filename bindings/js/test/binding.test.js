@@ -141,3 +141,97 @@ test("Recorder output is accepted by zin trace", async () => {
   assert.equal(bad.status, 1);
   assert.match(bad.stderr, /trace line 6/);
 });
+
+test("zin-verify/recorder runs without Node.js and matches its CommonJS twin", async () => {
+  // Everything between the header comment and the export line.
+  const body = (file) => {
+    const source = readFileSync(new URL(file, import.meta.url), "utf8");
+    return source.slice(source.indexOf("/** Maps"), source.lastIndexOf("\n", source.length - 2));
+  };
+  assert.equal(body("../recorder.js"), body("../recorder.cjs"));
+  assert.doesNotMatch(readFileSync(new URL("../recorder.js", import.meta.url), "utf8"), /require\(|from "|node:/);
+
+  const { Recorder: Plain } = await import("zin-verify/recorder");
+  const recorder = new Plain();
+  recorder.event("deposit", { amount: 5 }, { state: { balance: 5, owners: new Map([["a", 1]]) } });
+  recorder.event("close", [], { accepted: false });
+  recorder.reset();
+  assert.equal(recorder.lines.length, 3);
+  assert.equal(
+    recorder.text(),
+    '{"action":"deposit","args":{"amount":5},"outcome":"accepted","state":{"balance":5,"owners":{"a":1}}}\n' +
+      '{"action":"close","args":[],"outcome":"rejected"}\n{"reset":true}\n',
+  );
+  const streamed = [];
+  new Plain((line) => streamed.push(line)).event("close");
+  assert.equal(streamed.length, 1);
+  const kept = new Recorder();
+  kept.event("close");
+  assert.equal(kept.text(), '{"action":"close","args":[],"outcome":"accepted"}\n');
+});
+
+// A light that takes a moment to change, as a rendered interface does.
+const LIGHT = {
+  zin: "plan/1",
+  system: "Light",
+  actions: [{ name: "toggle", params: [] }, { name: "smash", params: [] }],
+  states: [{ lit: false }, { lit: true }],
+  parents: [null, [0, 0]],
+  calls: [
+    { action: "toggle", args: [], text: "toggle" },
+    { action: "smash", args: [], text: "smash" },
+  ],
+  tests: [{ name: "tour 1", kind: "tour", steps: [[0, 1], [1, -1], [0, 0]] }],
+};
+
+const slowLight = (delay, extra = {}) => () => {
+  let lit = false;
+  return {
+    actions: {
+      toggle: () => void setTimeout(() => { lit = !lit; }, delay),
+      smash: () => false,
+    },
+    observe: () => ({ lit }),
+    ...extra,
+  };
+};
+
+test("observeTimeout waits for an implementation that settles later", async () => {
+  await assert.rejects(runTest(LIGHT, LIGHT.tests[0], slowLight(30)), diverges(/after toggle, lit is false/));
+  await runTest(LIGHT, LIGHT.tests[0], slowLight(30), { observeTimeout: 2000, observeInterval: 5 });
+  await assert.rejects(
+    runTest(LIGHT, LIGHT.tests[0], slowLight(10_000), { observeTimeout: 60, observeInterval: 5 }),
+    diverges(/lit is false, but the specification says true \(waited 60 ms\)/),
+  );
+});
+
+test("a malformed observation fails at once instead of waiting", async () => {
+  const started = Date.now();
+  await assert.rejects(
+    runTest(LIGHT, LIGHT.tests[0], slowLight(0, { observe: () => ({ glow: 1 }) }), { observeTimeout: 5000 }),
+    diverges(/'glow', which is not a state field/),
+  );
+  assert.ok(Date.now() - started < 2000);
+});
+
+test("settle runs after every action and step wraps every step", async () => {
+  let settled = 0;
+  const steps = [];
+  const settling = slowLight(20, { settle: () => new Promise((resolve) => setTimeout(() => resolve(void settled++), 40)) });
+  await runTest(LIGHT, LIGHT.tests[0], settling, {
+    step: async (text, body) => {
+      steps.push(text);
+      return body();
+    },
+  });
+  assert.equal(settled, 3);
+  assert.deepEqual(steps, ["toggle", "reject smash", "toggle"]);
+});
+
+test("maxSteps shortens the generated tours", () => {
+  const longest = (plan) => Math.max(...plan.tests.map((item) => item.steps.length));
+  assert.equal(longest(loadPlan(ACCOUNT)), 200);
+  assert.ok(longest(loadPlan(ACCOUNT, { maxSteps: 40 })) < 60);
+  assert.throws(() => loadPlan(ACCOUNT, { maxSteps: 0 }), PlanError);
+  assert.throws(() => loadPlan(ACCOUNT, { maxSteps: 40, bin: "/nonexistent/zin" }), /--max-steps 40/);
+});
