@@ -49,9 +49,14 @@ scenarios, using the same idea as mutation testing of code.
   Such a path either ends in a state with nothing enabled, or enters a cycle.
   Cycles are found as strongly connected components of the not-`q` subgraph
   (iterative Tarjan). A component is a counterexample if it is **fair**: for
-  every fair call, the call is disabled in some state of the component or
-  taken on an edge inside it. The reported loop visits what is needed to
-  justify fairness.
+  every weakly fair call, the call is disabled in some state of the component
+  or taken on an edge inside it, and every strongly fair call enabled in the
+  component is taken inside it. A component that fails only the strong
+  condition may still hold a fair loop that avoids the states enabling the
+  starved calls, so those states are removed and the rest decomposed again
+  (Emerson–Lei); each round removes states, and a surviving component's set
+  of enabled strongly fair calls shrinks, so the rounds are few. The reported
+  loop visits what is needed to justify fairness.
 - Everything recursive over input is bounded (nesting depth, state count,
   transitions, calls), and limits fail loudly.
 
@@ -79,13 +84,14 @@ minimal, but linear-ish in practice and deterministic.
 - **Sequential conformance.** Interleavings are explored in the model;
   implementations are driven one call at a time. `zin trace` checks recorded
   concurrent runs after the fact if the log is linearized.
-- **Weak fairness only.** No strong fairness, no general temporal logic; the
-  property forms are fixed and each has a plain-English reading.
+- **Per-call fairness only.** Weak and strong fairness per call, no general
+  temporal logic; the property forms are fixed and each has a plain-English
+  reading.
 
 ## Roadmap
 
 - Bindings: JUnit 5, xUnit/.NET, RSpec, PHPUnit. Each is a plan replayer.
 - A pytest plugin and a Vitest reporter that show model coverage.
-- Strong fairness; symmetry reduction for maps keyed by interchangeable ids.
+- Symmetry reduction for maps keyed by interchangeable ids.
 - Composition: several `system`s with shared actions.
 - Refinement checking between two specifications.

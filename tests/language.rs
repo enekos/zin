@@ -89,6 +89,103 @@ action tick
 }
 
 #[test]
+fn strong_fairness_rules_out_starving_an_action_enabled_on_and_off() {
+    let source = include_str!("../examples/broken/stuck-job.zin");
+    let error = failure(source);
+    assert!(error.message.contains("can run forever"), "{error}");
+    let strong = source.replace("fair action succeed", "strongly fair action succeed");
+    check(&strong).unwrap();
+}
+
+#[test]
+fn strong_fairness_still_allows_a_cycle_that_never_enables_the_action() {
+    let error = failure(
+        r#"system "Detour"
+state
+  at is one of home, park, shop, done
+initially
+  at is home
+eventually
+  at is done
+action to_park
+  requires at is home
+  at becomes park
+action to_shop
+  requires at is home
+  at becomes shop
+action back
+  requires at is park or at is shop
+  at becomes home
+strongly fair action finish
+  requires at is shop
+  at becomes done
+"#,
+    );
+    assert!(error.message.contains("can run forever"), "{error}");
+    let trace = error.trace.expect("a counterexample");
+    let looped: Vec<&str> = trace
+        .steps
+        .iter()
+        .skip(trace.loop_from.expect("a loop"))
+        .map(|step| step.call.as_str())
+        .collect();
+    assert_eq!(looped, ["to_park", "back"], "{trace}");
+}
+
+#[test]
+fn strong_fairness_on_a_call_enabled_in_part_of_a_loop_forces_it() {
+    let source = |fairness: &str| {
+        format!(
+            r#"system "Doorbell"
+state
+  light is a boolean
+  answered is a boolean
+initially
+  light is false
+  answered is false
+eventually
+  answered
+terminal when answered
+fair action flicker
+  requires not answered
+  light becomes not light
+{fairness}action answer
+  requires light and not answered
+  answered becomes true
+"#
+        )
+    };
+    assert!(failure(&source("")).message.contains("can run forever"));
+    assert!(
+        failure(&source("fair "))
+            .message
+            .contains("can run forever")
+    );
+    check(&source("strongly fair ")).unwrap();
+}
+
+#[test]
+fn strongly_needs_fair_action() {
+    let error = failure(
+        r#"system "Typo"
+state
+  on is a boolean
+initially
+  on is false
+strongly action toggle
+  on becomes not on
+"#,
+    );
+    assert_eq!(error.line, Some(6));
+    assert!(
+        error
+            .message
+            .contains("expected 'strongly fair action <name>'"),
+        "{error}"
+    );
+}
+
+#[test]
 fn stopping_before_the_goal_violates_eventually() {
     let error = failure(
         r#"system "Stops short"
