@@ -43,6 +43,18 @@ scenarios, using the same idea as mutation testing of code.
   Exploration is breadth-first, so every safety counterexample is shortest.
 - `always` / `never` are checked as states are discovered and stop
   exploration at the first violation.
+- **Symmetry.** Values of an `interchangeable` type cannot be named, so
+  renaming them maps transitions to transitions and preserves every
+  property. Exploration stores only the lexicographically smallest renaming
+  of each state, found by trying every renaming (at most 8! = 40,320).
+  Safety, deadlock, `sometimes`, `always possible` and unfair liveness are
+  all invariant under renaming, so the reduced graph decides them exactly.
+  A counterexample on representatives is lifted back: each step finds a
+  renaming that takes the representative to the concrete state so far and
+  takes the renamed call; a loop that comes back to a renaming of its start
+  is unrolled until a concrete state recurs. Per-call fairness is not
+  invariant (a representative's edge stands for different calls along a
+  run), so liveness under fairness is checked on the full graph.
 - `always possible` is backward reachability from the goal states.
 - `eventually q` and `whenever p eventually q` reduce to: is there, from the
   initial state (or from a `p` state), a maximal path that stays outside `q`?
@@ -75,11 +87,13 @@ minimal, but linear-ish in practice and deterministic.
 
 - **Not a proof about code.** Conformance is exhaustive over the model's
   states and calls. It says nothing about inputs outside the modeled ranges
-  or state the model omits.
+  or state the model omits. Plans are derived from the full state space even
+  when the specification declares interchangeable values.
 - **Finite state only.** Bounded integers, booleans, enums, maps over them.
   No unbounded data, time, probability or floating point. Explicit-state
   exploration is practical to roughly millions of states; there is no
-  symbolic engine, symmetry reduction or partial-order reduction.
+  symbolic engine or partial-order reduction, and symmetry reduction covers
+  only fully interchangeable values.
 - **Deterministic actions.** Nondeterminism is expressed through parameters.
 - **Sequential conformance.** Interleavings are explored in the model;
   implementations are driven one call at a time. `zin trace` checks recorded
@@ -92,6 +106,5 @@ minimal, but linear-ish in practice and deterministic.
 
 - Bindings: JUnit 5, xUnit/.NET, RSpec, PHPUnit. Each is a plan replayer.
 - A pytest plugin and a Vitest reporter that show model coverage.
-- Symmetry reduction for maps keyed by interchangeable ids.
 - Composition: several `system`s with shared actions.
 - Refinement checking between two specifications.

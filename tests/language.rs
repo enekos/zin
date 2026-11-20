@@ -24,6 +24,7 @@ fn shipped_examples_verify() {
         ("counter", include_str!("../examples/counter.zin")),
         ("delivery", include_str!("../examples/delivery.zin")),
         ("job", include_str!("../examples/job.zin")),
+        ("mutex", include_str!("../examples/mutex.zin")),
     ] {
         check(source).unwrap_or_else(|error| panic!("{name}: {error}"));
     }

@@ -1,0 +1,47 @@
+system "Lock shared by interchangeable workers"
+
+# Four workers take turns in a critical section guarded by one lock. No rule
+# treats one worker differently from another, so the workers are declared
+# interchangeable and 'zin check' explores one state per arrangement up to
+# renaming them: 9 states instead of 48.
+
+types
+  interchangeable worker is one of ann, ben, cid, dot
+  phase is one of idle, waiting, critical
+
+state
+  at is a map from worker to phase
+  holder is one of ann, ben, cid, dot, nobody
+
+initially
+  at of every worker is idle
+  holder is nobody
+
+never
+  some a in worker satisfies some b in worker satisfies a is not b and at of a is critical and at of b is critical
+always
+  holder is nobody implies (every w in worker satisfies at of w is not critical)
+sometimes
+  every w in worker satisfies at of w is waiting
+always possible holder is nobody
+
+action want(w is a worker)
+  requires at of w is idle
+  at of w becomes waiting
+
+action enter(w is a worker)
+  requires at of w is waiting and holder is nobody
+  at of w becomes critical
+  holder becomes w
+
+action leave(w is a worker)
+  requires at of w is critical
+  at of w becomes idle
+  holder becomes nobody
+
+scenario "One worker holds the lock, another waits"
+  want(ann)
+  want(ben)
+  enter(ann)
+  reject enter(ben)
+  expect holder is ann and at of ben is waiting

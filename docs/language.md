@@ -44,6 +44,38 @@ Enum values are plain words. Quote one (`"on"`) when it would otherwise read as
 a keyword or as another name. An enum value may belong to several enums; where
 that makes an expression ambiguous the checker says so.
 
+### Interchangeable values
+
+```zin
+types
+  interchangeable worker is one of ann, ben, cid, dot
+
+state
+  at is a map from worker to phase
+  holder is one of ann, ben, cid, dot, nobody
+```
+
+Declare an enumeration `interchangeable` when nothing in the specification
+treats one of its values differently from another: four identical workers,
+three replicas, a pool of connections. `zin check` then explores one state
+for each arrangement up to renaming the values (`examples/mutex.zin`: 9
+states instead of 48), and a counterexample is still reported as an ordinary
+run with the real names.
+
+The checker holds you to it:
+
+- Actions, properties and initial values may not name an interchangeable
+  value. Reach them through parameters (`enter(w is a worker)`), quantifiers
+  and `of every`. Scenarios may name them, since they describe one run.
+- Another enumeration holds all of a type's interchangeable values or none:
+  `one of ann, ben, cid, dot, nobody` is fine, `one of ann, nobody` is not.
+- At most 8 interchangeable values in total (8! relabelings).
+
+Conformance plans, `zin trace` and diagrams always use the full state space,
+because tests drive real values. Liveness under fairness is also checked on
+the full state space: fairness is per call, and renaming changes which call
+is which. `zin check --symmetry off` turns the reduction off.
+
 ## State and initial values
 
 ```zin

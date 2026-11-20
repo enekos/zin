@@ -39,6 +39,8 @@ impl Spec {
 pub struct TypeDecl {
     pub name: String,
     pub kind: TypeExpr,
+    /// Declared `interchangeable`: the specification never tells its values apart.
+    pub interchangeable: bool,
     pub line: usize,
 }
 

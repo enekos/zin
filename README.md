@@ -228,7 +228,8 @@ The bindings ship a `Recorder` that writes this format.
 ## Commands
 
 ```text
-zin check <spec>... [--format json]   prove every property over every reachable state
+zin check <spec>... [--format json] [--symmetry on|off]
+                                      prove every property over every reachable state
 zin plan <spec> [--out FILE] [--cover transitions|states|actions|scenarios] [--max-steps N]
 zin trace <spec> <events.jsonl|->     check a recorded execution
 zin audit <spec>                      list specification changes nothing notices

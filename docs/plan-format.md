@@ -69,7 +69,7 @@ Written by `zin check --format json`.
 ```json
 {"zin": "check/1", "results": [
   {"file": "job.zin", "ok": true, "system": "Background job", "states": 10, "transitions": 9,
-   "terminal_states": 4, "properties": [{"property": "eventually ...", "line": 22}],
+   "up_to_symmetry": false, "terminal_states": 4, "properties": [{"property": "eventually ...", "line": 22}],
    "scenarios": ["Third time lucky"], "notes": []},
   {"file": "stuck.zin", "ok": false, "error": {
      "kind": "violation", "line": 13, "message": "...",
@@ -82,7 +82,9 @@ Written by `zin check --format json`.
 `kind` is `spec` (does not parse or type-check), `model` (an action leaves a
 declared range or divides by zero), `violation`, `limit` or `usage`.
 `loop_from` is `null` for a finite counterexample; otherwise the steps from
-that index on repeat forever.
+that index on repeat forever. `up_to_symmetry` is `true` when `states` and
+`transitions` count representatives of interchangeable values (an added
+field; readers of `check/1` should ignore fields they do not know).
 
 ## Trace events
 
