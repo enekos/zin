@@ -1,7 +1,7 @@
 //! The `zin` command line, as a library function so it can be tested.
 
 use crate::audit::{MutantFate, audit};
-use crate::check::{Verification, verify};
+use crate::check::{Options, Verification, verify, verify_with};
 use crate::json::Json;
 use crate::mermaid::{sequence_diagram, state_diagram};
 use crate::plan::{Cover, Plan, PlanOptions, state_json};
@@ -19,7 +19,8 @@ pub const USAGE: &str = "\
 zin - specifications you can prove, then run against your code
 
 usage:
-  zin check <spec>... [--format json]   prove every property over every reachable state
+  zin check <spec>... [--format json] [--symmetry on|off]
+                                        prove every property over every reachable state
   zin plan <spec> [--out FILE] [--cover transitions|states|actions|scenarios] [--max-steps N]
                                         derive the conformance test plan (JSON)
   zin trace <spec> <events.jsonl|->     check a recorded execution against the specification
@@ -108,6 +109,10 @@ fn load(path: &str) -> Result<Verification> {
     verify(&parse(&read(path, MAX_SPEC_BYTES)?)?)
 }
 
+fn load_with(path: &str, options: Options) -> Result<Verification> {
+    verify_with(&parse(&read(path, MAX_SPEC_BYTES)?)?, options)
+}
+
 fn error_json(error: &Error) -> Json {
     let trace = error.trace.as_ref().map_or(Json::Null, |trace| {
         Json::object([
@@ -149,6 +154,7 @@ fn check_json(path: &str, result: &Result<Verification>) -> Json {
                 "transitions",
                 Json::count(verification.graph.transition_count()),
             ),
+            ("up_to_symmetry", Json::Bool(verification.reduced)),
             ("terminal_states", Json::count(verification.terminal_states)),
             (
                 "properties",
@@ -189,11 +195,22 @@ fn check_json(path: &str, result: &Result<Verification>) -> Json {
 }
 
 fn check(args: &[String]) -> Result<Output> {
-    let arguments = Arguments::parse(args, &["format"])?;
+    let arguments = Arguments::parse(args, &["format", "symmetry"])?;
     let json = match arguments.option("format") {
         None | Some("text") => false,
         Some("json") => true,
         Some(other) => return Err(Error::usage(format!("unknown format '{other}'"))),
+    };
+    let options = Options {
+        symmetry: match arguments.option("symmetry") {
+            None | Some("on") => true,
+            Some("off") => false,
+            Some(other) => {
+                return Err(Error::usage(format!(
+                    "--symmetry is on or off, not '{other}'"
+                )));
+            }
+        },
     };
     if arguments.positional.is_empty() {
         return Err(Error::usage("check needs at least one specification file"));
@@ -205,7 +222,7 @@ fn check(args: &[String]) -> Result<Output> {
     };
     let mut results = Vec::new();
     for path in &arguments.positional {
-        let result = load(path);
+        let result = load_with(path, options);
         if let Err(error) = &result {
             output.code = output.code.max(error.kind.exit_code());
         }

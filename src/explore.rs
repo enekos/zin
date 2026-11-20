@@ -18,6 +18,8 @@ pub struct Graph {
     pub(crate) edges: Vec<Edge>,
     pub(crate) first_edge: Vec<usize>,
     pub(crate) index: HashMap<Box<[i64]>, u32>,
+    /// States are representatives under the model's symmetry, not every state.
+    pub(crate) reduced: bool,
 }
 
 impl Graph {
@@ -56,7 +58,15 @@ impl Graph {
     }
 
     pub(crate) fn trace(&self, model: &Model, path: &[Edge], loop_from: Option<usize>) -> Trace {
-        trace(model, &self.states, path, loop_from)
+        trace(model, self, path, loop_from)
+    }
+
+    /// The representative of a state the model reached.
+    pub(crate) fn canonical(&self, model: &Model, state: Box<[i64]>) -> Box<[i64]> {
+        match (&model.symmetry, self.reduced) {
+            (Some(symmetry), true) => symmetry.canonical(state),
+            _ => state,
+        }
     }
 
     pub(crate) fn trace_to(&self, model: &Model, state: u32) -> Trace {
@@ -91,8 +101,14 @@ fn path_to(parents: &[Option<(u32, u32)>], state: u32) -> Vec<Edge> {
     path
 }
 
-fn trace(model: &Model, states: &[Box<[i64]>], path: &[Edge], loop_from: Option<usize>) -> Trace {
-    let decode = |state: u32| model.decode(states.get(at(state)).map_or(&[], |state| state));
+fn trace(model: &Model, graph: &Graph, path: &[Edge], loop_from: Option<usize>) -> Trace {
+    if graph.reduced
+        && let Some(symmetry) = &model.symmetry
+        && let Some(trace) = symmetry.lift(model, &graph.states, path, loop_from)
+    {
+        return trace;
+    }
+    let decode = |state: u32| model.decode(graph.state(state));
     Trace {
         initial: decode(0),
         steps: path
@@ -114,12 +130,8 @@ struct Explorer<'a> {
 
 impl Explorer<'_> {
     fn fail(&self, kind: ErrorKind, line: usize, message: String, state: u32) -> Error {
-        Error::of(kind, Some(line).filter(|line| *line > 0), message).with_trace(trace(
-            self.model,
-            &self.graph.states,
-            &path_to(&self.graph.parents, state),
-            None,
-        ))
+        Error::of(kind, Some(line).filter(|line| *line > 0), message)
+            .with_trace(self.graph.trace_to(self.model, state))
     }
 
     fn fault(&self, fault: Fault, state: u32) -> Error {
@@ -173,7 +185,9 @@ impl Explorer<'_> {
     }
 }
 
-pub(crate) fn explore(model: &Model) -> Result<Graph> {
+/// Explores every reachable state, or with `reduce` one representative of
+/// each class of states the model's interchangeable types make equivalent.
+pub(crate) fn explore(model: &Model, reduce: bool) -> Result<Graph> {
     let mut explorer = Explorer {
         model,
         graph: Graph {
@@ -182,6 +196,7 @@ pub(crate) fn explore(model: &Model) -> Result<Graph> {
             edges: Vec::new(),
             first_edge: Vec::new(),
             index: HashMap::new(),
+            reduced: reduce && model.symmetry.is_some(),
         },
         locals: model.new_locals(),
     };
@@ -210,6 +225,7 @@ pub(crate) fn explore(model: &Model) -> Result<Graph> {
                     format!("more than {MAX_TRANSITIONS} transitions are reachable"),
                 ));
             }
+            let next = explorer.graph.canonical(model, next);
             let to = explorer.add(next, Some((from, call)))?;
             explorer.graph.edges.push(Edge { call, to });
         }

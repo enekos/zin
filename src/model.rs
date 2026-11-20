@@ -3,6 +3,7 @@ use crate::ast::{
     PropertyKind, Quantifier, ScenarioStep, Spec, TargetKey, TypeExpr, UnaryOperator, Value,
     display_call,
 };
+use crate::symmetry::Symmetry;
 use crate::{Error, Result, State};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -204,6 +205,7 @@ pub struct Model {
     pub(crate) calls: Vec<Call>,
     pub(crate) call_ids: HashMap<Call, u32>,
     pub(crate) locals: usize,
+    pub(crate) symmetry: Option<Symmetry>,
 }
 
 pub(crate) fn index32(value: usize) -> u32 {
@@ -591,6 +593,10 @@ struct Compiler<'a> {
     scope: Vec<(String, Ty)>,
     locals: usize,
     constant_only: bool,
+    /// Interchangeable values, which the specification may not name, and their type.
+    unnamed: HashMap<u32, String>,
+    /// Every enumeration written in the specification, with its line.
+    enums: Vec<(Vec<u32>, usize)>,
 }
 
 impl<'a> Compiler<'a> {
@@ -606,6 +612,8 @@ impl<'a> Compiler<'a> {
             scope: Vec::new(),
             locals: 0,
             constant_only: false,
+            unnamed: HashMap::new(),
+            enums: Vec::new(),
         }
     }
 
@@ -630,6 +638,7 @@ impl<'a> Compiler<'a> {
                 ));
             }
         }
+        let groups = self.interchangeable()?;
         for field in &spec.state {
             self.declare_field(&field.name, &field.kind, field.line)?;
         }
@@ -637,6 +646,7 @@ impl<'a> Compiler<'a> {
         for action in &spec.actions {
             signatures.push(self.signature(action)?);
         }
+        self.check_partial_groups(&groups)?;
         let initial = self.initial_state()?;
 
         let mut properties = Vec::new();
@@ -679,7 +689,21 @@ impl<'a> Compiler<'a> {
             calls,
             call_ids,
             locals: self.locals.max(1),
+            symmetry: None,
         };
+        if !groups.is_empty() {
+            let raws: Vec<Vec<i64>> = groups
+                .iter()
+                .map(|(_, ids, _)| ids.iter().map(|id| i64::from(*id)).collect())
+                .collect();
+            let symmetry = Symmetry::new(&model, &raws)?;
+            if symmetry.canonical(model.initial.clone()) != model.initial {
+                return Err(Error::new(
+                    "the initial state treats interchangeable values differently",
+                ));
+            }
+            model.symmetry = Some(symmetry);
+        }
         let mut scenarios = Compiler {
             spec,
             symbols: model.symbols.clone(),
@@ -691,6 +715,8 @@ impl<'a> Compiler<'a> {
             scope: Vec::new(),
             locals: model.locals,
             constant_only: false,
+            unnamed: HashMap::new(),
+            enums: Vec::new(),
         };
         for scenario in &spec.scenarios {
             let mut steps = Vec::new();
@@ -717,6 +743,70 @@ impl<'a> Compiler<'a> {
         }
         model.locals = model.locals.max(scenarios.locals);
         Ok(model)
+    }
+
+    fn symbol(&self, id: u32, line: usize) -> Result<(Ir, Ty)> {
+        if let Some(kind) = self.unnamed.get(&id) {
+            let name = self.symbols.get(at(id)).map_or("?", String::as_str);
+            return Err(Error::at(
+                line,
+                format!(
+                    "{name} is an interchangeable {kind}, so the specification cannot single it \
+                     out; refer to it through a parameter or a quantifier"
+                ),
+            ));
+        }
+        Ok((Ir::Const(i64::from(id)), Ty::Enum(BTreeSet::from([id]))))
+    }
+
+    /// The interchangeable types: name, values and line.
+    fn interchangeable(&mut self) -> Result<Vec<(String, Vec<u32>, usize)>> {
+        let mut groups = Vec::new();
+        for declaration in self.spec.types.iter().filter(|type_| type_.interchangeable) {
+            let Some(Domain::Enum(ids)) = self.types.get(&declaration.name) else {
+                return Err(Error::at(
+                    declaration.line,
+                    format!(
+                        "only an enumeration can be interchangeable, and {} is not one",
+                        declaration.name
+                    ),
+                ));
+            };
+            for id in ids {
+                self.unnamed.insert(*id, declaration.name.clone());
+            }
+            groups.push((declaration.name.clone(), ids.clone(), declaration.line));
+        }
+        Ok(groups)
+    }
+
+    /// Relabeling one interchangeable value must relabel it everywhere, so an
+    /// enumeration holds all of an interchangeable type's values or none.
+    fn check_partial_groups(&self, groups: &[(String, Vec<u32>, usize)]) -> Result<()> {
+        for (ids, line) in &self.enums {
+            for (name, group, _) in groups {
+                let shared = group.iter().filter(|id| ids.contains(id)).count();
+                let other_group = groups
+                    .iter()
+                    .any(|(other, values, _)| other != name && values == ids);
+                if shared == 0 || (shared == group.len() && !other_group) {
+                    continue;
+                }
+                return Err(Error::at(
+                    *line,
+                    format!(
+                        "this enumeration shares values with the interchangeable type {name}; \
+                         list all of its values ({}) or none of them",
+                        group
+                            .iter()
+                            .map(|id| self.symbols.get(at(*id)).map_or("?", String::as_str))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn intern(&mut self, name: &str) -> u32 {
@@ -755,6 +845,7 @@ impl<'a> Compiler<'a> {
                     }
                     ids.push(id);
                 }
+                self.enums.push((ids.clone(), line));
                 Domain::Enum(ids)
             }
             TypeExpr::Named(name) => self.types.get(name).cloned().ok_or_else(|| {
@@ -1110,8 +1201,8 @@ impl<'a> Compiler<'a> {
         match expr {
             Expr::Literal(Value::Integer(raw)) => Ok((Ir::Const(*raw), Ty::Int)),
             Expr::Literal(Value::Boolean(flag)) => Ok((Ir::Const(i64::from(*flag)), Ty::Bool)),
-            Expr::Literal(Value::Symbol(name)) => match self.symbol_ids.get(name) {
-                Some(id) => Ok((Ir::Const(i64::from(*id)), Ty::Enum(BTreeSet::from([*id])))),
+            Expr::Literal(Value::Symbol(name)) => match self.symbol_ids.get(name).copied() {
+                Some(id) => self.symbol(id, line),
                 None => Err(Error::at(line, format!("unknown enum value \"{name}\""))),
             },
             Expr::Literal(Value::Map(_)) => Err(Error::at(line, "map literals are not supported")),
@@ -1199,8 +1290,8 @@ impl<'a> Compiler<'a> {
                 )),
             };
         }
-        if let Some(id) = self.symbol_ids.get(name) {
-            return Ok((Ir::Const(i64::from(*id)), Ty::Enum(BTreeSet::from([*id]))));
+        if let Some(id) = self.symbol_ids.get(name).copied() {
+            return self.symbol(id, line);
         }
         Err(Error::at(
             line,

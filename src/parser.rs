@@ -100,10 +100,15 @@ fn parse_block_line(spec: &mut Spec, section: Section, line: &Line) -> Result<()
     let content = line.content.as_str();
     match section {
         Section::Types => {
+            let (interchangeable, content) = match after_keyword(content, "interchangeable") {
+                Some(rest) => (true, rest),
+                None => (false, content),
+            };
             let field = parse_field(content, line.number)?;
             spec.types.push(TypeDecl {
                 name: field.name,
                 kind: field.kind,
+                interchangeable,
                 line: field.line,
             });
         }
