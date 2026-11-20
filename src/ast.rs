@@ -6,6 +6,8 @@ pub const DEFAULT_STATE_LIMIT: usize = 1_000_000;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Spec {
     pub name: String,
+    /// The `system` blocks a composition was made from; empty for one system.
+    pub components: Vec<String>,
     pub state_limit: usize,
     pub fingerprint: String,
     pub types: Vec<TypeDecl>,
@@ -22,6 +24,7 @@ impl Spec {
     pub fn empty() -> Self {
         Self {
             name: String::new(),
+            components: Vec::new(),
             state_limit: DEFAULT_STATE_LIMIT,
             fingerprint: String::new(),
             types: Vec::new(),

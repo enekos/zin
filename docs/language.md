@@ -268,6 +268,52 @@ Each scenario starts from the initial state. A call must be enabled, a
 behavior, pin it against regressions in the specification, and become the
 first tests of every derived plan.
 
+## Composition
+
+Several `system` blocks in one file are checked as one system
+(`examples/request-reply.zin`):
+
+```zin
+system "Client"
+state
+  waiting is a boolean
+initially
+  waiting is false
+action request(n is an integer from 1 to 3)
+  requires not waiting
+  waiting becomes true
+
+system "Server"
+state
+  job is an integer from 0 to 3
+initially
+  job is 0
+action request(n is an integer from 1 to 3)
+  requires job is 0
+  job becomes n
+
+system "Request and reply"         # no state: names the whole
+always waiting implies job is not 0
+```
+
+- **Components share no state.** Field names must differ across blocks, and
+  a block's actions and `initially` read and write only its own fields.
+- **An action declared in several blocks is one step they all take at
+  once.** It is enabled when every block's `requires` holds and applies every
+  block's assignments. Parameters with the same name are the same value and
+  must have the same type, which is how data passes between components; the
+  merged action takes the first block's parameters, then any new ones, in
+  order. It is as fair as the fairest block declares it.
+- **Every other action interleaves**: it changes its own block's state only.
+- **Properties, `terminal when` and scenarios describe the whole** and may
+  name any block's fields. Put them in the block they concern, or in a block
+  without state, whose name then names the composition. Several `terminal
+  when` lines must all hold.
+- Types with the same name must be declared the same way in every block that
+  declares them. The largest `explore at most` wins.
+
+Plans, traces and tests treat a composition as one system under test.
+
 ## Limits
 
 Exploration stops with an error, never a partial answer, at the declared state

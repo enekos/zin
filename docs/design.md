@@ -83,6 +83,18 @@ cap is hit, a new tour starts from the initial state (a fresh
 implementation). This is a heuristic for the rural postman problem: not
 minimal, but linear-ish in practice and deterministic.
 
+## Composition
+
+A file with several `system` blocks is merged into one specification before
+type checking: fields side by side, an action with the same name in several
+blocks merged into one (requirements and assignments concatenated, same-named
+parameters unified), everything else carried over. This is the synchronized
+product of CSP-style processes, and since the result is an ordinary
+specification, every checker, the planner and the bindings work unchanged.
+The merge enforces encapsulation that one flat block cannot express: a
+block's actions and initial values may touch only its own fields, so the
+shared actions are the only coupling between components.
+
 ## What is not claimed
 
 - **Not a proof about code.** Conformance is exhaustive over the model's
@@ -106,5 +118,6 @@ minimal, but linear-ish in practice and deterministic.
 
 - Bindings: JUnit 5, xUnit/.NET, RSpec, PHPUnit. Each is a plan replayer.
 - A pytest plugin and a Vitest reporter that show model coverage.
-- Composition: several `system`s with shared actions.
+- Composition across files, and plans that test one component against the
+  rest of the composition as its environment.
 - Refinement checking between two specifications.

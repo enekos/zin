@@ -2,6 +2,7 @@ pub mod ast;
 mod audit;
 mod check;
 pub mod cli;
+mod compose;
 pub mod conform;
 mod explore;
 mod json;
