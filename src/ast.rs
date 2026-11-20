@@ -138,10 +138,33 @@ pub struct Assignment {
     pub line: usize,
 }
 
+/// What the environment promises about an action's calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum Fairness {
+    /// No promise: a call may be ignored forever.
+    #[default]
+    Unfair,
+    /// `fair`: a call that stays enabled is eventually taken.
+    Weak,
+    /// `strongly fair`: a call that is enabled again and again is eventually taken.
+    Strong,
+}
+
+impl Fairness {
+    #[must_use]
+    pub fn keyword(self) -> &'static str {
+        match self {
+            Self::Unfair => "",
+            Self::Weak => "fair",
+            Self::Strong => "strongly fair",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Action {
     pub name: String,
-    pub fair: bool,
+    pub fairness: Fairness,
     pub params: Vec<Field>,
     pub requires: Vec<Condition>,
     pub assignments: Vec<Assignment>,

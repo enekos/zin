@@ -1,6 +1,6 @@
 use crate::ast::{
-    Action, ActionCall, Assignment, BinaryOperator, CallArguments, Condition, Expr, Field,
-    Property, PropertyKind, Quantifier, Scenario, ScenarioStep, Spec, TargetKey, TypeDecl,
+    Action, ActionCall, Assignment, BinaryOperator, CallArguments, Condition, Expr, Fairness,
+    Field, Property, PropertyKind, Quantifier, Scenario, ScenarioStep, Spec, TargetKey, TypeDecl,
     TypeExpr, UnaryOperator, Value, is_reserved_word,
 };
 use crate::{Error, Result};
@@ -213,11 +213,22 @@ fn parse_top_level(spec: &mut Spec, line: &Line, seen: &mut Seen) -> Result<Sect
         spec.terminal = Some(parse_condition(source, line.number)?);
         return Ok(Section::None);
     }
-    if let Some(rest) = after_keyword(content, "fair") {
-        let rest = after_keyword(rest, "action")
-            .ok_or_else(|| Error::at(line.number, "expected 'fair action <name>'"))?;
+    let fairness = if let Some(rest) = after_keyword(content, "strongly") {
+        Some((Fairness::Strong, after_keyword(rest, "fair")))
+    } else {
+        after_keyword(content, "fair").map(|rest| (Fairness::Weak, Some(rest)))
+    };
+    if let Some((fairness, rest)) = fairness {
+        let rest = rest
+            .and_then(|rest| after_keyword(rest, "action"))
+            .ok_or_else(|| {
+                Error::at(
+                    line.number,
+                    format!("expected '{} action <name>'", fairness.keyword()),
+                )
+            })?;
         let mut action = parse_action(rest, line.number)?;
-        action.fair = true;
+        action.fairness = fairness;
         spec.actions.push(action);
         return Ok(Section::Action(spec.actions.len() - 1));
     }
@@ -473,7 +484,7 @@ fn parse_action(source: &str, line: usize) -> Result<Action> {
     tokens.finish()?;
     Ok(Action {
         name,
-        fair: false,
+        fairness: Fairness::Unfair,
         params,
         requires: Vec::new(),
         assignments: Vec::new(),

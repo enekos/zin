@@ -161,7 +161,8 @@ fn conforms_to_specification() {
 | `always possible <condition>` | from every state there is still a way to reach it |
 | `terminal when <condition>` | the system only stops where you said it may; anything else is a deadlock |
 
-Liveness is checked under the fairness you declare (`fair action`), and a
+Liveness is checked under the fairness you declare (`fair action`,
+`strongly fair action`), and a
 violation is reported as a loop:
 
 ```console
@@ -173,6 +174,10 @@ counterexample:
   1. start  ->  status=running
   2. crash  ->  status=queued
 ```
+
+`succeed` is weakly fair, and a crash keeps disabling it. Declaring
+`strongly fair action succeed` (a call enabled again and again is eventually
+taken) makes the property hold.
 
 Concurrency bugs are ordinary counterexamples. `examples/broken/lost-update.zin`
 models two workers doing read-then-write on a shared counter:

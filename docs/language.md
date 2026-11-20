@@ -193,8 +193,21 @@ fair action finish
 `fair` is weak fairness, per call: if a call of a fair action stays enabled
 forever, it is eventually taken. A violation then needs a loop in which, for
 every fair call, the call is disabled somewhere on the loop or taken on it.
-Fairness does not help when the call is only enabled on and off
-(`examples/broken/stuck-job.zin`).
+Weak fairness does not help when the call is only enabled on and off
+(`examples/broken/stuck-job.zin`): a job that keeps crashing back to the queue
+is never continuously ready to succeed.
+
+```zin
+strongly fair action succeed
+  requires status is running
+  status becomes succeeded
+```
+
+`strongly fair` is strong fairness, per call: if a call is enabled again and
+again, forever, it is eventually taken. A violation then needs a loop that
+takes every strongly fair call enabled anywhere on it. Use it for retries and
+for a scheduler that keeps offering the same choice; it is a stronger promise
+about the environment, so make sure the real one keeps it.
 
 A liveness counterexample is a path followed by `then forever:` and a loop.
 

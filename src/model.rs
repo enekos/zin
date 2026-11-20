@@ -1,6 +1,7 @@
 use crate::ast::{
-    Action, ActionCall, Assignment, BinaryOperator, CallArguments, Condition, Expr, PropertyKind,
-    Quantifier, ScenarioStep, Spec, TargetKey, TypeExpr, UnaryOperator, Value, display_call,
+    Action, ActionCall, Assignment, BinaryOperator, CallArguments, Condition, Expr, Fairness,
+    PropertyKind, Quantifier, ScenarioStep, Spec, TargetKey, TypeExpr, UnaryOperator, Value,
+    display_call,
 };
 use crate::{Error, Result, State};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -87,7 +88,7 @@ pub struct Param {
 #[derive(Debug, Clone)]
 pub struct ActionInfo {
     pub name: String,
-    pub fair: bool,
+    pub fairness: Fairness,
     pub params: Vec<Param>,
     pub line: usize,
     pub(crate) requires: Vec<CompiledCondition>,
@@ -965,7 +966,7 @@ impl<'a> Compiler<'a> {
         self.scope.clear();
         Ok(ActionInfo {
             name: action.name.clone(),
-            fair: action.fair,
+            fairness: action.fairness,
             params,
             line: action.line,
             requires,
