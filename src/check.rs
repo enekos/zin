@@ -1,8 +1,8 @@
-use crate::ast::{PropertyKind, Spec};
-use crate::explore::{Edge, Graph, explore};
+use crate::ast::{Fairness, PropertyKind, Spec};
+use crate::explore::{Graph, explore};
 use crate::model::{CompiledStep, Model, index32};
 use crate::properties::check_properties;
-use crate::{Error, ErrorKind, Result};
+use crate::{Error, ErrorKind, Result, Trace, TraceStep};
 
 #[derive(Debug, Clone)]
 pub struct PropertyResult {
@@ -26,10 +26,29 @@ pub struct ScenarioRun {
     pub events: Vec<ScenarioEvent>,
 }
 
+/// How to check a specification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Options {
+    /// Explore one representative per class of states that differ only by a
+    /// relabeling of interchangeable values. The graph is then not the full
+    /// state space, so conformance plans need it off.
+    pub symmetry: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self { symmetry: true }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Verification {
     pub model: Model,
+    /// The explored states; representatives only when [`Self::reduced`].
     pub graph: Graph,
+    /// Whether symmetry reduction shrank the graph.
+    pub reduced: bool,
     pub properties: Vec<PropertyResult>,
     pub scenarios: Vec<ScenarioRun>,
     pub notes: Vec<String>,
@@ -40,9 +59,10 @@ impl Verification {
     #[must_use]
     pub fn summary(&self) -> String {
         format!(
-            "{}: {}, {}, {}, {}",
+            "{}: {}{}, {}, {}, {}",
             self.model.name,
             crate::counted(self.graph.state_count(), "state", "states"),
+            if self.reduced { " up to symmetry" } else { "" },
             crate::counted(self.graph.transition_count(), "transition", "transitions"),
             crate::counted(self.properties.len(), "property", "properties"),
             crate::counted(self.scenarios.len(), "scenario", "scenarios")
@@ -60,12 +80,37 @@ impl Verification {
     }
 }
 
+/// Checks a specification over its full state space, as conformance plans,
+/// trace checking and diagrams need.
+///
+/// # Errors
+///
+/// Returns the first problem found: an invalid specification, a model fault,
+/// a violated property or scenario (with a counterexample), or a limit.
 pub fn verify(spec: &Spec) -> Result<Verification> {
+    verify_with(spec, Options { symmetry: false })
+}
+
+/// Checks a specification, with symmetry reduction when `options` allow it.
+///
+/// # Errors
+///
+/// As [`verify`].
+pub fn verify_with(spec: &Spec, options: Options) -> Result<Verification> {
     let model = Model::compile(spec)?;
-    let graph = explore(&model)?;
+    let mut notes = Vec::new();
+    let mut reduce = options.symmetry && model.symmetry.is_some();
+    if reduce && fair_liveness(&model) {
+        reduce = false;
+        notes.push(
+            "symmetry reduction is off: liveness under fairness is checked on the full state space"
+                .to_string(),
+        );
+    }
+    let graph = explore(&model, reduce)?;
     let terminal_states = check_terminal(&model, &graph)?;
     let checked = check_properties(&model, &graph)?;
-    let mut notes = checked.notes;
+    notes.extend(checked.notes);
     let mut used = vec![false; model.actions.len()];
     for edge in &graph.edges {
         let action = model.calls.get(crate::model::at(edge.call));
@@ -84,6 +129,7 @@ pub fn verify(spec: &Spec) -> Result<Verification> {
     let scenarios = run_scenarios(&model, &graph)?;
     Ok(Verification {
         model,
+        reduced: graph.reduced,
         graph,
         properties: checked.results,
         scenarios,
@@ -125,60 +171,98 @@ fn check_terminal(model: &Model, graph: &Graph) -> Result<usize> {
     Ok(count)
 }
 
+/// Whether a liveness property depends on fairness. Fairness is per call,
+/// and relabeling changes which call a representative's edge stands for, so
+/// these are not checked on representatives.
+fn fair_liveness(model: &Model) -> bool {
+    let fair = model
+        .actions
+        .iter()
+        .any(|action| action.fairness != Fairness::Unfair);
+    let liveness = model.properties.iter().any(|property| {
+        matches!(
+            property.kind,
+            PropertyKind::Eventually | PropertyKind::LeadsTo
+        )
+    });
+    fair && liveness
+}
+
 fn run_scenarios(model: &Model, graph: &Graph) -> Result<Vec<ScenarioRun>> {
     let mut locals = model.new_locals();
     let mut runs = Vec::new();
     for scenario in &model.scenarios {
-        let mut current: u32 = 0;
-        let mut path: Vec<Edge> = Vec::new();
+        let mut state: Box<[i64]> = model.initial.clone();
+        let mut trace = Trace {
+            initial: model.decode(&state),
+            steps: Vec::new(),
+            loop_from: None,
+        };
         let mut events = Vec::new();
-        let fail = |line: usize, message: String, path: &[Edge]| {
+        let fail = |line: usize, message: String, trace: &Trace| {
             Error::of(
                 ErrorKind::Violation,
                 Some(line),
                 format!("scenario \"{}\": {message}", scenario.name),
             )
-            .with_trace(graph.trace(model, path, None))
+            .with_trace(trace.clone())
         };
-        for step in &scenario.steps {
-            match step {
+        let step = |call: u32, state: &[i64], locals: &mut [i64], trace: &Trace, line: usize| {
+            model.step(call, state, locals).map_err(|fault| {
+                let message = format!("{}: {}", model.call_text(call), fault.message);
+                fail(fault.line.max(line), message, trace)
+            })
+        };
+        for scenario_step in &scenario.steps {
+            match scenario_step {
                 CompiledStep::Call { call, line } => {
-                    let Some(to) = graph.target(current, *call) else {
+                    let Some(next) = step(*call, &state, &mut locals, &trace, *line)? else {
                         return Err(fail(
                             *line,
                             format!(
                                 "{} is not allowed here; a 'requires' rejects it",
                                 model.call_text(*call)
                             ),
-                            &path,
+                            &trace,
                         ));
                     };
-                    path.push(Edge { call: *call, to });
+                    let representative = graph.canonical(model, next.clone());
+                    let to = graph.index.get(&representative).copied().ok_or_else(|| {
+                        fail(
+                            *line,
+                            "internal error: unexplored state".to_string(),
+                            &trace,
+                        )
+                    })?;
+                    state = next;
+                    trace.steps.push(TraceStep {
+                        call: model.call_text(*call),
+                        state: model.decode(&state),
+                    });
                     events.push(ScenarioEvent::Call { call: *call, to });
-                    current = to;
                 }
                 CompiledStep::Reject { call, line } => {
-                    if graph.target(current, *call).is_some() {
+                    if step(*call, &state, &mut locals, &trace, *line)?.is_some() {
                         return Err(fail(
                             *line,
                             format!(
                                 "expected {} to be rejected, but the specification allows it",
                                 model.call_text(*call)
                             ),
-                            &path,
+                            &trace,
                         ));
                     }
                     events.push(ScenarioEvent::Reject { call: *call });
                 }
                 CompiledStep::Expect(condition) => {
                     let holds = model
-                        .holds(condition, graph.state(current), &mut locals)
-                        .map_err(|fault| fail(fault.line, fault.message, &path))?;
+                        .holds(condition, &state, &mut locals)
+                        .map_err(|fault| fail(fault.line, fault.message, &trace))?;
                     if !holds {
                         return Err(fail(
                             condition.line,
                             format!("expected {}", condition.source),
-                            &path,
+                            &trace,
                         ));
                     }
                     events.push(ScenarioEvent::Expect {

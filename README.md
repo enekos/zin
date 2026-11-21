@@ -196,6 +196,12 @@ counterexample:
 Exploration is exhaustive within the declared finite domains. Hitting the state
 limit is an error, never a silent partial pass.
 
+Larger systems split into components: several `system` blocks in one file
+share no state and synchronize on actions with the same name
+(`examples/request-reply.zin`). Identical components declared
+`interchangeable` are explored once per arrangement up to renaming
+(`examples/mutex.zin`). See [the language reference](docs/language.md).
+
 ## Is the specification itself any good?
 
 A specification that allows everything proves nothing. `zin audit` removes and
@@ -228,7 +234,8 @@ The bindings ship a `Recorder` that writes this format.
 ## Commands
 
 ```text
-zin check <spec>... [--format json]   prove every property over every reachable state
+zin check <spec>... [--format json] [--symmetry on|off]
+                                      prove every property over every reachable state
 zin plan <spec> [--out FILE] [--cover transitions|states|actions|scenarios] [--max-steps N]
 zin trace <spec> <events.jsonl|->     check a recorded execution
 zin audit <spec>                      list specification changes nothing notices

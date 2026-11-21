@@ -43,6 +43,18 @@ scenarios, using the same idea as mutation testing of code.
   Exploration is breadth-first, so every safety counterexample is shortest.
 - `always` / `never` are checked as states are discovered and stop
   exploration at the first violation.
+- **Symmetry.** Values of an `interchangeable` type cannot be named, so
+  renaming them maps transitions to transitions and preserves every
+  property. Exploration stores only the lexicographically smallest renaming
+  of each state, found by trying every renaming (at most 8! = 40,320).
+  Safety, deadlock, `sometimes`, `always possible` and unfair liveness are
+  all invariant under renaming, so the reduced graph decides them exactly.
+  A counterexample on representatives is lifted back: each step finds a
+  renaming that takes the representative to the concrete state so far and
+  takes the renamed call; a loop that comes back to a renaming of its start
+  is unrolled until a concrete state recurs. Per-call fairness is not
+  invariant (a representative's edge stands for different calls along a
+  run), so liveness under fairness is checked on the full graph.
 - `always possible` is backward reachability from the goal states.
 - `eventually q` and `whenever p eventually q` reduce to: is there, from the
   initial state (or from a `p` state), a maximal path that stays outside `q`?
@@ -71,15 +83,29 @@ cap is hit, a new tour starts from the initial state (a fresh
 implementation). This is a heuristic for the rural postman problem: not
 minimal, but linear-ish in practice and deterministic.
 
+## Composition
+
+A file with several `system` blocks is merged into one specification before
+type checking: fields side by side, an action with the same name in several
+blocks merged into one (requirements and assignments concatenated, same-named
+parameters unified), everything else carried over. This is the synchronized
+product of CSP-style processes, and since the result is an ordinary
+specification, every checker, the planner and the bindings work unchanged.
+The merge enforces encapsulation that one flat block cannot express: a
+block's actions and initial values may touch only its own fields, so the
+shared actions are the only coupling between components.
+
 ## What is not claimed
 
 - **Not a proof about code.** Conformance is exhaustive over the model's
   states and calls. It says nothing about inputs outside the modeled ranges
-  or state the model omits.
+  or state the model omits. Plans are derived from the full state space even
+  when the specification declares interchangeable values.
 - **Finite state only.** Bounded integers, booleans, enums, maps over them.
   No unbounded data, time, probability or floating point. Explicit-state
   exploration is practical to roughly millions of states; there is no
-  symbolic engine, symmetry reduction or partial-order reduction.
+  symbolic engine or partial-order reduction, and symmetry reduction covers
+  only fully interchangeable values.
 - **Deterministic actions.** Nondeterminism is expressed through parameters.
 - **Sequential conformance.** Interleavings are explored in the model;
   implementations are driven one call at a time. `zin trace` checks recorded
@@ -92,6 +118,6 @@ minimal, but linear-ish in practice and deterministic.
 
 - Bindings: JUnit 5, xUnit/.NET, RSpec, PHPUnit. Each is a plan replayer.
 - A pytest plugin and a Vitest reporter that show model coverage.
-- Symmetry reduction for maps keyed by interchangeable ids.
-- Composition: several `system`s with shared actions.
+- Composition across files, and plans that test one component against the
+  rest of the composition as its environment.
 - Refinement checking between two specifications.
