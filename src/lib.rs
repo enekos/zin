@@ -2,6 +2,7 @@ pub mod ast;
 mod audit;
 mod check;
 pub mod cli;
+mod compose;
 pub mod conform;
 mod explore;
 mod json;
@@ -12,11 +13,14 @@ mod plan;
 mod properties;
 mod report;
 mod scaffold;
+mod symmetry;
 mod trace;
 
 pub use ast::{Spec, Value};
 pub use audit::{Audit, Mutant, MutantFate, audit};
-pub use check::{PropertyResult, ScenarioEvent, ScenarioRun, Verification, verify};
+pub use check::{
+    Options, PropertyResult, ScenarioEvent, ScenarioRun, Verification, verify, verify_with,
+};
 pub use explore::{Edge, Graph};
 pub use json::Json;
 pub use mermaid::{sequence_diagram, state_diagram};

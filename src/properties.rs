@@ -1,4 +1,4 @@
-use crate::ast::PropertyKind;
+use crate::ast::{Fairness, PropertyKind};
 use crate::check::PropertyResult;
 use crate::explore::{Edge, Graph};
 use crate::model::{CompiledCondition, CompiledProperty, Model, at, index32};
@@ -136,29 +136,17 @@ fn liveness(
     }
 
     let fair = fair_calls(model);
-    let component_of = components(graph, &region);
-    let mut members: HashMap<u32, Vec<u32>> = HashMap::new();
-    for (state, component) in component_of.iter().enumerate() {
-        if *component != UNVISITED {
-            members.entry(*component).or_default().push(index32(state));
-        }
-    }
-    let mut doomed = vec![false; graph.states.len()];
+    let component_of = fair_components(graph, &fair, &region);
+    let mut doomed: Vec<bool> = component_of
+        .iter()
+        .map(|component| *component != UNVISITED)
+        .collect();
     for (state, in_region) in region.iter().enumerate() {
         if *in_region
             && graph.out(index32(state)).is_empty()
             && let Some(mark) = doomed.get_mut(state)
         {
             *mark = true;
-        }
-    }
-    for (component, states) in &members {
-        if admits_fair_cycle(graph, &fair, &component_of, *component, states) {
-            for state in states {
-                if let Some(mark) = doomed.get_mut(at(*state)) {
-                    *mark = true;
-                }
-            }
         }
     }
     let can_fail = backward(&doomed, predecessors, |state| {
@@ -206,7 +194,7 @@ fn liveness(
     .with_trace(graph.trace(model, &path, Some(loop_from))))
 }
 
-fn fair_calls(model: &Model) -> Vec<bool> {
+fn fair_calls(model: &Model) -> Vec<Fairness> {
     model
         .calls
         .iter()
@@ -214,9 +202,77 @@ fn fair_calls(model: &Model) -> Vec<bool> {
             model
                 .actions
                 .get(call.action)
-                .is_some_and(|action| action.fair)
+                .map_or(Fairness::Unfair, |action| action.fairness)
         })
         .collect()
+}
+
+fn fairness(fair: &[Fairness], call: u32) -> Fairness {
+    fair.get(at(call)).copied().unwrap_or(Fairness::Unfair)
+}
+
+/// The states of `region` that lie on a fair cycle inside it, grouped into
+/// strongly connected components (`UNVISITED` for every other state).
+///
+/// A component holds a fair cycle when it has an internal edge, every weakly
+/// fair call enabled in all of its states is taken inside it, and every
+/// strongly fair call enabled anywhere in it is taken inside it. A component
+/// that fails only the strong condition may still contain a fair cycle that
+/// avoids the states enabling the offending calls, so those states are
+/// removed and the rest is decomposed again (Emerson and Lei). Each round
+/// removes at least one state, and a component's set of enabled strongly fair
+/// calls shrinks on every round it survives, so this terminates quickly.
+fn fair_components(graph: &Graph, fair: &[Fairness], region: &[bool]) -> Vec<u32> {
+    let mut alive = region.to_vec();
+    loop {
+        let component_of = components(graph, &alive);
+        let mut members: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (state, component) in component_of.iter().enumerate() {
+            if *component != UNVISITED {
+                members.entry(*component).or_default().push(index32(state));
+            }
+        }
+        let mut changed = false;
+        for (component, states) in &members {
+            let usage = usage(graph, fair, &component_of, *component, states);
+            let weak_starved = usage.enabled.iter().any(|(call, enabled)| {
+                fairness(fair, *call) == Fairness::Weak
+                    && *enabled == states.len()
+                    && !usage.taken.contains_key(call)
+            });
+            let removed: Vec<u32> = if usage.internal_edges == 0 || weak_starved {
+                states.clone()
+            } else {
+                let starved: Vec<u32> = usage
+                    .enabled
+                    .keys()
+                    .filter(|call| {
+                        fairness(fair, **call) == Fairness::Strong
+                            && !usage.taken.contains_key(call)
+                    })
+                    .copied()
+                    .collect();
+                states
+                    .iter()
+                    .filter(|state| {
+                        starved
+                            .iter()
+                            .any(|call| graph.target(**state, *call).is_some())
+                    })
+                    .copied()
+                    .collect()
+            };
+            for state in removed {
+                if let Some(mark) = alive.get_mut(at(state)) {
+                    *mark = false;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            return component_of;
+        }
+    }
 }
 
 fn components(graph: &Graph, region: &[bool]) -> Vec<u32> {
@@ -303,7 +359,7 @@ struct Usage {
 
 fn usage(
     graph: &Graph,
-    fair: &[bool],
+    fair: &[Fairness],
     component_of: &[u32],
     component: u32,
     states: &[u32],
@@ -320,7 +376,7 @@ fn usage(
             if internal {
                 usage.internal_edges += 1;
             }
-            if flag(fair, edge.call) {
+            if fairness(fair, edge.call) != Fairness::Unfair {
                 *usage.enabled.entry(edge.call).or_default() += 1;
                 if internal && !usage.taken.contains_key(&edge.call) {
                     usage.taken.insert(edge.call, *edge);
@@ -330,21 +386,6 @@ fn usage(
         }
     }
     usage
-}
-
-fn admits_fair_cycle(
-    graph: &Graph,
-    fair: &[bool],
-    component_of: &[u32],
-    component: u32,
-    states: &[u32],
-) -> bool {
-    let usage = usage(graph, fair, component_of, component, states);
-    usage.internal_edges > 0
-        && usage
-            .enabled
-            .iter()
-            .all(|(call, enabled)| *enabled < states.len() || usage.taken.contains_key(call))
 }
 
 fn route(
@@ -394,7 +435,7 @@ fn route(
 
 fn fair_cycle(
     graph: &Graph,
-    fair: &[bool],
+    fair: &[Fairness],
     component_of: &[u32],
     component: u32,
     entry: u32,
@@ -413,14 +454,14 @@ fn fair_cycle(
     calls.sort_unstable();
     for call in calls {
         let disabled_at = |state: u32| graph.target(state, call).is_none();
+        let strong = fairness(fair, call) == Fairness::Strong;
         let satisfied = cycle.iter().any(|edge| edge.call == call)
-            || disabled_at(entry)
-            || cycle.iter().any(|edge| disabled_at(edge.to));
+            || !strong && (disabled_at(entry) || cycle.iter().any(|edge| disabled_at(edge.to)));
         if satisfied {
             continue;
         }
         let everywhere = usage.enabled.get(&call).copied() == Some(states.len());
-        if everywhere {
+        if everywhere || strong {
             let (Some(edge), Some(from)) = (usage.taken.get(&call), usage.taken_from.get(&call))
             else {
                 continue;
@@ -444,4 +485,162 @@ fn fair_cycle(
         must_move,
     ));
     cycle
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn below(&mut self, bound: u64) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0 % bound
+        }
+    }
+
+    fn random_graph(rng: &mut Rng, states: usize, calls: u32) -> Graph {
+        let mut graph = Graph {
+            states: (0..states).map(|_| Box::from([])).collect(),
+            parents: vec![None; states],
+            edges: Vec::new(),
+            first_edge: Vec::new(),
+            index: HashMap::new(),
+            reduced: false,
+        };
+        for _ in 0..states {
+            graph.first_edge.push(graph.edges.len());
+            for call in 0..calls {
+                if rng.below(2) == 0 {
+                    let to = index32(usize::try_from(rng.below(states as u64)).unwrap());
+                    graph.edges.push(Edge { call, to });
+                }
+            }
+        }
+        graph.first_edge.push(graph.edges.len());
+        graph
+    }
+
+    /// Whether some run stays in exactly `subset` forever while respecting
+    /// fairness: the subset is strongly connected through its own edges, and
+    /// the run may take every one of those edges infinitely often.
+    fn fair_subset(graph: &Graph, fair: &[Fairness], subset: &[bool]) -> bool {
+        let members: Vec<u32> = (0..subset.len())
+            .filter(|state| subset[*state])
+            .map(index32)
+            .collect();
+        let inside = |state: u32| subset[at(state)];
+        let Some(first) = members.first() else {
+            return false;
+        };
+        let internal: Vec<Edge> = members
+            .iter()
+            .flat_map(|state| graph.out(*state).iter().copied())
+            .filter(|edge| inside(edge.to))
+            .collect();
+        if internal.is_empty() {
+            return false;
+        }
+        let reach = |from: u32, forward: bool| {
+            let mut seen = vec![false; subset.len()];
+            let mut stack = vec![from];
+            seen[at(from)] = true;
+            while let Some(state) = stack.pop() {
+                for other in &members {
+                    let (a, b) = if forward {
+                        (state, *other)
+                    } else {
+                        (*other, state)
+                    };
+                    if !seen[at(*other)] && graph.out(a).iter().any(|edge| edge.to == b) {
+                        seen[at(*other)] = true;
+                        stack.push(*other);
+                    }
+                }
+            }
+            members.iter().all(|state| seen[at(*state)])
+        };
+        if !reach(*first, true) || !reach(*first, false) {
+            return false;
+        }
+        (0..index32(fair.len())).all(|call| {
+            let taken = internal.iter().any(|edge| edge.call == call);
+            let enabled = |state: &u32| graph.target(*state, call).is_some();
+            match fair[at(call)] {
+                Fairness::Unfair => true,
+                Fairness::Weak => taken || !members.iter().all(enabled),
+                Fairness::Strong => taken || !members.iter().any(enabled),
+            }
+        })
+    }
+
+    #[test]
+    fn fair_components_match_brute_force_over_every_subset() {
+        let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+        for _ in 0..3000 {
+            let states = usize::try_from(rng.below(7) + 1).unwrap();
+            let calls = u32::try_from(rng.below(4) + 1).unwrap();
+            let graph = random_graph(&mut rng, states, calls);
+            let fair: Vec<Fairness> = (0..calls)
+                .map(|_| match rng.below(3) {
+                    0 => Fairness::Unfair,
+                    1 => Fairness::Weak,
+                    _ => Fairness::Strong,
+                })
+                .collect();
+            let region: Vec<bool> = (0..states).map(|_| rng.below(4) != 0).collect();
+
+            let mut expected = vec![false; states];
+            for mask in 1u32..(1 << states) {
+                let subset: Vec<bool> = (0..states).map(|state| mask & (1 << state) != 0).collect();
+                if subset
+                    .iter()
+                    .zip(&region)
+                    .any(|(member, allowed)| *member && !allowed)
+                {
+                    continue;
+                }
+                if fair_subset(&graph, &fair, &subset) {
+                    for (state, member) in subset.iter().enumerate() {
+                        expected[state] |= *member;
+                    }
+                }
+            }
+            let component_of = fair_components(&graph, &fair, &region);
+            let actual: Vec<bool> = component_of.iter().map(|c| *c != UNVISITED).collect();
+            assert_eq!(actual, expected, "fairness {fair:?}, region {region:?}");
+
+            for (state, member) in actual.iter().enumerate() {
+                if !member {
+                    continue;
+                }
+                let entry = index32(state);
+                let component = component_of[state];
+                let cycle = fair_cycle(&graph, &fair, &component_of, component, entry);
+                assert!(!cycle.is_empty());
+                assert_eq!(cycle.last().map(|edge| edge.to), Some(entry));
+                let mut on_cycle = vec![false; states];
+                let mut current = entry;
+                for edge in &cycle {
+                    assert!(graph.out(current).contains(edge), "{cycle:?} is not a path");
+                    current = edge.to;
+                    on_cycle[at(current)] = true;
+                }
+                let visited: Vec<u32> = (0..states).filter(|s| on_cycle[*s]).map(index32).collect();
+                for call in 0..calls {
+                    let taken = cycle.iter().any(|edge| edge.call == call);
+                    let enabled = |state: &u32| graph.target(*state, call).is_some();
+                    let ok = match fair[at(call)] {
+                        Fairness::Unfair => true,
+                        Fairness::Weak => taken || !visited.iter().all(enabled),
+                        Fairness::Strong => taken || !visited.iter().any(enabled),
+                    };
+                    assert!(ok, "cycle {cycle:?} starves call {call}, fairness {fair:?}");
+                }
+            }
+        }
+    }
 }

@@ -161,7 +161,8 @@ fn conforms_to_specification() {
 | `always possible <condition>` | from every state there is still a way to reach it |
 | `terminal when <condition>` | the system only stops where you said it may; anything else is a deadlock |
 
-Liveness is checked under the fairness you declare (`fair action`), and a
+Liveness is checked under the fairness you declare (`fair action`,
+`strongly fair action`), and a
 violation is reported as a loop:
 
 ```console
@@ -173,6 +174,10 @@ counterexample:
   1. start  ->  status=running
   2. crash  ->  status=queued
 ```
+
+`succeed` is weakly fair, and a crash keeps disabling it. Declaring
+`strongly fair action succeed` (a call enabled again and again is eventually
+taken) makes the property hold.
 
 Concurrency bugs are ordinary counterexamples. `examples/broken/lost-update.zin`
 models two workers doing read-then-write on a shared counter:
@@ -190,6 +195,12 @@ counterexample:
 
 Exploration is exhaustive within the declared finite domains. Hitting the state
 limit is an error, never a silent partial pass.
+
+Larger systems split into components: several `system` blocks in one file
+share no state and synchronize on actions with the same name
+(`examples/request-reply.zin`). Identical components declared
+`interchangeable` are explored once per arrangement up to renaming
+(`examples/mutex.zin`). See [the language reference](docs/language.md).
 
 ## Is the specification itself any good?
 
@@ -223,7 +234,8 @@ The bindings ship a `Recorder` that writes this format.
 ## Commands
 
 ```text
-zin check <spec>... [--format json]   prove every property over every reachable state
+zin check <spec>... [--format json] [--symmetry on|off]
+                                      prove every property over every reachable state
 zin plan <spec> [--out FILE] [--cover transitions|states|actions|scenarios] [--max-steps N]
 zin trace <spec> <events.jsonl|->     check a recorded execution
 zin audit <spec>                      list specification changes nothing notices

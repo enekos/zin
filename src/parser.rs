@@ -1,6 +1,6 @@
 use crate::ast::{
-    Action, ActionCall, Assignment, BinaryOperator, CallArguments, Condition, Expr, Field,
-    Property, PropertyKind, Quantifier, Scenario, ScenarioStep, Spec, TargetKey, TypeDecl,
+    Action, ActionCall, Assignment, BinaryOperator, CallArguments, Condition, Expr, Fairness,
+    Field, Property, PropertyKind, Quantifier, Scenario, ScenarioStep, Spec, TargetKey, TypeDecl,
     TypeExpr, UnaryOperator, Value, is_reserved_word,
 };
 use crate::{Error, Result};
@@ -69,10 +69,42 @@ pub(crate) fn fingerprint(source: &str) -> String {
     format!("{hash:016x}")
 }
 
+/// Parses a specification. Several `system` blocks in one file make a
+/// composition: see [`crate::compose`].
+///
+/// # Errors
+///
+/// Returns the first syntax error, with its line, or a composition error.
 pub fn parse(source: &str) -> Result<Spec> {
     let lines = logical_lines(source)?;
-    let mut spec = Spec::empty();
+    let mut components: Vec<Vec<Line>> = Vec::new();
+    for line in lines {
+        let starts_system = line.indent == 0 && after_keyword(&line.content, "system").is_some();
+        match components.last_mut() {
+            Some(component) if !starts_system => component.push(line),
+            _ => components.push(vec![line]),
+        }
+    }
+    let composed = components.len() > 1;
+    let mut specs = Vec::with_capacity(components.len());
+    for lines in components {
+        specs.push(parse_component(lines, composed)?);
+    }
+    let mut spec = if specs.len() == 1 {
+        specs.pop().unwrap_or_else(Spec::empty)
+    } else if specs.is_empty() {
+        parse_component(Vec::new(), false)?
+    } else {
+        crate::compose::compose(specs)?
+    };
     spec.fingerprint = fingerprint(source);
+    Ok(spec)
+}
+
+/// One `system` block. In a composition a block may leave out state, to hold
+/// properties and scenarios about the whole.
+fn parse_component(lines: Vec<Line>, composed: bool) -> Result<Spec> {
+    let mut spec = Spec::empty();
     let mut section = Section::None;
     let mut seen = Seen::default();
 
@@ -87,11 +119,18 @@ pub fn parse(source: &str) -> Result<Spec> {
     if !seen.system {
         return Err(Error::new("a specification must start with system \"...\""));
     }
+    if composed && !seen.state && !seen.initially {
+        return Ok(spec);
+    }
+    let fail = |message: &str| match composed {
+        true => Error::new(format!("{}: {message}", spec.name)),
+        false => Error::new(message),
+    };
     if !seen.state || spec.state.is_empty() {
-        return Err(Error::new("declare at least one field in a state block"));
+        return Err(fail("declare at least one field in a state block"));
     }
     if !seen.initially {
-        return Err(Error::new("declare an initially block"));
+        return Err(fail("declare an initially block"));
     }
     Ok(spec)
 }
@@ -100,10 +139,15 @@ fn parse_block_line(spec: &mut Spec, section: Section, line: &Line) -> Result<()
     let content = line.content.as_str();
     match section {
         Section::Types => {
+            let (interchangeable, content) = match after_keyword(content, "interchangeable") {
+                Some(rest) => (true, rest),
+                None => (false, content),
+            };
             let field = parse_field(content, line.number)?;
             spec.types.push(TypeDecl {
                 name: field.name,
                 kind: field.kind,
+                interchangeable,
                 line: field.line,
             });
         }
@@ -213,11 +257,22 @@ fn parse_top_level(spec: &mut Spec, line: &Line, seen: &mut Seen) -> Result<Sect
         spec.terminal = Some(parse_condition(source, line.number)?);
         return Ok(Section::None);
     }
-    if let Some(rest) = after_keyword(content, "fair") {
-        let rest = after_keyword(rest, "action")
-            .ok_or_else(|| Error::at(line.number, "expected 'fair action <name>'"))?;
+    let fairness = if let Some(rest) = after_keyword(content, "strongly") {
+        Some((Fairness::Strong, after_keyword(rest, "fair")))
+    } else {
+        after_keyword(content, "fair").map(|rest| (Fairness::Weak, Some(rest)))
+    };
+    if let Some((fairness, rest)) = fairness {
+        let rest = rest
+            .and_then(|rest| after_keyword(rest, "action"))
+            .ok_or_else(|| {
+                Error::at(
+                    line.number,
+                    format!("expected '{} action <name>'", fairness.keyword()),
+                )
+            })?;
         let mut action = parse_action(rest, line.number)?;
-        action.fair = true;
+        action.fairness = fairness;
         spec.actions.push(action);
         return Ok(Section::Action(spec.actions.len() - 1));
     }
@@ -473,7 +528,7 @@ fn parse_action(source: &str, line: usize) -> Result<Action> {
     tokens.finish()?;
     Ok(Action {
         name,
-        fair: false,
+        fairness: Fairness::Unfair,
         params,
         requires: Vec::new(),
         assignments: Vec::new(),

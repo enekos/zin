@@ -44,6 +44,38 @@ Enum values are plain words. Quote one (`"on"`) when it would otherwise read as
 a keyword or as another name. An enum value may belong to several enums; where
 that makes an expression ambiguous the checker says so.
 
+### Interchangeable values
+
+```zin
+types
+  interchangeable worker is one of ann, ben, cid, dot
+
+state
+  at is a map from worker to phase
+  holder is one of ann, ben, cid, dot, nobody
+```
+
+Declare an enumeration `interchangeable` when nothing in the specification
+treats one of its values differently from another: four identical workers,
+three replicas, a pool of connections. `zin check` then explores one state
+for each arrangement up to renaming the values (`examples/mutex.zin`: 9
+states instead of 48), and a counterexample is still reported as an ordinary
+run with the real names.
+
+The checker holds you to it:
+
+- Actions, properties and initial values may not name an interchangeable
+  value. Reach them through parameters (`enter(w is a worker)`), quantifiers
+  and `of every`. Scenarios may name them, since they describe one run.
+- Another enumeration holds all of a type's interchangeable values or none:
+  `one of ann, ben, cid, dot, nobody` is fine, `one of ann, nobody` is not.
+- At most 8 interchangeable values in total (8! relabelings).
+
+Conformance plans, `zin trace` and diagrams always use the full state space,
+because tests drive real values. Liveness under fairness is also checked on
+the full state space: fairness is per call, and renaming changes which call
+is which. `zin check --symmetry off` turns the reduction off.
+
 ## State and initial values
 
 ```zin
@@ -193,8 +225,21 @@ fair action finish
 `fair` is weak fairness, per call: if a call of a fair action stays enabled
 forever, it is eventually taken. A violation then needs a loop in which, for
 every fair call, the call is disabled somewhere on the loop or taken on it.
-Fairness does not help when the call is only enabled on and off
-(`examples/broken/stuck-job.zin`).
+Weak fairness does not help when the call is only enabled on and off
+(`examples/broken/stuck-job.zin`): a job that keeps crashing back to the queue
+is never continuously ready to succeed.
+
+```zin
+strongly fair action succeed
+  requires status is running
+  status becomes succeeded
+```
+
+`strongly fair` is strong fairness, per call: if a call is enabled again and
+again, forever, it is eventually taken. A violation then needs a loop that
+takes every strongly fair call enabled anywhere on it. Use it for retries and
+for a scheduler that keeps offering the same choice; it is a stronger promise
+about the environment, so make sure the real one keeps it.
 
 A liveness counterexample is a path followed by `then forever:` and a loop.
 
@@ -222,6 +267,52 @@ Each scenario starts from the initial state. A call must be enabled, a
 `reject` must be refused, an `expect` must hold. Scenarios document intended
 behavior, pin it against regressions in the specification, and become the
 first tests of every derived plan.
+
+## Composition
+
+Several `system` blocks in one file are checked as one system
+(`examples/request-reply.zin`):
+
+```zin
+system "Client"
+state
+  waiting is a boolean
+initially
+  waiting is false
+action request(n is an integer from 1 to 3)
+  requires not waiting
+  waiting becomes true
+
+system "Server"
+state
+  job is an integer from 0 to 3
+initially
+  job is 0
+action request(n is an integer from 1 to 3)
+  requires job is 0
+  job becomes n
+
+system "Request and reply"         # no state: names the whole
+always waiting implies job is not 0
+```
+
+- **Components share no state.** Field names must differ across blocks, and
+  a block's actions and `initially` read and write only its own fields.
+- **An action declared in several blocks is one step they all take at
+  once.** It is enabled when every block's `requires` holds and applies every
+  block's assignments. Parameters with the same name are the same value and
+  must have the same type, which is how data passes between components; the
+  merged action takes the first block's parameters, then any new ones, in
+  order. It is as fair as the fairest block declares it.
+- **Every other action interleaves**: it changes its own block's state only.
+- **Properties, `terminal when` and scenarios describe the whole** and may
+  name any block's fields. Put them in the block they concern, or in a block
+  without state, whose name then names the composition. Several `terminal
+  when` lines must all hold.
+- Types with the same name must be declared the same way in every block that
+  declares them. The largest `explore at most` wins.
+
+Plans, traces and tests treat a composition as one system under test.
 
 ## Limits
 

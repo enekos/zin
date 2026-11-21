@@ -1,0 +1,65 @@
+system "Client"
+
+# A client and a server checked together. 'request' and 'reply' appear in
+# both blocks, so each is one step the two take at once, and the shared
+# parameter n carries the request number from one to the other. 'work'
+# belongs to the server alone and interleaves with everything else.
+
+state
+  waiting is a boolean
+  asked is an integer from 0 to 3
+
+initially
+  waiting is false
+  asked is 0
+
+action request(n is an integer from 1 to 3)
+  requires not waiting
+  waiting becomes true
+  asked becomes n
+
+action reply(n is an integer from 1 to 3)
+  requires waiting and asked is n
+  waiting becomes false
+
+system "Server"
+
+state
+  job is an integer from 0 to 3
+  done is a boolean
+
+initially
+  job is 0
+  done is false
+
+action request(n is an integer from 1 to 3)
+  requires job is 0
+  job becomes n
+
+fair action work
+  requires job is not 0 and not done
+  done becomes true
+
+fair action reply(n is an integer from 1 to 3)
+  requires done and job is n
+  job becomes 0
+  done becomes false
+
+system "Request and reply"
+
+# A block without state names the composition and holds properties and
+# scenarios about the whole.
+
+always
+  waiting implies job is asked
+never
+  done and not waiting
+whenever waiting eventually not waiting
+always possible not waiting
+
+scenario "A request is answered"
+  request(2)
+  reject reply(2)
+  work
+  reply(2)
+  expect not waiting and job is 0
