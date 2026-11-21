@@ -69,10 +69,42 @@ pub(crate) fn fingerprint(source: &str) -> String {
     format!("{hash:016x}")
 }
 
+/// Parses a specification. Several `system` blocks in one file make a
+/// composition: see [`crate::compose`].
+///
+/// # Errors
+///
+/// Returns the first syntax error, with its line, or a composition error.
 pub fn parse(source: &str) -> Result<Spec> {
     let lines = logical_lines(source)?;
-    let mut spec = Spec::empty();
+    let mut components: Vec<Vec<Line>> = Vec::new();
+    for line in lines {
+        let starts_system = line.indent == 0 && after_keyword(&line.content, "system").is_some();
+        match components.last_mut() {
+            Some(component) if !starts_system => component.push(line),
+            _ => components.push(vec![line]),
+        }
+    }
+    let composed = components.len() > 1;
+    let mut specs = Vec::with_capacity(components.len());
+    for lines in components {
+        specs.push(parse_component(lines, composed)?);
+    }
+    let mut spec = if specs.len() == 1 {
+        specs.pop().unwrap_or_else(Spec::empty)
+    } else if specs.is_empty() {
+        parse_component(Vec::new(), false)?
+    } else {
+        crate::compose::compose(specs)?
+    };
     spec.fingerprint = fingerprint(source);
+    Ok(spec)
+}
+
+/// One `system` block. In a composition a block may leave out state, to hold
+/// properties and scenarios about the whole.
+fn parse_component(lines: Vec<Line>, composed: bool) -> Result<Spec> {
+    let mut spec = Spec::empty();
     let mut section = Section::None;
     let mut seen = Seen::default();
 
@@ -87,11 +119,18 @@ pub fn parse(source: &str) -> Result<Spec> {
     if !seen.system {
         return Err(Error::new("a specification must start with system \"...\""));
     }
+    if composed && !seen.state && !seen.initially {
+        return Ok(spec);
+    }
+    let fail = |message: &str| match composed {
+        true => Error::new(format!("{}: {message}", spec.name)),
+        false => Error::new(message),
+    };
     if !seen.state || spec.state.is_empty() {
-        return Err(Error::new("declare at least one field in a state block"));
+        return Err(fail("declare at least one field in a state block"));
     }
     if !seen.initially {
-        return Err(Error::new("declare an initially block"));
+        return Err(fail("declare an initially block"));
     }
     Ok(spec)
 }
