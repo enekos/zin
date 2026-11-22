@@ -29,7 +29,7 @@ usage:
   zin audit <spec>                      mutate the specification; list changes nothing notices
   zin init <framework> <spec>           print a conformance test skeleton
                                         (pytest, unittest, jest, vitest, node, playwright,
-                                        testing-library, go, rust)
+                                        testing-library, go, rust, junit, xunit, rspec, phpunit)
   zin report <spec>                     Markdown report with Mermaid diagrams
   zin diagram <spec> [scenario]         Mermaid state diagram, or one scenario's sequence diagram
 
@@ -476,7 +476,12 @@ fn init(args: &[String]) -> Result<Output> {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or(spec);
-    Ok(ok(scaffold(&verification.model, file, framework)))
+    let path = if framework == Framework::Junit {
+        spec
+    } else {
+        file
+    };
+    Ok(ok(scaffold(&verification.model, path, framework)))
 }
 
 fn diagram(args: &[String]) -> Result<Output> {
