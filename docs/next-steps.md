@@ -1,6 +1,8 @@
 # Zin development plan
 
-**Draft · 22 November 2026 · reviewed against `main` at `3b8afd5`.**
+**Implementation record · 22 November 2026 · original baseline `3b8afd5`.**
+
+The findings below describe the original checkout. The 0.3 branch adds the checker fixes, executable language contracts, adjacent-call coverage, native runners and reporters, composition, refinement and packaging checks. The [pilot results](../examples/pilots/README.md) and [benchmark results](performance.md) document the outcomes. Independent human onboarding time and public registry publication remain follow-up activities.
 
 Fix the checker verdict and the contract between checker and runners before releasing 0.3.0. Judge the next development cycle by the implementation defects Zin catches, the cost of replay, and whether a developer can turn each failure into a regression test in their own repository.
 

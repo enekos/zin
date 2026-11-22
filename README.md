@@ -11,7 +11,7 @@ behavioral contract, and the `zin` tool does three things with it:
 2. **Turns it into tests.** From the proven model, Zin derives a test plan that
    exercises every transition and every refusal, and runs it inside the test
    framework you already use: pytest, unittest, Jest, Vitest, `node:test`,
-   Mocha, Playwright, `go test`, `cargo test`.
+   Mocha, Playwright, `go test`, `cargo test`, JUnit, xUnit, RSpec and PHPUnit.
 3. **Keeps it honest.** `zin audit` mutates the specification to show which
    rules nothing checks; `zin trace` checks logs of real executions against it.
 
@@ -149,6 +149,19 @@ fn conforms_to_specification() {
 `zin init <framework> <spec>` prints the skeleton for your specification. See
 [conformance testing](docs/conformance.md).
 
+### More test frameworks
+
+| Framework | Register tests | Example |
+| --- | --- | --- |
+| JUnit 5 | `Zin.plan(path).tests(factory)` in a Jupiter test factory | [Java binding](bindings/junit/README.md) |
+| xUnit | Return `Plan.Cases()` from a theory data provider | [.NET binding](bindings/dotnet/README.md) |
+| RSpec | `Zin.verify(path) { MyAdapter.new }` | [Ruby binding](bindings/ruby/README.md) |
+| PHPUnit | Yield `$plan->cases()` from a data provider | [PHP binding](bindings/php/README.md) |
+
+### Catch history-dependent bugs
+
+A one-state model that accepts `ack` covers every transition in a single call. A receiver that incorrectly rejects the second acknowledgement can still pass. Run `zin plan receiver.zin --cover pairs` to exercise repeated calls, or add `--pair-limit 30 --step-budget 500` for a deterministic sample with a hard replay ceiling. The [paired implementation pilots](examples/pilots/README.md) measure which defects each mode finds and its cost.
+
 ## What a check proves
 
 | You write | Zin proves, over every reachable state |
@@ -250,9 +263,9 @@ input could not be used.
 ## Install
 
 ```sh
-cargo install zin-spec            # the zin binary (Rust 1.85+); crate zin-spec, library `zin`
-pip install zin-verify            # pytest / unittest binding
-npm install --save-dev zin-verify # Jest, Vitest, node:test, Mocha, Playwright; CommonJS + ESM, types included
+cargo install --path . --locked          # the zin binary and checker from this checkout (Rust 1.88+)
+python -m pip install ./bindings/python  # pytest / unittest binding from this checkout
+npm install --save-dev ./bindings/js     # JS binding with Playwright and Vitest reporting from this checkout
 go get github.com/enekos/zin/bindings/go
 ```
 

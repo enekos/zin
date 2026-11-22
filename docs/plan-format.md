@@ -37,7 +37,11 @@ Written by `zin plan`. Compact JSON, one line.
 | Key | Meaning |
 | --- | --- |
 | `fingerprint` | FNV-1a 64 of the specification file's bytes, 16 lowercase hex digits. A binding compares it with the specification on disk to detect a stale plan. |
-| `cover` | the coverage goal the plan was derived for |
+| `cover` | the coverage goal (`transitions`, `states`, `actions`, `scenarios` or `pairs`) |
+| `max_steps`, `step_budget`, `pair_limit` | Tour target, total replay ceiling, and optional pair-sampling target. New sibling caches validate these values. Legacy plans without generation metadata can be replayed explicitly. |
+| `sources` | Imported paths relative to the entry file and their source fingerprints. Validate each when matching a saved plan to a specification. |
+| `component` | Component name for plans scoped to one component, otherwise null. |
+| `summary` | Full-model state, transition and refusal counts plus emitted test and step counts. Pair plans add `covered_pairs` and `eligible_pairs`. Repeated setup calls contribute to step counts. |
 | `fields` | the state variables. Types: `integer` (`min`, `max`), `boolean`, `enum` (`values`), `map` (`keys` as strings, `value` type) |
 | `actions` | actions and their parameters, in declaration order |
 | `states` | the model states the plan refers to, as objects. Integers are JSON numbers, booleans JSON booleans, enum values strings, maps objects keyed by the key's text. State `0` is the initial state. Only states the plan uses are listed. |
@@ -58,9 +62,10 @@ anything that is neither an acceptance nor a recognized rejection as an error.
 
 On a failure at step *n*, walk `parents` back from the model state before step
 *n* to get the shortest call sequence to it, append step *n*, and rerun on a
-fresh implementation. If it fails again, report it as the shortest
-reproduction; if not, say that the failure depends on state the specification
-does not model.
+fresh implementation. Report the shorter reproduction only if it reaches the
+same failing operation and reproduces the same mismatch. Keep the original
+prefix and the source fingerprint so the developer can replay it. If the rerun
+passes or exposes a different failure, the original history is still required.
 
 ## `check/1`
 

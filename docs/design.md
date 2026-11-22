@@ -116,11 +116,15 @@ shared actions are the only coupling between components.
 
 ## Roadmap
 
-The [November 2026 development plan](next-steps.md) proposes an order for these
-items alongside checker fixes, conformance improvements and performance work.
+The 0.3 development branch implements native JVM, .NET, Ruby and PHP runners,
+pytest and Vitest model coverage, multi-file composition, isolated component
+plans and bounded deterministic refinement. The [development plan](next-steps.md)
+records the original findings and acceptance criteria. The [defect corpus](../examples/pilots/README.md)
+and [performance measurements](performance.md) show the resulting work and costs.
 
-- Bindings: JUnit 5, xUnit/.NET, RSpec, PHPUnit. Each is a plan replayer.
-- A pytest plugin and a Vitest reporter that show model coverage.
-- Composition across files, and plans that test one component against the
-  rest of the composition as its environment.
-- Refinement checking between two specifications.
+The next product decision is how much history to explore for a given replay
+budget. Collect first-use measurements with independent developers and additional
+historical bugs from consuming projects. Use reproducible failures, engineering
+time to the first useful failure and replay cost to judge longer seeded walks
+or assertions about returned values and emitted events. The current corpus
+already distinguishes the faults it models using acceptance and observed state.

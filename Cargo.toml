@@ -1,8 +1,8 @@
 [package]
 name = "zin-spec"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "English-like specifications, exhaustively model checked, then run as conformance tests inside your test framework"
 license = "MIT"
 repository = "https://github.com/enekos/zin"
@@ -10,7 +10,7 @@ homepage = "https://github.com/enekos/zin"
 readme = "README.md"
 keywords = ["specification", "model-checking", "testing", "conformance", "formal-methods"]
 categories = ["development-tools::testing", "command-line-utilities"]
-include = ["/src", "/tests", "/examples", "/docs", "/README.md", "/LICENSE"]
+include = ["/src", "/tests", "/examples/*.zin", "/examples/broken/*.zin", "/docs", "/README.md", "/LICENSE"]
 
 [lib]
 name = "zin"

@@ -204,16 +204,16 @@ So you choose per project:
 | Cover | The plan contains |
 | --- | --- |
 | `transitions` (default) | every transition, and every rejected call in every state |
-| `states` | a visit to every state, and every rejected call in every state |
+| `states` | a visit to every reachable state |
 | `actions` | every action accepted once and, where possible, rejected once |
 | `scenarios` | only the scenarios you wrote |
+| `pairs` | every pair of adjacent concrete calls from each reachable state, including repeated and rejected calls |
 
-Tours are capped at `--max-steps` steps (default 200) so a failure never
-leaves you with a 10,000-step test; more, shorter tours cost more setup.
+A refusal leaves the model in place, so `ack, ack` and `reject close, deposit(1)` are legitimate adjacent calls. Pair obligations are identified by their starting model state and the two call IDs. Pair generation tries repetitions first and counts extra pairs exercised during setup. For a deterministic sample, use `zin plan model.zin --cover pairs --pair-limit 30`. Its summary reports covered and eligible pairs. A limit above the number eligible requests full coverage.
 
-The number of steps is roughly `states × calls`. When that is too many for a
-slow implementation (a database, a browser), shrink the model's ranges for
-testing, use `states`, or run `transitions` nightly.
+`--max-steps` is a soft tour target (default 200). Reaching a deep state can require a longer uninterrupted setup. `--step-budget` is a hard total across all tests, including setup, generated witnesses and authored scenarios (default and maximum 2,000,000). When the requested goal cannot fit, planning exits with a limit error. A smaller `--pair-limit` explicitly selects less coverage.
+
+Use `states` for a quick check of observable state, `transitions` for exhaustive accept/refuse checks over the model, and `pairs` to expose implementation state that depends on call history. For all coverage modes except `scenarios`, nonempty `sometimes` witnesses and authored scenarios run first.
 
 ## What it does and does not show
 
@@ -258,7 +258,7 @@ applies small changes (drop a `requires`, drop an assignment, flip a
 comparison, shift a constant) and re-checks each mutant:
 
 - **caught**: a property or scenario fails. Good.
-- **SURVIVED**: the reachable behavior changed and nothing noticed. Add a
+- **SURVIVED**: the reachable behavior changed and nothing noticed. The report shows a shortest distinguishing prefix, the call, and both outcomes. Add a
   property or a scenario (a `reject` line is often enough), or delete the
   redundant rule.
 - **same**: the reachable behavior is unchanged; the rule is implied by others.

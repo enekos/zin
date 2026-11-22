@@ -378,7 +378,7 @@ Zin then covers the full reachable local graph with the requested mode.
 For the client, a server-only `work` vanishes from the plan and a `reply` may
 be tested immediately after a `request`. In Rust, pass the result of
 `verify_component(&spec, "Client")` to `Plan::build`. A projected plan carries
-its target in the top-level `component` field. A whole-system plan omits it.
+its target in the top-level `component` field. A whole-system plan leaves it null or omits it.
 
 ## Bounded deterministic refinement
 
