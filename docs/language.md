@@ -72,9 +72,9 @@ The checker holds you to it:
 - At most 8 interchangeable values in total (8! relabelings).
 
 Conformance plans, `zin trace` and diagrams always use the full state space,
-because tests drive real values. Liveness under fairness is also checked on
-the full state space: fairness is per call, and renaming changes which call
-is which. `zin check --symmetry off` turns the reduction off.
+because tests drive real values. Liveness under fairness also uses the full state space because fairness is
+per call. Short-circuiting quantifiers with potentially faulting bodies use
+full exploration so their order of evaluation is preserved. `zin check --symmetry off` turns the reduction off.
 
 ## State and initial values
 
@@ -325,3 +325,81 @@ limited to 64.
 
 After a successful check the tool also notes actions that are never enabled in
 any reachable state, since these are usually mistakes.
+
+## Source files and diagnostics
+
+A file may start with `include "relative/path.zin"` directives, followed by
+complete system blocks. An entry may also contain only includes. Included
+blocks have exactly the same semantics as blocks written in one file. Paths
+resolve relative to the including file and stay within the entry directory.
+A shared dependency is read once per normalized path. A cycle reports the
+include that closes it. The combined source limit is 4 MiB, with up to 1,024
+files nested at most 64 levels.
+
+All file-based CLI commands use this loader. In Rust, call `parse_file(path)`
+for file-based specs and `parse(source)` for self-contained text. A generated
+plan records the entry fingerprint and a `sources` object containing the
+fingerprint of each included file. Editing an included file invalidates the
+saved plan.
+
+`zin check --format json` gives each diagnostic a stable `code`. For example,
+`name.unknown` identifies an unresolved expression name, `type.mismatch`
+identifies incompatible values, and `component.field_conflict` identifies two
+owners of a field. A `span` carries the original file, line, column and
+exclusive `end_column`. Line and column numbers begin at one and columns count
+Unicode scalar values. A token or statement is highlighted, and a conflicting
+declaration can have a second location in `related`. Rust callers can use
+`Error::code`, `source_span` and `related_span`.
+
+Boolean expressions short-circuit left to right. `some` stops at its first
+witness and `every` at its first counterexample, in declared domain order.
+An unevaluated expression can contain a division, arithmetic overflow or
+invalid map key. A check with interchangeable values uses full exploration if
+a short-circuiting quantifier's body can encounter such a fault. Executable
+examples exercise precedence, quantifier scope, simultaneous assignments,
+fairness and shared parameters. [Language cases](language-cases.md)
+
+## Checking a component in isolation
+
+```sh
+zin plan examples/request-reply.zin --component Client --cover transitions --out client.plan.json
+```
+
+Zin verifies the complete composition, then builds a plan for the named
+component. The adapter implements only its actions and observes only its
+fields. A controllable environment may offer each shared action whenever the
+component's own guard allows it. This can exercise local behavior that a
+particular implementation of the other components never requests.
+
+Whole-system scenarios first pass against the composition. Their projections
+retain local calls and the component's own refusals. An environment-only call
+or a call refused exclusively by the environment never reaches the adapter.
+Zin then covers the full reachable local graph with the requested mode.
+For the client, a server-only `work` vanishes from the plan and a `reply` may
+be tested immediately after a `request`. In Rust, pass the result of
+`verify_component(&spec, "Client")` to `Plan::build`. A projected plan carries
+its target in the top-level `component` field. A whole-system plan omits it.
+
+## Bounded deterministic refinement
+
+```sh
+zin refine contract.zin candidate.zin
+zin refine contract.zin candidate.zin --field status=phase --action retry=resubmit --max-pairs 100000
+```
+
+The first specification defines the observable contract. Fields and actions
+map by name. Repeat `--field` and `--action` to rename them. Each mapped
+action has the same set of finite calls, with arguments matched by parameter
+name. The implementation may have extra fields and private actions.
+
+After verifying both specifications, Zin explores reachable pairs of states
+breadth first, starting with their initial states. Mapped fields must compare
+equal at every pair. Every visible call must agree on both acceptance and
+refusal. A private concrete action may change internal state but must preserve
+the abstract observations and future visible behavior. A disagreement reports
+a concrete prefix and the differing observation or call. The default limit
+is one million reachable pairs. Reaching the limit gives an inconclusive
+limit error. Temporal properties and fairness are checked on each input
+individually. The refinement relation compares finite observations and
+refusals and permits private stuttering. Rust exposes the same check through
+`refine` and `RefinementOptions`.

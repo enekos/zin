@@ -16,6 +16,9 @@ pub fn state_diagram(verification: &Verification) -> String {
     let graph = &verification.graph;
     let shown = graph.state_count().min(MAX_DIAGRAM_STATES);
     let mut out = String::from("stateDiagram-v2\n");
+    if graph.reduced {
+        out.push_str("    note right of s0: states are representatives up to symmetry\n");
+    }
     for state in 0..shown {
         let _ = writeln!(
             out,
@@ -71,9 +74,25 @@ pub fn sequence_diagram(verification: &Verification, scenario: &ScenarioRun) -> 
         "    Note over System: {}",
         label(&display_state(&verification.state(0)))
     );
+    let mut concrete = verification.model.initial.clone();
+    let mut locals = verification.model.new_locals();
     for event in &scenario.events {
         match event {
             ScenarioEvent::Call { call, to } => {
+                let observed = if verification.graph.reduced {
+                    match verification.model.step(*call, &concrete, &mut locals) {
+                        Ok(Some(next)) => {
+                            concrete = next;
+                            verification.model.decode(&concrete)
+                        }
+                        _ => {
+                            out.push_str("    Note right of System: scenario cannot be replayed\n");
+                            break;
+                        }
+                    }
+                } else {
+                    verification.state(*to)
+                };
                 let _ = writeln!(
                     out,
                     "    Client->>System: {}",
@@ -82,7 +101,7 @@ pub fn sequence_diagram(verification: &Verification, scenario: &ScenarioRun) -> 
                 let _ = writeln!(
                     out,
                     "    Note over System: {}",
-                    label(&display_state(&verification.state(*to)))
+                    label(&display_state(&observed))
                 );
             }
             ScenarioEvent::Reject { call } => {

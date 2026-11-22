@@ -54,6 +54,7 @@ pub(crate) fn compose(components: Vec<Spec>) -> Result<Spec> {
         .iter()
         .map(|component| component.name.clone())
         .collect();
+    spec.component_specs = components.clone().into();
     let mut limits = Vec::new();
     let mut terminal: Vec<Condition> = Vec::new();
     for component in components {
@@ -107,7 +108,9 @@ fn owners(components: &[Spec]) -> Result<HashMap<&str, (&str, usize)>> {
                          share no state, so rename one and pass values through a shared action",
                         field.name
                     ),
-                ));
+                )
+                .diagnosed("component.field_conflict", Some(&field.name))
+                .related(*line));
             }
             owners.insert(&field.name, (&component.name, field.line));
         }
@@ -218,7 +221,9 @@ fn merge_type(types: &mut Vec<TypeDecl>, declaration: TypeDecl, component: &str)
                      share a type must declare it the same way",
                     declaration.name, other.line
                 ),
-            ));
+            )
+            .diagnosed("component.type_conflict", Some(&declaration.name))
+            .related(other.line));
         }
     }
     Ok(())
@@ -241,7 +246,9 @@ fn merge_action(actions: &mut Vec<Action>, action: Action, component: &str) -> R
                          but line {} gives it {}",
                         param.name, action.name, param.kind, other.line, other.kind
                     ),
-                ));
+                )
+                .diagnosed("component.parameter_conflict", Some(&param.name))
+                .related(other.line));
             }
         }
     }

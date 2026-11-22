@@ -2,6 +2,7 @@ pub mod ast;
 mod audit;
 mod check;
 pub mod cli;
+mod component;
 mod compose;
 pub mod conform;
 mod explore;
@@ -11,25 +12,30 @@ mod model;
 mod parser;
 mod plan;
 mod properties;
+mod refinement;
 mod report;
 mod scaffold;
+mod source;
 mod symmetry;
 mod trace;
 
 pub use ast::{Spec, Value};
-pub use audit::{Audit, Mutant, MutantFate, audit};
+pub use audit::{Audit, Distinction, Mutant, MutantFate, audit};
 pub use check::{
     Options, PropertyResult, ScenarioEvent, ScenarioRun, Verification, verify, verify_with,
 };
+pub use component::verify_component;
 pub use explore::{Edge, Graph};
 pub use json::Json;
 pub use mermaid::{sequence_diagram, state_diagram};
 pub use model::{ActionInfo, Domain, FieldInfo, FieldType, Model, Param};
 pub use parser::parse;
 pub use plan::{Cover, Plan, PlanOptions, PlanStep, PlanTest, TestKind};
+pub use refinement::{Refinement, RefinementOptions, refine};
 pub use report::render_markdown;
 pub use scaffold::{Framework, scaffold};
-pub use trace::{TraceReport, check_trace};
+pub use source::{SourceSpan, parse_file};
+pub use trace::{TraceReport, check_trace, check_trace_reader};
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -85,9 +91,59 @@ pub struct Error {
     pub line: Option<usize>,
     pub message: String,
     pub trace: Option<Trace>,
+    detail: Option<Box<ErrorDetail>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ErrorDetail {
+    code: Option<&'static str>,
+    token: Option<String>,
+    related_line: Option<usize>,
+    span: Option<SourceSpan>,
+    related: Option<SourceSpan>,
 }
 
 impl Error {
+    fn details(&mut self) -> &mut ErrorDetail {
+        self.detail.get_or_insert_with(Box::default)
+    }
+
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        self.detail
+            .as_ref()
+            .and_then(|d| d.code)
+            .unwrap_or(match self.kind {
+                ErrorKind::Spec => "spec",
+                ErrorKind::Usage => "usage",
+                ErrorKind::Violation => "violation",
+                ErrorKind::Model => "model.fault",
+                ErrorKind::Limit => "limit",
+            })
+    }
+
+    #[must_use]
+    pub fn source_span(&self) -> Option<&SourceSpan> {
+        self.detail.as_ref()?.span.as_ref()
+    }
+
+    #[must_use]
+    pub fn related_span(&self) -> Option<&SourceSpan> {
+        self.detail.as_ref()?.related.as_ref()
+    }
+
+    pub(crate) fn diagnosed(mut self, code: &'static str, token: Option<&str>) -> Self {
+        let d = self.details();
+        d.code = Some(code);
+        d.token = token.map(str::to_owned);
+        self
+    }
+
+    pub(crate) fn related(mut self, line: usize) -> Self {
+        self.details().related_line = Some(line);
+        self
+    }
+
     pub fn new(message: impl Into<String>) -> Self {
         Self::of(ErrorKind::Spec, None, message)
     }
@@ -106,6 +162,7 @@ impl Error {
             line,
             message: message.into(),
             trace: None,
+            detail: None,
         }
     }
 
@@ -161,10 +218,19 @@ impl fmt::Display for Trace {
 
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(line) = self.line {
+        if let Some(span) = self.source_span().filter(|s| !s.file.is_empty()) {
+            write!(formatter, "{}:{}:{}: ", span.file, span.line, span.column)?;
+        } else if let Some(line) = self.line {
             write!(formatter, "line {line}: ")?;
         }
         formatter.write_str(&self.message)?;
+        if let Some(span) = self.related_span().filter(|s| !s.file.is_empty()) {
+            write!(
+                formatter,
+                " (first declaration at {}:{}:{})",
+                span.file, span.line, span.column
+            )?;
+        }
         if let Some(trace) = &self.trace {
             write!(formatter, "\ncounterexample:\n{trace}")?;
         }

@@ -76,6 +76,13 @@ pub(crate) fn fingerprint(source: &str) -> String {
 ///
 /// Returns the first syntax error, with its line, or a composition error.
 pub fn parse(source: &str) -> Result<Spec> {
+    let map = crate::source::SourceMap::inline(source);
+    let mut spec = parse_flat(source).map_err(|e| map.locate(e))?;
+    spec.source_map = Some(map);
+    Ok(spec)
+}
+
+pub(crate) fn parse_flat(source: &str) -> Result<Spec> {
     let lines = logical_lines(source)?;
     let mut components: Vec<Vec<Line>> = Vec::new();
     for line in lines {
@@ -385,7 +392,7 @@ fn logical_lines(source: &str) -> Result<Vec<Line>> {
     Ok(result)
 }
 
-fn strip_comment(line: &str) -> &str {
+pub(crate) fn strip_comment(line: &str) -> &str {
     let mut quoted = false;
     let mut escaped = false;
     for (index, character) in line.char_indices() {

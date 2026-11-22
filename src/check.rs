@@ -97,6 +97,14 @@ pub fn verify(spec: &Spec) -> Result<Verification> {
 ///
 /// As [`verify`].
 pub fn verify_with(spec: &Spec, options: Options) -> Result<Verification> {
+    let result = verify_inner(spec, options);
+    match &spec.source_map {
+        Some(map) => result.map_err(|e| map.locate(e)),
+        None => result,
+    }
+}
+
+fn verify_inner(spec: &Spec, options: Options) -> Result<Verification> {
     let mut model = Model::compile(spec)?;
     let mut notes = Vec::new();
     let mut reduce = options.symmetry && !model.interchangeable.is_empty();

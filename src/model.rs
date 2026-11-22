@@ -230,6 +230,9 @@ pub(crate) struct Fault {
 pub struct Model {
     pub name: String,
     pub fingerprint: String,
+    pub sources: BTreeMap<String, String>,
+    pub component: Option<String>,
+    pub(crate) source_map: Option<std::sync::Arc<crate::source::SourceMap>>,
     pub state_limit: usize,
     pub fields: Vec<FieldInfo>,
     pub actions: Vec<ActionInfo>,
@@ -256,7 +259,11 @@ pub(crate) fn at(value: u32) -> usize {
 
 impl Model {
     pub fn compile(spec: &Spec) -> Result<Self> {
-        Compiler::new(spec).compile()
+        let result = Compiler::new(spec).compile();
+        match &spec.source_map {
+            Some(map) => result.map_err(|e| map.locate(e)),
+            None => result,
+        }
     }
 
     pub(crate) fn order_sensitive_evaluation(&self) -> bool {
@@ -729,6 +736,9 @@ impl<'a> Compiler<'a> {
         let mut model = Model {
             name: spec.name.clone(),
             fingerprint: spec.fingerprint.clone(),
+            sources: spec.sources.clone(),
+            component: None,
+            source_map: spec.source_map.clone(),
             state_limit: spec.state_limit,
             fields: self.fields,
             actions,
@@ -1119,7 +1129,8 @@ impl<'a> Compiler<'a> {
                     condition.source,
                     ty.noun()
                 ),
-            ));
+            )
+            .diagnosed("type.mismatch", Some(&condition.source)));
         }
         Ok(CompiledCondition {
             ir,
@@ -1202,7 +1213,8 @@ impl<'a> Compiler<'a> {
                     assignment.source,
                     self.describe_ty(&ty)
                 ),
-            ));
+            )
+            .diagnosed("type.mismatch", Some(&assignment.field)));
         }
         Ok(CompiledAssignment {
             target,
@@ -1340,7 +1352,8 @@ impl<'a> Compiler<'a> {
         Err(Error::at(
             line,
             format!("unknown name {name}; declare it or use a quoted enum value"),
-        ))
+        )
+        .diagnosed("name.unknown", Some(name)))
     }
 
     fn index(&mut self, map: &str, key: &Expr, line: usize) -> Result<(Ir, Ty)> {
@@ -1349,7 +1362,9 @@ impl<'a> Compiler<'a> {
             .get(map)
             .and_then(|index| self.fields.get(*index))
             .cloned()
-            .ok_or_else(|| Error::at(line, format!("unknown map {map}")))?;
+            .ok_or_else(|| {
+                Error::at(line, format!("unknown map {map}")).diagnosed("name.unknown", Some(map))
+            })?;
         let FieldType::Map { keys, value, .. } = &field.kind else {
             return Err(Error::at(line, format!("{map} is not a map")));
         };
@@ -1413,7 +1428,8 @@ impl<'a> Compiler<'a> {
                         return Err(Error::at(
                             line,
                             format!("cannot compare {} with {}", left_ty.noun(), right_ty.noun()),
-                        ));
+                        )
+                        .diagnosed("type.mismatch", None));
                     }
                 }
                 Ty::Bool
@@ -1494,7 +1510,8 @@ fn expect(actual: &Ty, wanted: &Ty, what: &str, line: usize) -> Result<()> {
         Err(Error::at(
             line,
             format!("{what} needs {}, found {}", wanted.noun(), actual.noun()),
-        ))
+        )
+        .diagnosed("type.mismatch", None))
     }
 }
 

@@ -7,12 +7,12 @@ use crate::mermaid::{sequence_diagram, state_diagram};
 use crate::plan::{Cover, Plan, PlanOptions, state_json};
 use crate::report::render_markdown;
 use crate::scaffold::{Framework, scaffold};
-use crate::trace::check_trace;
-use crate::{Error, ErrorKind, Result, parse};
+use crate::trace::check_trace_reader;
+use crate::{Error, ErrorKind, Result, SourceSpan, Spec, parse, parse_file};
 use std::fmt::Write as _;
 use std::io::Read as _;
 
-const MAX_SPEC_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_SPEC_BYTES: u64 = crate::source::MAX_SPEC_BYTES as u64;
 const MAX_TRACE_BYTES: u64 = 1024 * 1024 * 1024;
 
 pub const USAGE: &str = "\
@@ -21,8 +21,10 @@ zin - specifications you can prove, then run against your code
 usage:
   zin check <spec>... [--format json] [--symmetry on|off]
                                         prove every property over every reachable state
-  zin plan <spec> [--out FILE] [--cover transitions|states|actions|scenarios] [--max-steps N]
-                                        derive the conformance test plan (JSON)
+  zin plan <spec> [--out FILE] [--cover transitions|states|actions|scenarios|pairs] [--max-steps N] [--step-budget N] [--pair-limit N]
+                                        derive the conformance test plan (JSON); --component NAME isolates a component
+  zin refine <abstract> <concrete> [--field abstract=concrete] [--action abstract=concrete] [--max-pairs N]
+                                        compare visible state, accepted calls and refusals
   zin trace <spec> <events.jsonl|->     check a recorded execution against the specification
   zin audit <spec>                      mutate the specification; list changes nothing notices
   zin init <framework> <spec>           print a conformance test skeleton
@@ -105,12 +107,29 @@ fn read(path: &str, limit: u64) -> Result<String> {
     Ok(text)
 }
 
+fn load_spec(path: &str) -> Result<Spec> {
+    if path == "-" {
+        parse(&read(path, MAX_SPEC_BYTES)?)
+    } else {
+        parse_file(path)
+    }
+}
+
 fn load(path: &str) -> Result<Verification> {
-    verify(&parse(&read(path, MAX_SPEC_BYTES)?)?)
+    verify(&load_spec(path)?)
 }
 
 fn load_with(path: &str, options: Options) -> Result<Verification> {
-    verify_with(&parse(&read(path, MAX_SPEC_BYTES)?)?, options)
+    verify_with(&load_spec(path)?, options)
+}
+
+fn span_json(span: &SourceSpan) -> Json {
+    Json::object([
+        ("file", Json::str(&span.file)),
+        ("line", Json::count(span.line)),
+        ("column", Json::count(span.column)),
+        ("end_column", Json::count(span.end_column)),
+    ])
 }
 
 fn error_json(error: &Error) -> Json {
@@ -137,6 +156,12 @@ fn error_json(error: &Error) -> Json {
     });
     Json::object([
         ("kind", Json::str(error.kind.label())),
+        ("code", Json::str(error.code())),
+        ("span", error.source_span().map_or(Json::Null, span_json)),
+        (
+            "related",
+            error.related_span().map_or(Json::Null, span_json),
+        ),
         ("line", error.line.map_or(Json::Null, Json::count)),
         ("message", Json::str(error.message.clone())),
         ("trace", trace),
@@ -163,9 +188,18 @@ fn check_json(path: &str, result: &Result<Verification>) -> Json {
                         .properties
                         .iter()
                         .map(|property| {
+                            let span = verification
+                                .model
+                                .source_map
+                                .as_ref()
+                                .and_then(|map| map.span(property.line, None));
                             Json::object([
                                 ("property", Json::str(property.text.clone())),
-                                ("line", Json::count(property.line)),
+                                (
+                                    "line",
+                                    Json::count(span.as_ref().map_or(property.line, |s| s.line)),
+                                ),
+                                ("span", span.as_ref().map_or(Json::Null, span_json)),
                             ])
                         })
                         .collect(),
@@ -257,19 +291,41 @@ fn check(args: &[String]) -> Result<Output> {
 }
 
 fn plan(args: &[String]) -> Result<Output> {
-    let arguments = Arguments::parse(args, &["out", "cover", "max-steps"])?;
+    let arguments = Arguments::parse(
+        args,
+        &[
+            "out",
+            "cover",
+            "max-steps",
+            "step-budget",
+            "pair-limit",
+            "component",
+        ],
+    )?;
     let mut options = PlanOptions::default();
     if let Some(cover) = arguments.option("cover") {
         options.cover = Cover::parse(cover)?;
     }
-    if let Some(steps) = arguments.option("max-steps") {
-        options.max_steps = steps
-            .parse()
-            .ok()
-            .filter(|steps| *steps > 0)
-            .ok_or_else(|| Error::usage("--max-steps needs a positive integer"))?;
-    }
-    let verification = load(arguments.one("specification file")?)?;
+    let positive = |name: &str| -> Result<Option<usize>> {
+        arguments
+            .option(name)
+            .map(|value| {
+                value
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| Error::usage(format!("--{name} needs a positive integer")))
+            })
+            .transpose()
+    };
+    options.max_steps = positive("max-steps")?.unwrap_or(options.max_steps);
+    options.step_budget = positive("step-budget")?.unwrap_or(options.step_budget);
+    options.pair_limit = positive("pair-limit")?;
+    let spec = load_spec(arguments.one("specification file")?)?;
+    let verification = match arguments.option("component") {
+        Some(name) => crate::verify_component(&spec, name)?,
+        None => verify(&spec)?,
+    };
     let plan = Plan::build(&verification, &options)?;
     let mut text = plan.to_json(&verification).to_compact();
     text.push('\n');
@@ -303,7 +359,21 @@ fn trace(args: &[String]) -> Result<Output> {
         ));
     };
     let verification = load(spec)?;
-    let report = check_trace(&verification.model, &read(events, MAX_TRACE_BYTES)?)?;
+    let report = if events == "-" {
+        check_trace_reader(
+            &verification.model,
+            std::io::stdin().lock(),
+            MAX_TRACE_BYTES,
+        )?
+    } else {
+        let file = std::fs::File::open(events)
+            .map_err(|e| Error::usage(format!("cannot read {events}: {e}")))?;
+        check_trace_reader(
+            &verification.model,
+            std::io::BufReader::new(file),
+            MAX_TRACE_BYTES,
+        )?
+    };
     Ok(ok(format!(
         "ok {}: {} events in {} run(s) conform to the specification\n",
         verification.model.name, report.events, report.runs
@@ -313,7 +383,8 @@ fn trace(args: &[String]) -> Result<Output> {
 fn run_audit(args: &[String]) -> Result<Output> {
     let arguments = Arguments::parse(args, &[])?;
     let path = arguments.one("specification file")?;
-    let audit = audit(&parse(&read(path, MAX_SPEC_BYTES)?)?)?;
+    let spec = load_spec(path)?;
+    let audit = audit(&spec)?;
     let mut stdout = String::new();
     let survivors = audit.survivors();
     for mutant in &audit.mutants {
@@ -324,11 +395,38 @@ fn run_audit(args: &[String]) -> Result<Output> {
             MutantFate::Invalid => ("skipped ", "does not type-check"),
             MutantFate::Inconclusive => ("skipped ", "exceeds an exploration limit"),
         };
+        let location = spec
+            .source_map
+            .as_ref()
+            .and_then(|map| map.span(mutant.line, None))
+            .filter(|span| !span.file.is_empty() && !spec.sources.is_empty())
+            .map_or_else(
+                || format!("line {}", mutant.line),
+                |span| format!("{}:{}:{}", span.file, span.line, span.column),
+            );
         let _ = writeln!(
             stdout,
-            "{mark} line {}: {} ({detail})",
-            mutant.line, mutant.description
+            "{mark} {location}: {} ({detail})",
+            mutant.description
         );
+        if let Some(witness) = &mutant.witness {
+            let outcome = |state: &Option<crate::State>| {
+                state.as_ref().map_or_else(
+                    || "rejected".to_string(),
+                    |state| format!("accepted, {}", crate::display_state(state)),
+                )
+            };
+            for call in &witness.prefix {
+                let _ = writeln!(stdout, "  {call}");
+            }
+            let _ = writeln!(
+                stdout,
+                "  {} → original {}, mutant {}",
+                witness.call,
+                outcome(&witness.original),
+                outcome(&witness.mutated)
+            );
+        }
     }
     if audit.truncated {
         let _ = writeln!(
@@ -385,12 +483,55 @@ fn diagram(args: &[String]) -> Result<Output> {
     Ok(ok(sequence_diagram(&verification, run)))
 }
 
+fn refinement(args: &[String]) -> Result<Output> {
+    let arguments = Arguments::parse(args, &["field", "action", "max-pairs"])?;
+    let [contract, concrete] = arguments.positional.as_slice() else {
+        return Err(Error::usage(
+            "refine needs an abstract and a concrete specification",
+        ));
+    };
+    if contract == "-" && concrete == "-" {
+        return Err(Error::usage("only one specification can come from stdin"));
+    }
+    let mut options = crate::RefinementOptions::default();
+    for (flag, value) in &arguments.options {
+        if flag == "max-pairs" {
+            options.max_pairs = value
+                .parse()
+                .ok()
+                .filter(|n| *n > 0)
+                .ok_or_else(|| Error::usage("--max-pairs needs a positive integer"))?;
+            continue;
+        }
+        let (from, to) = value
+            .split_once('=')
+            .filter(|(a, b)| !a.is_empty() && !b.is_empty())
+            .ok_or_else(|| Error::usage(format!("--{flag} needs abstract=concrete")))?;
+        let table = if flag == "action" {
+            &mut options.actions
+        } else {
+            &mut options.fields
+        };
+        if table.insert(from.to_owned(), to.to_owned()).is_some() {
+            return Err(Error::usage(format!(
+                "duplicate --{flag} mapping for {from}"
+            )));
+        }
+    }
+    let checked = crate::refine(&load_spec(contract)?, &load_spec(concrete)?, &options)?;
+    Ok(ok(format!(
+        "ok {concrete} refines {contract}: {} reachable state pairs\n",
+        checked.state_pairs
+    )))
+}
+
 fn dispatch(args: &[String]) -> Result<Output> {
     let Some((command, rest)) = args.split_first() else {
         return Err(Error::usage(USAGE));
     };
     match command.as_str() {
         "check" => check(rest),
+        "refine" => refinement(rest),
         "plan" => plan(rest),
         "trace" => trace(rest),
         "audit" => run_audit(rest),
