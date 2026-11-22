@@ -400,6 +400,7 @@ fn scaffolds_name_every_action() {
         Framework::TestingLibrary,
         Framework::Go,
         Framework::Rust,
+        Framework::Junit,
     ] {
         let text = scaffold(&model, "account.zin", framework);
         for action in ["deposit", "withdraw", "close", "reopen"] {
@@ -407,6 +408,18 @@ fn scaffolds_name_every_action() {
         }
         assert!(text.contains("account.zin"), "{framework:?}");
     }
+}
+
+#[test]
+fn the_junit_scaffold_finds_its_specification_on_the_test_classpath() {
+    let model = verified(ACCOUNT).model;
+    let text = scaffold(&model, "account.zin", Framework::Junit);
+    assert!(text.contains("class ZinBankAccountTest"), "{text}");
+    assert!(
+        text.contains("Zin.load(Zin.resource(ZinBankAccountTest.class, \"account.zin\"))"),
+        "{text}"
+    );
+    assert!(text.contains("case \"deposit\" ->"), "{text}");
 }
 
 #[test]

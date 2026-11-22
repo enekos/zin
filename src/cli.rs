@@ -29,7 +29,7 @@ usage:
   zin audit <spec>                      mutate the specification; list changes nothing notices
   zin init <framework> <spec>           print a conformance test skeleton
                                         (pytest, unittest, jest, vitest, node, playwright,
-                                        testing-library, go, rust)
+                                        testing-library, go, rust, junit)
   zin report <spec>                     Markdown report with Mermaid diagrams
   zin diagram <spec> [scenario]         Mermaid state diagram, or one scenario's sequence diagram
 

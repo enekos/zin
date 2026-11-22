@@ -57,3 +57,19 @@ In the Chromium scenario the corrected editor completes six calls and the
 faulty editor diverges at the fourth (`server_ok`: "saved is 2, but the
 specification says 1"). These counts describe this corpus; the JSON records
 give timings for the machine that runs it.
+
+## The JUnit runner
+
+The Maven consumer in `junit/` drives the JDK's `ByteBuffer`: it observes the
+position and checks mark validity through the public `reset`. From the
+repository root, with `ZIN_BIN` set as above:
+
+```sh
+mvn -f bindings/junit/pom.xml install
+mvn -f examples/pilots/junit/pom.xml test
+mvn -f examples/pilots/junit/pom.xml test "-Dzin.case=Rewind discards"
+examples/pilots/check-scaffold.sh
+```
+
+The filter selects one scenario. `check-scaffold.sh` compiles the output of
+`zin init junit` in a fresh consumer of the installed binding.

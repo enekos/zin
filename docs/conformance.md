@@ -176,11 +176,50 @@ fn conforms() {
 The Rust binding is the `zin` crate itself (a dev-dependency); the plan is
 derived in-process, so there is nothing to install or commit.
 
+### JUnit 5
+
+```java
+import io.github.enekos.zin.Zin;
+
+class AccountTest {
+    static class Harness implements Zin.Adapter {
+        final Account account = new Account();
+
+        @Override
+        public boolean call(String action, Map<String, Object> args) {
+            switch (action) {
+                case "deposit" -> account.deposit((Long) args.get("amount"));
+                case "close" -> { if (account.balance() != 0) return false; account.close(); }
+                default -> throw new IllegalArgumentException(action);
+            }
+            return true;
+        }
+
+        @Override
+        public Map<String, ?> observe() { // optional
+            return Map.of("balance", account.balance());
+        }
+    }
+
+    @TestFactory
+    Stream<DynamicTest> conforms() throws IOException {
+        return Zin.load(Zin.resource(AccountTest.class, "account.zin")).tests(Harness::new);
+    }
+}
+```
+
+Each plan test is a dynamic test. Put `account.zin`, and a committed
+`account.plan.json` if you want one, in `src/test/resources`. Arguments arrive
+by parameter name as `Long`, `Boolean` or `String`. Return `false` for a
+refusal; any exception fails the test. `zin init junit account.zin` prints
+this skeleton. See [the binding's README](../bindings/junit/README.md).
+
 ## Where the plan comes from
 
-The Python, JavaScript and Go bindings look, in order, for:
+The Python, JavaScript, Go and JUnit bindings look, in order, for:
 
-1. a plan file you pass explicitly (`plan=`, `{ plan }`, `zin.WithPlan`);
+1. a plan file you pass explicitly (`plan=`, `{ plan }`, `zin.WithPlan`,
+   `Options.plan`);
 2. `<spec>.plan.json` next to the specification;
 3. the `zin` binary (`ZIN_BIN`, then `PATH`), which they run as
    `zin plan <spec>` with the planning options you passed.

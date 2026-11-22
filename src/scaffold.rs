@@ -13,11 +13,12 @@ pub enum Framework {
     TestingLibrary,
     Go,
     Rust,
+    Junit,
 }
 
 impl Framework {
     pub const NAMES: &'static str =
-        "pytest, unittest, jest, vitest, node, playwright, testing-library, go, rust";
+        "pytest, unittest, jest, vitest, node, playwright, testing-library, go, rust, junit";
 
     pub fn parse(name: &str) -> Result<Self> {
         match name {
@@ -30,6 +31,7 @@ impl Framework {
             "testing-library" => Ok(Self::TestingLibrary),
             "go" => Ok(Self::Go),
             "rust" => Ok(Self::Rust),
+            "junit" => Ok(Self::Junit),
             other => Err(Error::usage(format!(
                 "unknown framework '{other}'; use one of {}",
                 Self::NAMES
@@ -101,6 +103,7 @@ pub fn scaffold(model: &Model, spec_path: &str, framework: Framework) -> String 
         Framework::TestingLibrary => testing_library(model, spec_path),
         Framework::Go => go(model, spec_path),
         Framework::Rust => rust(model, spec_path),
+        Framework::Junit => junit(model, spec_path),
     }
 }
 
@@ -273,6 +276,28 @@ fn rust(model: &Model, spec_path: &str) -> String {
         out,
         "            other => panic!(\"unknown action {{other}}\"),\n        }}\n    }}\n\n    // Optionally expose any subset of the specification's state: {}\n    // fn observe(&self) -> Option<zin::State> {{ None }}\n}}\n\n#[test]\nfn conforms_to_specification() {{\n    assert_conforms(include_str!(\"{spec_path}\"), || Harness {{}});\n}}",
         field_names(model)
+    );
+    out
+}
+
+fn junit(model: &Model, spec_path: &str) -> String {
+    let class = format!("Zin{}Test", pascal(&model.name));
+    let mut out = format!(
+        "import io.github.enekos.zin.Zin;\nimport org.junit.jupiter.api.DynamicTest;\nimport org.junit.jupiter.api.TestFactory;\n\nimport java.io.IOException;\nimport java.util.Map;\nimport java.util.stream.Stream;\n\n// Put the specification and any committed plan in src/test/resources.\nclass {class} {{\n    static class Harness implements Zin.Adapter {{\n        // the implementation under test\n\n        // Return false when the implementation refuses the action; any exception fails the test.\n        @Override\n        public boolean call(String action, Map<String, Object> args) throws Exception {{\n            switch (action) {{\n"
+    );
+    for action in &model.actions {
+        let _ = writeln!(
+            out,
+            "                case {} -> throw new UnsupportedOperationException(\"perform {} with \" + args);",
+            crate::Json::str(action.name.clone()).to_compact(),
+            action.name
+        );
+    }
+    let _ = write!(
+        out,
+        "                default -> throw new IllegalArgumentException(action);\n            }}\n        }}\n\n        // Return any subset of the specification's state: {}\n        @Override\n        public Map<String, ?> observe() {{\n            return null;\n        }}\n    }}\n\n    @TestFactory\n    Stream<DynamicTest> conformance() throws IOException {{\n        return Zin.load(Zin.resource({class}.class, {})).tests(Harness::new);\n    }}\n}}\n",
+        field_names(model),
+        crate::Json::str(spec_path).to_compact()
     );
     out
 }

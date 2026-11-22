@@ -1,0 +1,28 @@
+system "ByteBuffer with a saved position"
+state
+  position is an integer from 0 to 2
+  mark_at is an integer from -1 to 2
+initially
+  position is 0
+  mark_at is -1
+
+action advance
+  requires position < 2
+  position becomes position + 1
+
+action mark
+  mark_at becomes position
+
+action reset
+  requires mark_at >= 0
+  position becomes mark_at
+
+action rewind
+  position becomes 0
+  mark_at becomes -1
+
+scenario "Rewind discards the mark"
+  mark
+  advance
+  rewind
+  reject reset

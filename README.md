@@ -11,7 +11,7 @@ behavioral contract, and the `zin` tool does three things with it:
 2. **Turns it into tests.** From the proven model, Zin derives a test plan that
    exercises every transition and every refusal, and runs it inside the test
    framework you already use: pytest, unittest, Jest, Vitest, `node:test`,
-   Mocha, Playwright, `go test`, `cargo test`.
+   Mocha, Playwright, `go test`, `cargo test`, JUnit 5.
 3. **Keeps it honest.** `zin audit` mutates the specification to show which
    rules nothing checks; `zin trace` checks logs of real executions against it.
 
@@ -290,4 +290,5 @@ cargo build && export ZIN_BIN=$PWD/target/debug/zin
 (cd bindings/python && python -m pytest)
 (cd bindings/js && node --test)
 (cd bindings/go && go test ./...)
+mvn -f bindings/junit/pom.xml test
 ```

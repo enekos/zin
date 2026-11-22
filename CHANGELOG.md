@@ -25,6 +25,10 @@
   replaced silently. A `Divergence` carries the spec `fingerprint` and a
   pasteable `scenario`. Go no longer drops the error from a shorter replay,
   and every runner rejects a call whose arguments do not fit its action.
+- JUnit 5 runner (`bindings/junit`, `io.github.enekos:zin-junit`): plan tests
+  become dynamic tests, it passes the shared contract cases, and
+  `zin init junit` prints a skeleton that finds its specification on the test
+  classpath. Install it from a checkout; it is not on Maven Central yet.
 - Model coverage: `pytest --zin-coverage` and the `zin-verify/vitest` entry
   with `zin-verify/vitest-reporter` report the model operations executed,
   planned and eligible, failures and observed fields. `vitest` is an optional

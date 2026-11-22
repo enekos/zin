@@ -60,7 +60,7 @@ specification whose values do not.
 ### What a binding must do
 
 [`plan.schema.json`](plan.schema.json) is the one definition of the file. The
-Python, JavaScript and Go runners all follow the contract below, and each runs
+Python, JavaScript, Go and JUnit runners all follow the contract below, and each runs
 the same executable cases in
 [`bindings/fixtures/contract`](../bindings/fixtures/contract/README.md). A new
 runner passes those cases before it ships.
