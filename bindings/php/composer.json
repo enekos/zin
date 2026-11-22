@@ -1,0 +1,7 @@
+{
+  "name": "enekos/zin-verify",
+  "description": "Run Zin specifications as native PHPUnit data sets",
+  "license": "MIT",
+  "require": {"php": ">=8.2"},
+  "autoload": {"psr-4": {"Zin\\": "src/"}}
+}

@@ -1,0 +1,28 @@
+name: Additional native runners
+on: [push, pull_request]
+
+jobs:
+  runners:
+    runs-on: ubuntu-latest
+    env:
+      ZIN_BIN: ${{ github.workspace }}/target/debug/zin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --locked
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+      - run: gem install rspec --no-document && rspec bindings/ruby/spec
+      - run: examples/pilots/check-scaffold.sh rspec
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          tools: phpunit:12, composer:v2
+      - run: phpunit bindings/php/tests
+      - run: examples/pilots/check-scaffold.sh phpunit
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - run: dotnet test bindings/dotnet/Tests/Tests.csproj
+      - run: examples/pilots/check-scaffold.sh xunit
