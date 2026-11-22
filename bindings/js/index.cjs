@@ -17,7 +17,7 @@
 
 const { execFileSync } = require("node:child_process");
 const { appendFileSync, existsSync, readFileSync } = require("node:fs");
-const { basename } = require("node:path");
+const { basename, dirname, join } = require("node:path");
 const { fileURLToPath } = require("node:url");
 const recorder = require("./recorder.cjs");
 
@@ -37,11 +37,13 @@ class Rejected extends Error {
   }
 }
 
-/** The implementation does not behave as the specification says. */
+/** A conformance failure with its original, pasteable Zin scenario. */
 class Divergence extends Error {
-  constructor(message) {
+  constructor(message, fingerprint = "", scenario = "") {
     super(message);
     this.name = "Divergence";
+    this.fingerprint = fingerprint;
+    this.scenario = scenario;
   }
 }
 
@@ -68,6 +70,82 @@ function toPath(location) {
   return String(location);
 }
 
+// The planning options a caller may pass: option name, plan key, `zin plan` flag.
+const OPTIONS = [
+  ["cover", "cover", "--cover"],
+  ["maxSteps", "max_steps", "--max-steps"],
+  ["stepBudget", "step_budget", "--step-budget"],
+  ["pairLimit", "pair_limit", "--pair-limit"],
+  ["component", "component", "--component"],
+];
+
+const byCodePoint = (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b));
+
+/**
+ * The fingerprint `zin plan` would record now, or null if a file is unreadable.
+ * With included files, the entry file's hash and each source's current hash,
+ * sorted by path, are hashed together (see docs/plan-format.md).
+ */
+function currentFingerprint(spec, sources) {
+  try {
+    const entry = fingerprint(readFileSync(spec));
+    const paths = Object.keys(sources ?? {}).sort(byCodePoint);
+    if (paths.length === 0) return entry;
+    let text = `${entry}\n`;
+    for (const path of paths) text += `${path}\t${fingerprint(readFileSync(join(dirname(spec), path)))}\n`;
+    return fingerprint(Buffer.from(text, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+const fresh = (plan, spec) => currentFingerprint(spec, plan.sources) === plan.fingerprint;
+
+/** Only options the caller passed are compared; the component is identity. */
+function compatible(plan, requested) {
+  if ((plan.component ?? null) !== (requested.component ?? null)) return false;
+  return Object.entries(requested).every(
+    ([key, value]) => key === "component" || (key in plan && plan[key] === value),
+  );
+}
+
+function validate(plan, origin) {
+  if (plan === null || typeof plan !== "object" || plan.zin !== PLAN_FORMAT) {
+    throw new PlanError(`${origin} is not a ${PLAN_FORMAT} file`);
+  }
+  try {
+    const params = new Map(plan.actions.map((action) => [action.name, action.params.length]));
+    plan.calls.forEach((call, index) => {
+      if (!params.has(call.action)) {
+        throw new PlanError(
+          `the plan is malformed: call ${index} (${call.text}) uses the unknown action ${call.action}`,
+        );
+      }
+      if (call.args.length !== params.get(call.action)) {
+        throw new PlanError(
+          `the plan is malformed: call ${index} (${call.text}) has ${call.args.length} arguments, ` +
+            `but ${call.action} takes ${params.get(call.action)}`,
+        );
+      }
+    });
+    const states = plan.states.length;
+    if (states === 0 || plan.parents.length !== states) {
+      throw new PlanError("the plan is malformed: states and parents do not line up");
+    }
+    for (const test of plan.tests) {
+      for (const [call, to] of test.steps) {
+        if (!(call >= 0 && call < plan.calls.length && to >= -1 && to < states)) {
+          throw new PlanError(`the plan is malformed: step [${call},${to}] is out of range`);
+        }
+      }
+    }
+  } catch (error) {
+    if (error instanceof PlanError) throw error;
+    throw new PlanError(`the plan is malformed: ${origin}: ${error.message}`);
+  }
+  return plan;
+}
+
 function readPlan(path) {
   let plan;
   try {
@@ -75,74 +153,81 @@ function readPlan(path) {
   } catch (error) {
     throw new PlanError(`cannot read plan ${path}: ${error.message}`);
   }
-  if (plan === null || typeof plan !== "object" || plan.zin !== PLAN_FORMAT) {
-    throw new PlanError(`${path} is not a ${PLAN_FORMAT} file`);
-  }
-  return plan;
+  return validate(plan, path);
 }
 
 /**
- * The plan for `spec`: `options.plan` when given, else a sibling
- * `<name>.plan.json` that matches the specification, else the output of
- * `zin plan` (`options.bin`, `$ZIN_BIN`, or `zin` on PATH). `spec` may itself
- * be a plan file.
+ * The plan for `spec`, following the runner contract in docs/plan-format.md:
+ * `options.plan` when given, else a sibling `<name>.plan.json`, as long as it
+ * is fresh and was derived with every planning option passed here; otherwise
+ * the output of `zin plan` (`options.bin`, `$ZIN_BIN`, or `zin` on PATH).
+ * Options left out are not compared. `spec` may itself be a plan file.
  */
 function loadPlan(spec, options = {}) {
   const path = toPath(spec);
-  if (path.endsWith(".json")) return readPlan(path);
-  const cover = options.cover ?? "transitions";
-  let wanted;
-  try {
-    wanted = fingerprint(readFileSync(path));
-  } catch (error) {
-    throw new PlanError(`cannot read specification ${path}: ${error.message}`);
+  const requested = {};
+  const args = ["plan", path];
+  for (const [name, key, flag] of OPTIONS) {
+    const value = options[name];
+    if (value === undefined || value === null) continue;
+    if (key !== "cover" && key !== "component" && !(Number.isInteger(value) && value > 0)) {
+      throw new PlanError(`${name} must be a positive integer, not ${value}`);
+    }
+    requested[key] = value;
+    args.push(flag, String(value));
   }
-  if (options.plan !== undefined) {
-    const planPath = toPath(options.plan);
-    const plan = readPlan(planPath);
-    if (plan.fingerprint !== wanted) {
+  if (path.endsWith(".json")) {
+    if (Object.keys(requested).length > 0 || options.plan !== undefined) {
+      throw new PlanError("planning options need a .zin specification, not a plan file");
+    }
+    const plan = readPlan(path);
+    const source = path.endsWith(".plan.json") ? `${path.slice(0, -".plan.json".length)}.zin` : null;
+    if (source !== null && existsSync(source) && !fresh(plan, source)) {
       throw new PlanError(
-        `${planPath} was derived from a different version of ${basename(path)}; ` +
-          `regenerate it with: zin plan ${path} --out ${planPath}`,
+        `${path} was derived from a different version of ${basename(source)}; ` +
+          `regenerate it with: zin plan ${source} --out ${path}`,
       );
     }
     return plan;
   }
+  if (!existsSync(path)) throw new PlanError(`cannot read specification ${path}`);
   const sibling = path.replace(/\.[^./\\]+$/, "") + ".plan.json";
-  let stale = false;
-  const maxSteps = options.maxSteps;
-  if (maxSteps !== undefined && !(Number.isInteger(maxSteps) && maxSteps > 0)) {
-    throw new PlanError(`maxSteps must be a positive integer, not ${maxSteps}`);
+  const explicit = options.plan !== undefined;
+  const cached = explicit ? toPath(options.plan) : sibling;
+  const regenerate = `zin ${[...args, "--out", cached].join(" ")}`;
+  let reason = "";
+  if (explicit || existsSync(cached)) {
+    const plan = readPlan(cached);
+    if (!fresh(plan, path)) reason = `${cached} was derived from a different version of ${basename(path)}`;
+    else if (!compatible(plan, requested)) reason = `${cached} was derived with different planning options`;
+    else return plan;
+    if (explicit) throw new PlanError(`${reason}; regenerate it with: ${regenerate}`);
   }
-  if (existsSync(sibling)) {
-    const plan = readPlan(sibling);
-    if (plan.fingerprint === wanted && plan.cover === cover) return plan;
-    stale = true;
-  }
+  const prefix = reason ? `${reason}; ` : "";
   const binary = options.bin || process.env.ZIN_BIN || "zin";
-  const limit = maxSteps === undefined ? [] : ["--max-steps", String(maxSteps)];
   let output;
   try {
-    output = execFileSync(binary, ["plan", path, "--cover", cover, ...limit], {
+    output = execFileSync(binary, args, {
       encoding: "utf8",
       maxBuffer: 1024 * 1024 * 1024,
       stdio: ["ignore", "pipe", "pipe"],
     });
   } catch (error) {
     if (error.code === "ENOENT") {
-      const hint = stale ? `${basename(sibling)} is out of date and ` : "";
       throw new PlanError(
-        `${hint}the zin binary was not found. Install it (cargo install zin-spec), set ZIN_BIN, ` +
-          `or commit a plan: zin plan ${path} --out ${sibling}${limit.length ? ` ${limit.join(" ")}` : ""}`,
+        `${prefix}the zin binary was not found. Install zin-spec, set ZIN_BIN, ` +
+          `or regenerate the plan: ${regenerate}`,
       );
     }
     throw new PlanError(`zin plan ${path} failed:\n${String(error.stderr ?? error.message).trim()}`);
   }
-  const plan = JSON.parse(output);
-  if (plan.zin !== PLAN_FORMAT) {
-    throw new PlanError(`${binary} produced ${plan.zin}, but this package reads ${PLAN_FORMAT}`);
+  let plan;
+  try {
+    plan = JSON.parse(output);
+  } catch (error) {
+    throw new PlanError(`${binary} did not print a plan: ${error.message}`);
   }
-  return plan;
+  return validate(plan, binary);
 }
 
 function show(value) {
@@ -173,6 +258,8 @@ class Runner {
     this.step = options.step ?? ((_text, body) => body());
     this.observeTimeout = options.observeTimeout ?? 0;
     this.observeInterval = options.observeInterval ?? OBSERVE_INTERVAL_MS;
+    // Counts steps attempted and matched, and fields observed, for reporters.
+    this.progress = options.progress;
     this.params = new Map(
       plan.actions.map((action) => [action.name, action.params.map((param) => param.name)]),
     );
@@ -193,7 +280,7 @@ class Runner {
   }
 
   /** One observation: `{ message, waitable }`; only a wrong value can still become right. */
-  async mismatch(adapter, state, after) {
+  async mismatch(adapter, state, after, progress) {
     const observed = await adapter.observe();
     if (observed === null || observed === undefined) return null;
     if (typeof observed !== "object") {
@@ -204,6 +291,7 @@ class Runner {
       if (!(field in expected)) {
         return { message: `observe() returned '${field}', which is not a state field of the specification` };
       }
+      progress?.fields.add(field);
       if (!same(expected[field], raw)) {
         return {
           message: `${after}, ${field} is ${show(raw)}, but the specification says ${show(expected[field])}`,
@@ -215,11 +303,11 @@ class Runner {
   }
 
   /** Compares what the adapter observes with a model state, waiting up to `observeTimeout` for it to match. */
-  async compare(adapter, state, after) {
+  async compare(adapter, state, after, progress) {
     if (typeof adapter.observe !== "function") return null;
     const deadline = Date.now() + this.observeTimeout;
     for (;;) {
-      const found = await this.mismatch(adapter, state, after);
+      const found = await this.mismatch(adapter, state, after, progress);
       if (found === null) return null;
       if (!found.waitable || this.observeTimeout <= 0) return found.message;
       if (Date.now() >= deadline) return `${found.message} (waited ${this.observeTimeout} ms)`;
@@ -245,26 +333,28 @@ class Runner {
   }
 
   /** The `[step number, message]` of the first divergence, if any. */
-  async run(adapter, steps) {
-    let message = await this.compare(adapter, 0, "before any action");
+  async run(adapter, steps, progress) {
+    let message = await this.compare(adapter, 0, "before any action", progress);
     if (message) return [0, message];
     let state = 0;
     for (const [index, step] of steps.entries()) {
       const [callId, to] = step;
       const call = this.plan.calls[callId];
+      if (progress) progress.attempted = index + 1;
       message = await this.step(this.text(step), async () => {
         const accepted = await this.perform(adapter, call);
         if (typeof adapter.settle === "function") await adapter.settle();
         if (to >= 0 && accepted) {
           state = to;
-          return this.compare(adapter, state, `after ${call.text}`);
+          return this.compare(adapter, state, `after ${call.text}`, progress);
         }
-        if (to < 0 && !accepted) return this.compare(adapter, state, `after rejecting ${call.text}`);
+        if (to < 0 && !accepted) return this.compare(adapter, state, `after rejecting ${call.text}`, progress);
         return accepted
           ? `the implementation accepted ${call.text}, but the specification rejects it`
           : `the implementation rejected ${call.text}, but the specification allows it`;
       });
       if (message) return [index + 1, message];
+      if (progress) progress.matched = index + 1;
     }
     return null;
   }
@@ -296,24 +386,36 @@ class Runner {
 
   async check(test, factory) {
     const steps = test.steps;
-    const found = await this.withAdapter(factory, (adapter) => this.run(adapter, steps));
+    const progress = this.progress;
+    const found = await this.withAdapter(factory, (adapter) => this.run(adapter, steps, progress));
     if (found === null) return;
     const [failed, message] = found;
     const taken = steps.slice(0, failed);
+    const digest = this.plan.fingerprint ?? "";
+    const scenario =
+      'scenario "Replay divergence"\n' +
+      (taken.map((step) => `  ${this.text(step)}`).join("\n") || "  expect true");
     let report =
       `${this.plan.system}: implementation diverges from the specification ` +
-      `in test "${test.name}" at step ${failed}\n${message}\nsteps taken:\n${this.listing(taken)}`;
+      `in test "${test.name}" at step ${failed}\n${message}\nsteps taken:\n${this.listing(taken)}` +
+      `\nspec fingerprint: ${digest}\n${scenario}`;
     if (failed > 0) {
       const short = this.shortest(steps, failed);
       if (short.length < taken.length) {
-        const again = await this.withAdapter(factory, (adapter) => this.run(adapter, short));
-        report += again
-          ? `\nshortest reproduction:\n${this.listing(short.slice(0, again[0]))}`
-          : "\nthe shortest path to the same specification state does not reproduce this: " +
-            "the implementation keeps state the specification does not model";
+        let again;
+        try {
+          again = await this.withAdapter(factory, (adapter) => this.run(adapter, short));
+        } catch (error) {
+          report += `\nthe shorter replay raised: ${error?.message ?? error}`;
+          throw new Divergence(report, digest, scenario);
+        }
+        report +=
+          again !== null && again[0] === short.length && again[1] === message
+            ? `\nshortest reproduction:\n${this.listing(short)}`
+            : "\nthe shortest path to the same specification state does not reproduce the original mismatch";
       }
     }
-    throw new Divergence(report);
+    throw new Divergence(report, digest, scenario);
   }
 }
 
