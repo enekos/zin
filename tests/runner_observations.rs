@@ -59,8 +59,10 @@ fn model(expected: &State) -> String {
 
 #[test]
 fn rust_and_trace_replay_share_the_runner_observation_contract() {
-    let Json::Array(cases) = Json::parse(include_str!("../bindings/fixtures/contract/observations.json")).unwrap()
-    else {
+    let Json::Array(cases) = Json::parse(include_str!(
+        "../bindings/fixtures/contract/observations.json"
+    ))
+    .unwrap() else {
         panic!("expected fixture array");
     };
     for case in cases {
