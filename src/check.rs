@@ -97,7 +97,11 @@ pub fn verify(spec: &Spec) -> Result<Verification> {
 ///
 /// As [`verify`].
 pub fn verify_with(spec: &Spec, options: Options) -> Result<Verification> {
-    let model = Model::compile(spec)?;
+    verify_unlocated(spec, options).map_err(|e| spec.locate(e))
+}
+
+fn verify_unlocated(spec: &Spec, options: Options) -> Result<Verification> {
+    let model = Model::compile_unlocated(spec)?;
     let mut notes = Vec::new();
     let mut reduce = options.symmetry && model.symmetry.is_some();
     if reduce && fair_liveness(&model) {

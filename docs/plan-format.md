@@ -74,10 +74,13 @@ Written by `zin check --format json`.
 ```json
 {"zin": "check/1", "results": [
   {"file": "job.zin", "ok": true, "system": "Background job", "states": 10, "transitions": 9,
-   "up_to_symmetry": false, "terminal_states": 4, "properties": [{"property": "eventually ...", "line": 22}],
+   "up_to_symmetry": false, "terminal_states": 4, "properties": [{"property": "eventually ...", "line": 22,
+     "span": {"file": "job.zin", "line": 22, "column": 1, "end_column": 41}}],
    "scenarios": ["Third time lucky"], "notes": []},
   {"file": "stuck.zin", "ok": false, "error": {
-     "kind": "violation", "line": 13, "message": "...",
+     "kind": "violation", "code": "violation", "line": 13,
+     "span": {"file": "stuck.zin", "line": 13, "column": 1, "end_column": 30}, "related": null,
+     "message": "...",
      "trace": {"initial": {"status": "queued"},
                "steps": [{"call": "start", "state": {"status": "running"}}],
                "loop_from": 0}}}
@@ -90,6 +93,19 @@ declared range or divides by zero), `violation`, `limit` or `usage`.
 that index on repeat forever. `up_to_symmetry` is `true` when `states` and
 `transitions` count representatives of interchangeable values (an added
 field; readers of `check/1` should ignore fields they do not know).
+
+`code` is a stable identifier for the diagnostic: `name.unknown`,
+`type.mismatch`, `component.field_conflict`, `component.type_conflict`,
+`component.parameter_conflict`, `component.duplicate_action` and
+`component.foreign_field`, or the `kind` itself (`model.fault` for a model
+fault) when no finer code applies. New codes may be added. `span` is the token
+the parser recorded for the problem, or the whole statement when no token
+applies; `related` is a second location, such as the first of two conflicting
+declarations. Both are `null` when the error has no location. A span's `file`
+is the file that holds the text (empty for standard input); `line` is a line of
+that file, and so is the top-level `line`. Columns count Unicode scalar values
+from one and `end_column` is exclusive. Property `line` and `span` follow the
+same rules.
 
 ## Trace events
 

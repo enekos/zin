@@ -1,7 +1,7 @@
 use crate::ast::{
     Action, ActionCall, Assignment, BinaryOperator, CallArguments, Condition, Expr, Fairness,
-    PropertyKind, Quantifier, ScenarioStep, Spec, TargetKey, TypeExpr, UnaryOperator, Value,
-    display_call,
+    PropertyKind, Quantifier, ScenarioStep, Spec, TargetKey, TypeDecl, TypeExpr, UnaryOperator,
+    Value, display_call,
 };
 use crate::symmetry::Symmetry;
 use crate::{Error, Result, State};
@@ -217,7 +217,13 @@ pub(crate) fn at(value: u32) -> usize {
 }
 
 impl Model {
+    /// Compiles a parsed specification. Errors locate their source file.
     pub fn compile(spec: &Spec) -> Result<Self> {
+        Self::compile_unlocated(spec).map_err(|e| spec.locate(e))
+    }
+
+    /// As [`Model::compile`], with errors still in the parser's coordinates.
+    pub(crate) fn compile_unlocated(spec: &Spec) -> Result<Self> {
         Compiler::new(spec).compile()
     }
 
@@ -620,31 +626,17 @@ impl<'a> Compiler<'a> {
     fn compile(mut self) -> Result<Model> {
         let spec = self.spec;
         for declaration in &spec.types {
-            let Resolved::Scalar(domain) = self.resolve(&declaration.kind, declaration.line)?
-            else {
-                return Err(Error::at(
-                    declaration.line,
-                    "a named type cannot be a map; declare the map in state",
-                ));
-            };
-            if self
-                .types
-                .insert(declaration.name.clone(), domain)
-                .is_some()
-            {
-                return Err(Error::at(
-                    declaration.line,
-                    format!("type {} is declared twice", declaration.name),
-                ));
-            }
+            self.declare_type(declaration)
+                .map_err(|e| e.within(declaration.span))?;
         }
         let groups = self.interchangeable()?;
         for field in &spec.state {
-            self.declare_field(&field.name, &field.kind, field.line)?;
+            self.declare_field(&field.name, &field.kind, field.line)
+                .map_err(|e| e.within(field.span))?;
         }
         let mut signatures = Vec::new();
         for action in &spec.actions {
-            signatures.push(self.signature(action)?);
+            signatures.push(self.signature(action).map_err(|e| e.within(action.span))?);
         }
         self.check_partial_groups(&groups)?;
         let initial = self.initial_state()?;
@@ -723,11 +715,11 @@ impl<'a> Compiler<'a> {
             for step in &scenario.steps {
                 steps.push(match step {
                     ScenarioStep::Call(call) => CompiledStep::Call {
-                        call: resolve_call(&model, call)?,
+                        call: resolve_call(&model, call).map_err(|e| e.within(call.span))?,
                         line: call.line,
                     },
                     ScenarioStep::Reject(call) => CompiledStep::Reject {
-                        call: resolve_call(&model, call)?,
+                        call: resolve_call(&model, call).map_err(|e| e.within(call.span))?,
                         line: call.line,
                     },
                     ScenarioStep::Expect(condition) => {
@@ -944,6 +936,26 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    fn declare_type(&mut self, declaration: &TypeDecl) -> Result<()> {
+        let Resolved::Scalar(domain) = self.resolve(&declaration.kind, declaration.line)? else {
+            return Err(Error::at(
+                declaration.line,
+                "a named type cannot be a map; declare the map in state",
+            ));
+        };
+        if self
+            .types
+            .insert(declaration.name.clone(), domain)
+            .is_some()
+        {
+            return Err(Error::at(
+                declaration.line,
+                format!("type {} is declared twice", declaration.name),
+            ));
+        }
+        Ok(())
+    }
+
     fn signature(&mut self, action: &Action) -> Result<Vec<Param>> {
         if self
             .spec
@@ -959,10 +971,10 @@ impl<'a> Compiler<'a> {
         let mut params: Vec<Param> = Vec::new();
         for param in &action.params {
             if params.iter().any(|other| other.name == param.name) {
-                return Err(Error::at(
-                    param.line,
-                    format!("duplicate parameter {}", param.name),
-                ));
+                return Err(
+                    Error::at(param.line, format!("duplicate parameter {}", param.name))
+                        .spanned(param.span),
+                );
             }
             if self.field_ids.contains_key(&param.name) {
                 return Err(Error::at(
@@ -971,11 +983,14 @@ impl<'a> Compiler<'a> {
                         "parameter {} has the same name as a state field",
                         param.name
                     ),
-                ));
+                )
+                .spanned(param.span));
             }
             params.push(Param {
                 name: param.name.clone(),
-                domain: self.scalar(&param.kind, param.line)?,
+                domain: self
+                    .scalar(&param.kind, param.line)
+                    .map_err(|e| e.within(param.span))?,
             });
         }
         Ok(params)
@@ -1066,7 +1081,9 @@ impl<'a> Compiler<'a> {
     }
 
     fn condition(&mut self, condition: &Condition) -> Result<CompiledCondition> {
-        let (ir, ty) = self.expr(&condition.expr, condition.line)?;
+        let (ir, ty) = self
+            .expr(&condition.expr, condition.line)
+            .map_err(|e| e.within(condition.span))?;
         if ty != Ty::Bool {
             return Err(Error::at(
                 condition.line,
@@ -1075,7 +1092,9 @@ impl<'a> Compiler<'a> {
                     condition.source,
                     ty.noun()
                 ),
-            ));
+            )
+            .coded("type.mismatch")
+            .spanned(condition.span));
         }
         Ok(CompiledCondition {
             ir,
@@ -1085,13 +1104,21 @@ impl<'a> Compiler<'a> {
     }
 
     fn assignment(&mut self, assignment: &Assignment) -> Result<CompiledAssignment> {
+        self.assignment_at(assignment)
+            .map_err(|e| e.within(assignment.target))
+    }
+
+    fn assignment_at(&mut self, assignment: &Assignment) -> Result<CompiledAssignment> {
         let line = assignment.line;
         let field = self
             .field_ids
             .get(&assignment.field)
             .and_then(|index| self.fields.get(*index))
             .cloned()
-            .ok_or_else(|| Error::at(line, format!("unknown state field {}", assignment.field)))?;
+            .ok_or_else(|| {
+                Error::at(line, format!("unknown state field {}", assignment.field))
+                    .coded("name.unknown")
+            })?;
         let (target, domain) = match (&field.kind, &assignment.key) {
             (FieldType::Scalar(domain), TargetKey::Whole) => {
                 (Target::Slot(field.offset), domain.clone())
@@ -1158,7 +1185,8 @@ impl<'a> Compiler<'a> {
                     assignment.source,
                     self.describe_ty(&ty)
                 ),
-            ));
+            )
+            .coded("type.mismatch"));
         }
         Ok(CompiledAssignment {
             target,
@@ -1192,7 +1220,8 @@ impl<'a> Compiler<'a> {
                     self.describe(keys),
                     self.describe_ty(&ty)
                 ),
-            ));
+            )
+            .coded("type.mismatch"));
         }
         Ok(ir)
     }
@@ -1206,8 +1235,10 @@ impl<'a> Compiler<'a> {
                 None => Err(Error::at(line, format!("unknown enum value \"{name}\""))),
             },
             Expr::Literal(Value::Map(_)) => Err(Error::at(line, "map literals are not supported")),
-            Expr::Name(name) => self.name(name, line),
-            Expr::Index { map, key } => self.index(map, key, line),
+            Expr::Name { name, span } => self.name(name, line).map_err(|e| e.within(*span)),
+            Expr::Index { map, key, span } => {
+                self.index(map, key, line).map_err(|e| e.within(*span))
+            }
             Expr::Unary { operator, value } => {
                 let (value, ty) = self.expr(value, line)?;
                 match operator {
@@ -1296,7 +1327,8 @@ impl<'a> Compiler<'a> {
         Err(Error::at(
             line,
             format!("unknown name {name}; declare it or use a quoted enum value"),
-        ))
+        )
+        .coded("name.unknown"))
     }
 
     fn index(&mut self, map: &str, key: &Expr, line: usize) -> Result<(Ir, Ty)> {
@@ -1305,7 +1337,7 @@ impl<'a> Compiler<'a> {
             .get(map)
             .and_then(|index| self.fields.get(*index))
             .cloned()
-            .ok_or_else(|| Error::at(line, format!("unknown map {map}")))?;
+            .ok_or_else(|| Error::at(line, format!("unknown map {map}")).coded("name.unknown"))?;
         let FieldType::Map { keys, value, .. } = &field.kind else {
             return Err(Error::at(line, format!("{map} is not a map")));
         };
@@ -1369,7 +1401,8 @@ impl<'a> Compiler<'a> {
                         return Err(Error::at(
                             line,
                             format!("cannot compare {} with {}", left_ty.noun(), right_ty.noun()),
-                        ));
+                        )
+                        .coded("type.mismatch"));
                     }
                 }
                 Ty::Bool
@@ -1407,6 +1440,7 @@ impl<'a> Compiler<'a> {
                 line,
                 format!("unknown type {domain}; declare it in a types block"),
             )
+            .coded("name.unknown")
         })?;
         if domain.size() > MAX_QUANTIFIER_VALUES {
             return Err(Error::at(
@@ -1450,7 +1484,8 @@ fn expect(actual: &Ty, wanted: &Ty, what: &str, line: usize) -> Result<()> {
         Err(Error::at(
             line,
             format!("{what} needs {}, found {}", wanted.noun(), actual.noun()),
-        ))
+        )
+        .coded("type.mismatch"))
     }
 }
 

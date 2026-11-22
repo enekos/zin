@@ -13,6 +13,7 @@ mod plan;
 mod properties;
 mod report;
 mod scaffold;
+mod source;
 mod symmetry;
 mod trace;
 
@@ -29,6 +30,7 @@ pub use parser::parse;
 pub use plan::{Cover, Coverage, Plan, PlanOptions, PlanStep, PlanTest, TestKind};
 pub use report::render_markdown;
 pub use scaffold::{Framework, scaffold};
+pub use source::SourceSpan;
 pub use trace::{TraceReport, check_trace};
 
 use std::collections::BTreeMap;
@@ -82,12 +84,89 @@ pub struct Trace {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {
     pub kind: ErrorKind,
+    /// The line of the specification the error refers to. Once the error
+    /// leaves `parse`, `parse_file`, `Model::compile` or `verify`, this is the
+    /// line within [`Error::source_span`]'s file.
     pub line: Option<usize>,
     pub message: String,
     pub trace: Option<Trace>,
+    detail: Option<Box<ErrorDetail>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ErrorDetail {
+    code: Option<&'static str>,
+    /// Where the parser found the problem, in combined-text coordinates.
+    at: Option<ast::Span>,
+    related: Option<ast::Span>,
+    /// `at` and `related` resolved to their files.
+    source: Option<SourceSpan>,
+    related_source: Option<SourceSpan>,
 }
 
 impl Error {
+    /// A stable identifier for the kind of diagnostic, such as `name.unknown`.
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        self.detail
+            .as_ref()
+            .and_then(|detail| detail.code)
+            .unwrap_or(match self.kind {
+                ErrorKind::Spec => "spec",
+                ErrorKind::Usage => "usage",
+                ErrorKind::Violation => "violation",
+                ErrorKind::Model => "model.fault",
+                ErrorKind::Limit => "limit",
+            })
+    }
+
+    /// The token or statement the error refers to.
+    #[must_use]
+    pub fn source_span(&self) -> Option<&SourceSpan> {
+        self.detail.as_ref()?.source.as_ref()
+    }
+
+    /// A second location, such as the first of two conflicting declarations.
+    #[must_use]
+    pub fn related_span(&self) -> Option<&SourceSpan> {
+        self.detail.as_ref()?.related_source.as_ref()
+    }
+
+    fn details(&mut self) -> &mut ErrorDetail {
+        self.detail.get_or_insert_with(Box::default)
+    }
+
+    pub(crate) fn coded(mut self, code: &'static str) -> Self {
+        self.details().code = Some(code);
+        self
+    }
+
+    /// Locate the error at `span`, which the parser recorded.
+    pub(crate) fn spanned(mut self, span: ast::Span) -> Self {
+        self.line = Some(span.line);
+        self.details().at = Some(span);
+        self
+    }
+
+    /// Locate the error at `span` unless it already has a more precise
+    /// location or refers to another line.
+    pub(crate) fn within(self, span: ast::Span) -> Self {
+        let located = self
+            .detail
+            .as_ref()
+            .is_some_and(|detail| detail.at.is_some());
+        if located || self.line.is_some_and(|line| line != span.line) {
+            self
+        } else {
+            self.spanned(span)
+        }
+    }
+
+    pub(crate) fn related(mut self, span: ast::Span) -> Self {
+        self.details().related = Some(span);
+        self
+    }
+
     pub fn new(message: impl Into<String>) -> Self {
         Self::of(ErrorKind::Spec, None, message)
     }
@@ -106,6 +185,7 @@ impl Error {
             line,
             message: message.into(),
             trace: None,
+            detail: None,
         }
     }
 
@@ -161,10 +241,25 @@ impl fmt::Display for Trace {
 
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(line) = self.line {
-            write!(formatter, "line {line}: ")?;
+        match (self.source_span(), self.line) {
+            (Some(span), _) if !span.file.is_empty() => {
+                write!(formatter, "{}:{}:{}: ", span.file, span.line, span.column)?;
+            }
+            (_, Some(line)) => write!(formatter, "line {line}: ")?,
+            _ => {}
         }
         formatter.write_str(&self.message)?;
+        if let Some(span) = self.related_span() {
+            if span.file.is_empty() {
+                write!(formatter, " (first declared on line {})", span.line)?;
+            } else {
+                write!(
+                    formatter,
+                    " (first declared at {}:{}:{})",
+                    span.file, span.line, span.column
+                )?;
+            }
+        }
         if let Some(trace) = &self.trace {
             write!(formatter, "\ncounterexample:\n{trace}")?;
         }

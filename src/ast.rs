@@ -10,6 +10,10 @@ pub struct Spec {
     pub components: Vec<String>,
     pub state_limit: usize,
     pub fingerprint: String,
+    /// Included files by path relative to the entry file, with their fingerprints.
+    pub sources: BTreeMap<String, String>,
+    pub(crate) source_map: Option<std::sync::Arc<crate::source::SourceMap>>,
+    pub(crate) component_specs: std::sync::Arc<[Spec]>,
     pub types: Vec<TypeDecl>,
     pub state: Vec<Field>,
     pub initially: Vec<Assignment>,
@@ -27,6 +31,9 @@ impl Spec {
             components: Vec::new(),
             state_limit: DEFAULT_STATE_LIMIT,
             fingerprint: String::new(),
+            sources: BTreeMap::new(),
+            source_map: None,
+            component_specs: std::sync::Arc::new([]),
             types: Vec::new(),
             state: Vec::new(),
             initially: Vec::new(),
@@ -36,6 +43,37 @@ impl Spec {
             scenarios: Vec::new(),
         }
     }
+
+    /// The file, file line and columns of a span this specification's parser recorded.
+    #[must_use]
+    pub fn source_span(&self, span: Span) -> Option<crate::SourceSpan> {
+        self.source_map.as_ref()?.resolve(span)
+    }
+
+    /// The statement on line `line` of the parsed text, resolved to its file.
+    pub(crate) fn statement_span(&self, line: usize) -> Option<crate::SourceSpan> {
+        self.source_map.as_ref()?.statement(line)
+    }
+
+    pub(crate) fn locate(&self, error: crate::Error) -> crate::Error {
+        match &self.source_map {
+            Some(map) => map.locate(error),
+            None => error,
+        }
+    }
+}
+
+/// A range of specification text on one line, recorded by the parser.
+///
+/// Columns count Unicode scalar values from one and `end_column` is
+/// exclusive. `line` numbers the text given to [`crate::parse`]; for a
+/// specification loaded with [`crate::parse_file`] it numbers the combined
+/// text, which [`Spec::source_span`] resolves to a file and file line.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct Span {
+    pub line: usize,
+    pub column: usize,
+    pub end_column: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +83,8 @@ pub struct TypeDecl {
     /// Declared `interchangeable`: the specification never tells its values apart.
     pub interchangeable: bool,
     pub line: usize,
+    /// The declared name.
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +92,8 @@ pub struct Field {
     pub name: String,
     pub kind: TypeExpr,
     pub line: usize,
+    /// The declared name.
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +122,8 @@ pub struct Condition {
     pub expr: Expr,
     pub source: String,
     pub line: usize,
+    /// The condition's text.
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,6 +185,8 @@ pub struct Assignment {
     pub value: Expr,
     pub source: String,
     pub line: usize,
+    /// The assigned field's name.
+    pub target: Span,
 }
 
 /// What the environment promises about an action's calls.
@@ -174,6 +220,8 @@ pub struct Action {
     pub requires: Vec<Condition>,
     pub assignments: Vec<Assignment>,
     pub line: usize,
+    /// The action's name.
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,6 +243,8 @@ pub struct ActionCall {
     pub name: String,
     pub arguments: CallArguments,
     pub line: usize,
+    /// The called action's name.
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -305,10 +355,15 @@ impl fmt::Display for Value {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     Literal(Value),
-    Name(String),
+    Name {
+        name: String,
+        span: Span,
+    },
     Index {
         map: String,
         key: Box<Expr>,
+        /// The map's name.
+        span: Span,
     },
     Unary {
         operator: UnaryOperator,

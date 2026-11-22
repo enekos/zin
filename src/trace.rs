@@ -104,6 +104,7 @@ pub fn check_trace(model: &Model, events: &str) -> Result<TraceReport> {
                 name: name.to_string(),
                 arguments: arguments(&event, line)?,
                 line,
+                span: crate::ast::Span::default(),
             },
         )
         .map_err(|error| malformed(line, error.message))?;
