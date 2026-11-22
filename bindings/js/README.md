@@ -59,11 +59,10 @@ the plan. `@playwright/test` is an optional peer dependency. See
 
 ## Jest
 
-Install from a checkout (the package is not published on npm yet):
+Install from npm:
 
 ```sh
-npm install /path/to/zin/bindings/js
-npm install --save-dev jest
+npm install --save-dev zin-verify jest
 ```
 
 For a CommonJS Jest project, create `account.test.cjs`:

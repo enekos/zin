@@ -1,38 +1,59 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — unreleased
 
+- Checker: model faults inside `some`/`every` over interchangeable values are
+  no longer hidden by symmetry reduction. An interval analysis over declared
+  domains turns reduction off only when such a quantifier can actually fault,
+  and a generated suite compares reduced and full exploration (#20). Check
+  JSON reports `calls`, `attempted_calls` and `relabelings`.
+- Planning: a hard total replay budget (`--step-budget`), depth-aware tours
+  with `--max-steps` as a soft target, and `--cover pairs` (adjacent calls,
+  chained into tours; `--pair-limit` samples them) (#17, #19). `Plan::build`
+  rejects symmetry-reduced graphs (#20).
 - Language: `include "relative/path.zin"` loads a specification from several
   files. Inclusion is textual, each file is read once, and paths stay within
-  the entry file's directory. Rust: `parse_file`.
+  the entry file's directory. Rust: `parse_file` (#21).
 - Diagnostics carry the file, line and column the parser recorded for the
   offending token, a stable `code` and, for conflicting declarations, a
   `related` location: `zin check --format json` reports `code`, `span` and
   `related`; Rust has `Error::code`, `source_span` and `related_span`.
-  Composition conflict messages no longer embed line numbers.
+  Composition conflict messages no longer embed line numbers (#21).
 - `zin plan --component NAME` tests one block of a composition against a
   controllable environment; Rust: `verify_component`. Plans gain `sources`
-  and `component`, and a plan's `fingerprint` covers every included file.
-- Breaking for Rust callers: AST nodes gain `span` fields and
-  `Expr::Name` is a struct variant; `Error` has a private field.
+  and `component`, and a plan's `fingerprint` covers every included file (#21).
+- Trace replay reads JSONL incrementally under a byte limit; audit survivors
+  show a shortest distinguishing call sequence; conformance failures verify
+  shorter reproductions and print a pasteable scenario (#16).
 - Runners: `docs/plan.schema.json` defines the plan, and the Python,
-  JavaScript and Go runners pass one shared set of contract cases
+  JavaScript, Go and JUnit runners pass one shared set of contract cases
   (`bindings/fixtures/contract`): staleness over included files, option
   compatibility, malformed calls, observation normalization and the exact
-  divergence report. All three accept `max_steps`, `step_budget`,
-  `pair_limit` and `component` and compare only the options passed with a
-  committed plan, so a plan for `cover="pairs"` or a component is never
-  replaced silently. A `Divergence` carries the spec `fingerprint` and a
-  pasteable `scenario`. Go no longer drops the error from a shorter replay,
-  and every runner rejects a call whose arguments do not fit its action.
-- JUnit 5 runner (`bindings/junit`, `io.github.enekos:zin-junit`): plan tests
-  become dynamic tests, it passes the shared contract cases, and
-  `zin init junit` prints a skeleton that finds its specification on the test
-  classpath. Install it from a checkout; it is not on Maven Central yet.
+  divergence report. They accept `max_steps`, `step_budget`, `pair_limit` and
+  `component` and compare only the options passed with a committed plan. Go
+  no longer drops the error from a shorter replay, and every runner rejects a
+  call whose arguments do not fit its action (#22).
 - Model coverage: `pytest --zin-coverage` and the `zin-verify/vitest` entry
   with `zin-verify/vitest-reporter` report the model operations executed,
   planned and eligible, failures and observed fields. `vitest` is an optional
-  peer dependency.
+  peer dependency (#22).
+- JUnit 5 runner (`bindings/junit`, `io.github.enekos:zin-junit`): plan tests
+  become dynamic tests and `zin init junit` prints a skeleton that finds its
+  specification on the test classpath. Install it from a checkout; it is not
+  on Maven Central yet (#23).
+- Packaging: the crate, wheel and npm tarball are installed into clean
+  consumers in CI, and every npm entry point must load with only declared
+  dependencies.
+- Minimum supported Rust is now 1.88 (let chains). 0.2.0 declared 1.85 but did
+  not build on it.
+- Breaking for Rust callers:
+  - `Action::fair: bool` is now `Action::fairness: Fairness` (`Unfair`, `Weak`
+    or `Strong`).
+  - `PlanOptions`, `Plan`, `Cover` and `TestKind` are `#[non_exhaustive]`:
+    start from `PlanOptions::default()` or `PlanOptions::cover(..)` and assign
+    fields.
+  - AST nodes gain `span` fields, `Expr::Name` is a struct variant, and
+    `Error` has a private field.
 
 ## 0.2.0 — 2026-11-18
 

@@ -250,11 +250,14 @@ input could not be used.
 ## Install
 
 ```sh
-cargo install zin-spec            # the zin binary (Rust 1.85+); crate zin-spec, library `zin`
-pip install zin-verify            # pytest / unittest binding
+cargo install zin-spec            # the zin binary (Rust 1.88+); crate zin-spec, library `zin`
 npm install --save-dev zin-verify # Jest, Vitest, node:test, Mocha, Playwright; CommonJS + ESM, types included
 go get github.com/enekos/zin/bindings/go
+pip install /path/to/zin/bindings/python  # pytest / unittest binding
 ```
+
+`zin-verify` is not on PyPI yet; install the Python binding from a checkout
+until it is. The crate and the npm package are published.
 
 Prebuilt `zin` binaries for Linux and macOS (x86_64, arm64) are attached to
 each [GitHub release](https://github.com/enekos/zin/releases).
