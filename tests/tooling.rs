@@ -564,3 +564,33 @@ fn command_line_plan_report_and_diagram_render() {
     );
     assert_eq!(cli(&["audit", "examples/job.zin"]).code, 0);
 }
+
+#[test]
+fn trace_needs_only_the_proof_that_check_needs() {
+    let dir = std::env::temp_dir().join(format!("zin-trace-symmetry-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let spec = dir.join("mutex.zin");
+    let source = std::fs::read_to_string("examples/mutex.zin").unwrap();
+    std::fs::write(&spec, format!("{source}\nexplore at most 10 states\n")).unwrap();
+    let events = dir.join("events.jsonl");
+    std::fs::write(
+        &events,
+        "{\"action\":\"want\",\"args\":[\"cid\"]}\n{\"action\":\"enter\",\"args\":[\"cid\"]}\n",
+    )
+    .unwrap();
+    let spec = spec.to_str().unwrap();
+    let events = events.to_str().unwrap();
+
+    let checked = cli(&["check", spec]);
+    assert_eq!(checked.code, 0, "{}", checked.stderr);
+    let traced = cli(&["trace", spec, events]);
+    assert_eq!(traced.code, 0, "{}", traced.stderr);
+    assert!(
+        traced.stdout.contains("2 events in 1 run(s)"),
+        "{}",
+        traced.stdout
+    );
+    let full = cli(&["trace", spec, events, "--symmetry", "off"]);
+    assert_eq!(full.code, 2, "{}", full.stderr);
+    std::fs::remove_dir_all(&dir).unwrap();
+}

@@ -25,7 +25,8 @@ usage:
            [--component NAME]
                                         derive the conformance test plan (JSON);
                                         --component NAME tests one block of a composition
-  zin trace <spec> <events.jsonl|->     check a recorded execution against the specification
+  zin trace <spec> <events.jsonl|-> [--symmetry on|off]
+                                        check a recorded execution against the specification
   zin audit <spec>                      mutate the specification; list changes nothing notices
   zin init <framework> <spec>           print a conformance test skeleton
                                         (pytest, unittest, jest, vitest, node, playwright,
@@ -232,6 +233,20 @@ fn check_json(path: &str, spec: Option<&Spec>, result: &Result<Verification>) ->
     }
 }
 
+/// How `check` and `trace` verify: with symmetry reduction unless `--symmetry off`.
+fn verify_options(arguments: &Arguments) -> Result<Options> {
+    let symmetry = match arguments.option("symmetry") {
+        None | Some("on") => true,
+        Some("off") => false,
+        Some(other) => {
+            return Err(Error::usage(format!(
+                "--symmetry is on or off, not '{other}'"
+            )));
+        }
+    };
+    Ok(Options { symmetry })
+}
+
 fn check(args: &[String]) -> Result<Output> {
     let arguments = Arguments::parse(args, &["format", "symmetry"])?;
     let json = match arguments.option("format") {
@@ -239,17 +254,7 @@ fn check(args: &[String]) -> Result<Output> {
         Some("json") => true,
         Some(other) => return Err(Error::usage(format!("unknown format '{other}'"))),
     };
-    let options = Options {
-        symmetry: match arguments.option("symmetry") {
-            None | Some("on") => true,
-            Some("off") => false,
-            Some(other) => {
-                return Err(Error::usage(format!(
-                    "--symmetry is on or off, not '{other}'"
-                )));
-            }
-        },
-    };
+    let options = verify_options(&arguments)?;
     if arguments.positional.is_empty() {
         return Err(Error::usage("check needs at least one specification file"));
     }
@@ -372,13 +377,14 @@ fn ok(stdout: String) -> Output {
 }
 
 fn trace(args: &[String]) -> Result<Output> {
-    let arguments = Arguments::parse(args, &[])?;
+    let arguments = Arguments::parse(args, &["symmetry"])?;
     let [spec, events] = arguments.positional.as_slice() else {
         return Err(Error::usage(
             "trace needs a specification file and an events file (or - for stdin)",
         ));
     };
-    let verification = load(spec)?;
+    // Replay steps the model directly, so it needs the same proof as check, not the full graph.
+    let verification = verify_with(&load_spec(spec)?, verify_options(&arguments)?)?;
     let report = if events == "-" {
         check_trace_reader(
             &verification.model,
