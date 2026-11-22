@@ -50,6 +50,35 @@ class QueueTest {
         assertTrue(e.getMessage().contains("reject offer"), e.getMessage());
     }
 
+    @Test void onlyMinimizesTheSameDivergence(@TempDir Path dir) throws Exception {
+        ObjectNode data = JSON.readTree(PLAN.toFile()).deepCopy();
+        var steps = data.putArray("tests").addObject().put("name", "return to empty").putArray("steps");
+        // A removable offer/poll prefix before filling the queue.
+        for (int[] step : new int[][] {{0, 1}, {1, 0}, {0, 1}, {0, 2}, {0, -1}})
+            steps.addArray().add(step[0]).add(step[1]);
+        Path path = dir.resolve("long.plan.json");
+        JSON.writeValue(path.toFile(), data);
+        var plan = Zin.read(SPEC, path);
+        var same = plan.tests(() -> new Queue(3)).findFirst().orElseThrow();
+        String message = assertThrows(AssertionError.class, same.getExecutable()::execute).getMessage();
+        assertTrue(message.contains("spec " + data.path("fingerprint").asText()));
+        assertTrue(message.endsWith("shortest reproduction:\nscenario \"Observed divergence\"\n  offer\n  offer\n  reject offer"));
+
+        var different = plan.tests(() -> new Queue(3) {
+            boolean polled;
+            @Override public boolean call(String action, Map<String, Object> args) {
+                if (action.equals("poll")) polled = true;
+                return super.call(action, args);
+            }
+            @Override public Map<String, ?> observe() {
+                return !polled && queue.size() == 2 ? Map.of("size", -1) : super.observe();
+            }
+        }).findFirst().orElseThrow();
+        String original = assertThrows(AssertionError.class, different.getExecutable()::execute).getMessage();
+        assertTrue(original.contains("step 5: offer was accepted, expected rejection"));
+        assertFalse(original.contains("shortest reproduction:"));
+    }
+
     @Test void unexpectedExceptionPropagatesAndClosesAdapter() throws Exception {
         var closed = new AtomicInteger();
         DynamicTest test = Zin.read(SPEC, PLAN).tests(() -> new Queue(2) {

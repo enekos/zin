@@ -16,6 +16,7 @@ jobs:
           java-version: '17'
       - run: mvn -B -f bindings/junit/pom.xml install
       - run: mvn -B -f examples/pilots/junit/pom.xml test
+      - run: examples/pilots/check-scaffold.sh junit
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
