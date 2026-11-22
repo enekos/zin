@@ -118,6 +118,24 @@ def test_unexpected_exceptions_are_errors_not_rejections():
         zin.check(ACCOUNT, make)
 
 
+def test_async_actions_are_errors_not_silent_steps():
+    ran = []
+
+    class Async(Adapter):
+        async def deposit(self, amount):
+            ran.append(amount)
+            raise KeyError("boom")
+
+    def make():
+        adapter = Async()
+        adapter.setup()
+        return adapter
+
+    with pytest.raises(zin.PlanError, match="Async.deposit returned coroutine without running its body"):
+        zin.check(ACCOUNT, make)
+    assert ran == []
+
+
 def test_returning_false_and_raising_rejected_both_reject():
     class Polite:
         def setup(self):

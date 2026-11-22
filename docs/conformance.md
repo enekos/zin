@@ -43,7 +43,7 @@ as a rejection.
 | Python | raises `zin.Rejected` or a type listed in `rejects`, or returns `False` |
 | JavaScript | throws `Rejected` or an error for which `rejects(error)` is true, or returns `false` |
 | Go | returns an error wrapping `zin.ErrRejected` |
-| Rust | returns `Outcome::Rejected` (`Result` and `bool` convert) |
+| Rust | returns `Outcome::Rejected`; `bool` and `Result<_, Refused>` convert, other errors go through `Outcome::refused_if` |
 
 **What state can be seen?** `observe` is optional and may return any subset of
 the specification's fields; only the returned fields are compared. Maps are
@@ -161,7 +161,10 @@ use zin::conform::{Adapter, Args, Outcome, assert_conforms};
 impl Adapter for Harness {
     fn call(&mut self, action: &str, args: &Args) -> Outcome {
         match action {
-            "close" => self.account.close().into(),
+            // Only a refusal is a rejection; any other error panics and fails the test.
+            "close" => Outcome::refused_if(self.account.close(), |error| {
+                matches!(error, AccountError::NotEmpty | AccountError::Closed)
+            }),
             other => panic!("unknown action {other}"),
         }
     }

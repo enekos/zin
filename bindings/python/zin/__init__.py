@@ -321,9 +321,19 @@ class _Runner:
         }
         rejects = (Rejected, *tuple(getattr(adapter, "rejects", ())))
         try:
-            return method(**arguments) is not False
+            result = method(**arguments)
         except rejects:
             return False
+        if inspect.isawaitable(result) or inspect.isgenerator(result):
+            close = getattr(result, "close", None)
+            if close is not None:
+                close()
+            raise PlanError(
+                f"{type(adapter).__name__}.{_python_name(call['action'])} returned "
+                f"{type(result).__name__} without running its body; adapter methods must be "
+                "synchronous, so drive async code inside the method, e.g. with asyncio.run()"
+            )
+        return result is not False
 
     def run(self, adapter: Any, steps: list, progress: Optional[dict] = None) -> Optional[tuple]:
         """The (step number, message) of the first divergence, if any.

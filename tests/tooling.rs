@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use zin::conform::{Adapter, Args, Outcome, assert_conforms, check};
+use zin::conform::{Adapter, Args, Outcome, Refused, assert_conforms, check};
 use zin::{
     Cover, ErrorKind, Framework, Json, MutantFate, Plan, PlanOptions, State, Value, Verification,
     audit, check_trace, parse, scaffold, verify,
@@ -130,34 +130,34 @@ struct Account {
 }
 
 impl Account {
-    fn deposit(&mut self, amount: i64) -> Result<(), ()> {
+    fn deposit(&mut self, amount: i64) -> Result<(), Refused> {
         let cap = if self.bug == Some("cap") { 21 } else { 20 };
         if self.closed || self.balance + amount > cap {
-            return Err(());
+            return Err(Refused);
         }
         self.balance += amount;
         Ok(())
     }
 
-    fn withdraw(&mut self, amount: i64) -> Result<(), ()> {
+    fn withdraw(&mut self, amount: i64) -> Result<(), Refused> {
         if self.closed || amount > self.balance {
-            return Err(());
+            return Err(Refused);
         }
         self.balance -= amount;
         Ok(())
     }
 
-    fn close(&mut self) -> Result<(), ()> {
+    fn close(&mut self) -> Result<(), Refused> {
         if self.closed || (self.balance != 0 && self.bug != Some("close")) {
-            return Err(());
+            return Err(Refused);
         }
         self.closed = true;
         Ok(())
     }
 
-    fn reopen(&mut self) -> Result<(), ()> {
+    fn reopen(&mut self) -> Result<(), Refused> {
         if !self.closed {
-            return Err(());
+            return Err(Refused);
         }
         self.closed = false;
         Ok(())
@@ -256,6 +256,33 @@ fn a_missing_guard_is_caught_with_a_short_reproduction() {
     if let Some((_, reproduction)) = error.message.split_once("shortest reproduction:\n") {
         assert!(reproduction.lines().count() <= 2, "{error}");
     }
+}
+
+#[test]
+fn an_unexpected_error_is_a_crash_not_a_rejection() {
+    struct TimingOut(Harness);
+    impl Adapter for TimingOut {
+        fn call(&mut self, action: &str, args: &Args) -> Outcome {
+            if action == "close" {
+                let timeout: std::io::Result<()> = Err(std::io::ErrorKind::TimedOut.into());
+                return Outcome::refused_if(timeout, |error| {
+                    error.kind() == std::io::ErrorKind::PermissionDenied
+                });
+            }
+            self.0.call(action, args)
+        }
+    }
+    let mut make = harness(None, false);
+    let crash = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        check(ACCOUNT, &PlanOptions::default(), || TimingOut(make()))
+    }))
+    .expect_err("a timeout must not pass as a rejection");
+    let message = crash
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .unwrap_or_default();
+    assert!(message.contains("failed instead of refusing"), "{message}");
+    assert!(message.contains("TimedOut"), "{message}");
 }
 
 #[test]
