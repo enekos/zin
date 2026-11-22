@@ -28,7 +28,7 @@ public sealed class ObservationsTests
         try
         {
             File.WriteAllText(path, JsonSerializer.Serialize(new {
-                zin = "plan/1", system = name, states = new[] { data.GetProperty("expected") },
+                zin = "plan/1", fingerprint = "0000000000000000", parents = new object?[] { null }, system = name, states = new[] { data.GetProperty("expected") },
                 actions = Array.Empty<object>(), calls = Array.Empty<object>(),
                 tests = new[] { new { name, steps = Array.Empty<object>() } }
             }));

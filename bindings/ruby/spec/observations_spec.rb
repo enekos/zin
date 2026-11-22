@@ -6,7 +6,7 @@ RSpec.describe "shared observation contract" do
     it row.fetch("name") do
       test = { "name" => "initial observation", "steps" => [] }
       plan = Zin::Plan.new({
-        "zin" => "plan/1", "system" => "Observations", "states" => [row.fetch("expected")],
+        "zin" => "plan/1", "fingerprint" => "0000000000000000", "parents" => [nil], "system" => "Observations", "states" => [row.fetch("expected")],
         "tests" => [test], "calls" => [], "actions" => []
       })
       check = proc { plan.run(test) { Struct.new(:observe).new(row.fetch("observed")) } }

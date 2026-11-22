@@ -22,7 +22,7 @@ final class ObservationsTest extends TestCase
         $path = sys_get_temp_dir() . '/zin-observation-' . bin2hex(random_bytes(16)) . '.json';
         try {
             file_put_contents($path, json_encode([
-                'zin' => 'plan/1', 'system' => 'Observations', 'actions' => [], 'calls' => [],
+                'zin' => 'plan/1', 'fingerprint' => '0000000000000000', 'parents' => [null], 'system' => 'Observations', 'actions' => [], 'calls' => [],
                 'states' => [$case->expected], 'tests' => [['name' => 'initial observation', 'steps' => []]],
             ], JSON_THROW_ON_ERROR));
             $plan = Plan::load($path);
