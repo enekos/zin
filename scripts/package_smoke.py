@@ -132,15 +132,27 @@ const adapter = broken => {
   await zin.check(spec, () => adapter(false));
   await assert.rejects(() => zin.check(spec, () => adapter(true)), zin.Divergence);
   // Every published entry point loads with only declared dependencies installed.
+  // An optional peer the consumer has not installed may be missing; any other
+  // missing module is an undeclared dependency.
   const root = path.join("node_modules", "zin-verify");
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+  const peers = Object.keys(manifest.peerDependencies ?? {});
+  const missingPeer = error => {
+    if (!["MODULE_NOT_FOUND", "ERR_MODULE_NOT_FOUND"].includes(error.code)) return false;
+    const match = /Cannot find (?:module|package) '([^']+)'/.exec(error.message);
+    return Boolean(match) && peers.some(peer => match[1] === peer || match[1].startsWith(`${peer}/`));
+  };
+  const load = async thunk => {
+    try { await thunk(); } catch (error) { if (!missingPeer(error)) throw error; }
+  };
   for (const [name, conditions] of JSON.parse(process.env.ZIN_SMOKE_ENTRIES)) {
     for (const [condition, files] of Object.entries(conditions)) {
-      for (const file of Object.values(files)) {
+      for (const file of typeof files === "string" ? [files] : Object.values(files)) {
         assert.ok(fs.existsSync(path.join(root, file)), `${name} ${condition}: missing ${file}`);
       }
     }
-    if (conditions.require) require(name);
-    if (conditions.import) await import(name);
+    if (conditions.require) await load(() => require(name));
+    if (conditions.import) await load(() => import(name));
   }
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
