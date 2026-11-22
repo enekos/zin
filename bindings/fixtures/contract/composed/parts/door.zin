@@ -1,0 +1,11 @@
+system "Door"
+state
+  open is a boolean
+initially
+  open is false
+action push
+  requires not open
+  open becomes true
+action pull
+  requires open
+  open becomes false

@@ -59,17 +59,77 @@ specification whose values do not.
 
 ### What a binding must do
 
-For each test: build a fresh implementation, then for each step perform the
-call, classify the result as accepted or rejected, compare with `to`, and
-compare any observed fields with the current model state (after a rejection:
-the unchanged state). Compare types strictly (`false` is not `0`). Treat
-anything that is neither an acceptance nor a recognized rejection as an error.
+[`plan.schema.json`](plan.schema.json) is the one definition of the file. The
+Python, JavaScript and Go runners all follow the contract below, and each runs
+the same executable cases in
+[`bindings/fixtures/contract`](../bindings/fixtures/contract/README.md). A new
+runner passes those cases before it ships.
 
-On a failure at step *n*, walk `parents` back from the model state before step
-*n* to get the shortest call sequence to it, append step *n*, and rerun on a
-fresh implementation. If it fails again, report it as the shortest
-reproduction; if not, say that the failure depends on state the specification
-does not model.
+**Loading.** Given a specification and the planning options the caller passed
+(any of `cover`, `max_steps`, `step_budget`, `pair_limit`, `component`):
+
+1. A path ending in `.json` is the plan itself. Passing options with it is an
+   error ("planning options need a .zin specification"). If the path is
+   `<name>.plan.json` and `<name>.zin` exists beside it, the plan must be fresh
+   for that specification.
+2. Otherwise use the explicit plan file, or else a sibling `<name>.plan.json`
+   if one exists. It is usable when it is **fresh** and **compatible**:
+   - *Fresh:* hash the specification's bytes with FNV-1a 64. With no `sources`,
+     that is the fingerprint. With `sources`, hash the text made of that hash
+     and a newline, then `path`, a tab, the current hash of the file at that
+     path (relative to the specification) and a newline for each source in
+     byte order of `path`. A missing file is not fresh.
+   - *Compatible:* every option the caller passed equals the plan's recorded
+     value (an older plan without the key is not compatible). Options left out
+     are not compared, so runners hold no defaults. `component` is identity:
+     the plan's (null when absent) must equal the requested one.
+3. An explicit plan that is not usable is an error naming the reason ("was
+   derived from a different version of" or "was derived with different
+   planning options") and the `zin plan` command that regenerates it.
+4. Otherwise run `zin plan <spec>` with exactly the passed options. If the
+   binary cannot be found, the error gives the sibling's reason, if any, then
+   "the zin binary was not found" and the regenerating command.
+5. Validate every plan before use: each call names a declared action with
+   exactly as many arguments as it has parameters, `states` and `parents` line
+   up, and every step is in range. A violation is an error starting "the plan
+   is malformed".
+
+**Replaying.** For each test build a fresh implementation, then for each step
+perform the call, classify the result as accepted or rejected, compare with
+`to`, and compare any observed fields with the current model state (after a
+rejection: the unchanged state). Observed maps may list a subset of the keys,
+but every key must exist; types compare strictly (`false` is not `0`).
+Native values are normalized first: enum members to their name, map keys to
+their text. Anything that is neither an acceptance nor a recognized rejection
+fails the test with that error.
+
+**Reporting.** A divergence at step *n* (0 when the initial state differs) is
+reported exactly as follows.
+
+```text
+<system>: implementation diverges from the specification in test "<test>" at step <n>
+<what differed>
+steps taken:
+  1. <call>
+  2. reject <call>
+spec fingerprint: <fingerprint>
+scenario "Replay divergence"
+  <call>
+  reject <call>
+```
+
+The scenario lists the steps taken, or `expect true` when none were. Lists
+longer than eight steps begin with `  ... <k> earlier steps`. When *n* > 0,
+walk `parents` back from the model state before step *n* to get the shortest
+call sequence to it and append step *n*. If that is shorter, rerun it on a
+fresh implementation and append one line:
+
+- `shortest reproduction:` and its listing, when it fails at its last step
+  with the same message;
+- `the shorter replay raised: <error>`, when the implementation raised an
+  error (it is reported, never swallowed);
+- otherwise `the shortest path to the same specification state does not
+  reproduce the original mismatch`.
 
 ## `check/1`
 

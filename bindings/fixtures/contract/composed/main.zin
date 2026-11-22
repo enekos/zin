@@ -1,0 +1,9 @@
+include "parts/door.zin"
+
+system "Doorbell"
+state
+  rang is a boolean
+initially
+  rang is false
+action push
+  rang becomes true

@@ -1,0 +1,15 @@
+system "Latch"
+state
+  locked is a boolean
+initially
+  locked is false
+action lock
+  requires not locked
+  locked becomes true
+action unlock
+  requires locked
+  locked becomes false
+scenario "Lock twice"
+  lock
+  reject lock
+  unlock
