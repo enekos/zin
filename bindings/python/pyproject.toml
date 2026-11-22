@@ -28,3 +28,6 @@ license-files = ["LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[project.entry-points.pytest11]
+zin = "zin.pytest_plugin"
