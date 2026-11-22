@@ -21,7 +21,7 @@ zin - specifications you can prove, then run against your code
 usage:
   zin check <spec>... [--format json] [--symmetry on|off]
                                         prove every property over every reachable state
-  zin plan <spec> [--out FILE] [--cover transitions|states|actions|scenarios] [--max-steps N] [--step-budget N]
+  zin plan <spec> [--out FILE] [--cover transitions|states|actions|scenarios|pairs] [--max-steps N] [--step-budget N] [--pair-limit N]
                                         derive the conformance test plan (JSON)
   zin trace <spec> <events.jsonl|->     check a recorded execution against the specification
   zin audit <spec>                      mutate the specification; list changes nothing notices
@@ -257,7 +257,10 @@ fn check(args: &[String]) -> Result<Output> {
 }
 
 fn plan(args: &[String]) -> Result<Output> {
-    let arguments = Arguments::parse(args, &["out", "cover", "max-steps", "step-budget"])?;
+    let arguments = Arguments::parse(
+        args,
+        &["out", "cover", "max-steps", "step-budget", "pair-limit"],
+    )?;
     let mut options = PlanOptions::default();
     if let Some(cover) = arguments.option("cover") {
         options.cover = Cover::parse(cover)?;
@@ -276,6 +279,12 @@ fn plan(args: &[String]) -> Result<Output> {
     };
     options.max_steps = positive("max-steps")?.unwrap_or(options.max_steps);
     options.step_budget = positive("step-budget")?.unwrap_or(options.step_budget);
+    if let Some(limit) = positive("pair-limit")? {
+        let Cover::Pairs { .. } = options.cover else {
+            return Err(Error::usage("--pair-limit needs --cover pairs"));
+        };
+        options.cover = Cover::Pairs { limit: Some(limit) };
+    }
     let verification = load(arguments.one("specification file")?)?;
     let plan = Plan::build(&verification, &options)?;
     let mut text = plan.to_json(&verification).to_compact();

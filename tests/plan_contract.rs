@@ -1,4 +1,6 @@
-use zin::{Cover, ErrorKind, Plan, PlanOptions, TestKind, Verification, parse, verify};
+use std::collections::BTreeSet;
+use zin::conform::{Adapter, Args, Outcome, check};
+use zin::{Cover, Coverage, ErrorKind, Plan, PlanOptions, TestKind, Verification, parse, verify};
 
 const SWITCH: &str = r#"system "Switch"
 state
@@ -116,4 +118,149 @@ fn options_must_be_positive_and_portable() {
             ErrorKind::Usage
         );
     }
+}
+
+fn adjacent_pairs(v: &Verification, plan: &Plan) -> BTreeSet<(u32, u32, u32)> {
+    let mut pairs = BTreeSet::new();
+    for test in &plan.tests {
+        let mut state = 0;
+        let mut previous = None;
+        for step in &test.steps {
+            assert_eq!(step.to, v.graph.target(state, step.call), "{}", test.name);
+            if let Some((from, first)) = previous {
+                pairs.insert((from, first, step.call));
+            }
+            previous = Some((state, step.call));
+            state = step.to.unwrap_or(state);
+        }
+    }
+    pairs
+}
+
+fn pairs(limit: Option<usize>) -> PlanOptions {
+    PlanOptions::cover(Cover::Pairs { limit })
+}
+
+#[test]
+fn pair_plans_cover_real_adjacent_calls_including_refusals_and_repetitions() {
+    let v = verified(SWITCH);
+    let plan = Plan::build(&v, &pairs(None)).unwrap();
+    let exercised = adjacent_pairs(&v, &plan);
+    assert_eq!(exercised.len(), 8);
+    assert_eq!(
+        plan.coverage,
+        Coverage::Pairs {
+            eligible: 8,
+            covered: 8
+        }
+    );
+    let mut sampled = pairs(Some(1));
+    sampled.step_budget = 2;
+    let a = Plan::build(&v, &sampled).unwrap();
+    let b = Plan::build(&v, &sampled).unwrap();
+    assert_eq!(a.to_json(&v).to_compact(), b.to_json(&v).to_compact());
+    assert_eq!(a.tests[0].steps.len(), 2);
+    assert!(matches!(
+        a.coverage,
+        Coverage::Pairs {
+            eligible: 8,
+            covered: 1
+        }
+    ));
+    sampled.step_budget = 1;
+    assert_eq!(
+        Plan::build(&v, &sampled).unwrap_err().kind,
+        ErrorKind::Limit
+    );
+}
+
+#[test]
+fn pair_tours_chain_obligations_instead_of_replaying_a_setup_for_each() {
+    let source = CHAIN.replace(
+        "  n becomes n + 1\n",
+        "  n becomes n + 1\naction reset\n  requires n is 400\n  n becomes 0\n",
+    );
+    let v = verified(&source);
+    let transitions = Plan::build(&v, &PlanOptions::default()).unwrap();
+    let plan = Plan::build(&v, &pairs(None)).unwrap();
+    let exercised = adjacent_pairs(&v, &plan);
+    assert_eq!(exercised.len(), 401 * 4);
+    let steps = plan.accepted_steps + plan.rejected_steps;
+    let baseline = transitions.accepted_steps + transitions.rejected_steps;
+    assert!(steps <= 2 * exercised.len(), "{steps} steps");
+    assert!(steps <= 3 * baseline, "{steps} vs {baseline}");
+    let mut tight = pairs(None);
+    tight.step_budget = 1_000;
+    assert_eq!(Plan::build(&v, &tight).unwrap_err().kind, ErrorKind::Limit);
+}
+
+#[test]
+fn every_test_still_validates_against_the_model_for_each_example() {
+    for source in [
+        include_str!("../examples/account.zin"),
+        include_str!("../examples/delivery.zin"),
+        include_str!("../examples/job.zin"),
+        include_str!("../examples/request-reply.zin"),
+    ] {
+        let v = verified(source);
+        let plan = Plan::build(&v, &pairs(None)).unwrap();
+        let Coverage::Pairs { eligible, covered } = plan.coverage else {
+            panic!("pair coverage expected");
+        };
+        assert_eq!(adjacent_pairs(&v, &plan).len(), covered);
+        assert_eq!(covered as u64, eligible, "{}", v.model.name);
+    }
+}
+
+#[test]
+fn a_pair_limit_needs_a_positive_portable_value() {
+    let v = verified(SWITCH);
+    for limit in [0, usize::MAX] {
+        assert_eq!(
+            Plan::build(&v, &pairs(Some(limit))).unwrap_err().kind,
+            ErrorKind::Usage
+        );
+    }
+}
+
+const ACK: &str = r#"system "Acknowledgement"
+state
+  open is a boolean
+initially
+  open is true
+action ack
+  requires open
+  open becomes true
+"#;
+
+struct Ack {
+    acknowledged: bool,
+    forgets: bool,
+}
+
+impl Adapter for Ack {
+    fn call(&mut self, action: &str, _: &Args) -> Outcome {
+        assert_eq!(action, "ack");
+        if self.acknowledged && !self.forgets {
+            return Outcome::Rejected;
+        }
+        self.acknowledged = true;
+        Outcome::Accepted
+    }
+}
+
+#[test]
+fn pairs_catch_a_history_dependent_refusal_that_transitions_miss() {
+    let faulty = || Ack {
+        acknowledged: false,
+        forgets: false,
+    };
+    let fixed = || Ack {
+        acknowledged: false,
+        forgets: true,
+    };
+    assert!(check(ACK, &PlanOptions::default(), faulty).is_ok());
+    let error = check(ACK, &pairs(None), faulty).unwrap_err();
+    assert!(error.message.contains("rejected ack"), "{error}");
+    assert!(check(ACK, &pairs(None), fixed).is_ok());
 }
