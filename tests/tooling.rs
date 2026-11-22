@@ -16,7 +16,9 @@ fn verified(source: &str) -> Verification {
 
 fn plan(source: &str, cover: Cover, max_steps: usize) -> (Verification, Plan) {
     let verification = verified(source);
-    let plan = Plan::build(&verification, &PlanOptions { cover, max_steps }).unwrap();
+    let mut options = PlanOptions::cover(cover);
+    options.max_steps = max_steps;
+    let plan = Plan::build(&verification, &options).unwrap();
     (verification, plan)
 }
 

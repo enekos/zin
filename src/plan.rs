@@ -12,6 +12,7 @@ const MAX_PLAN_STEPS: usize = 2_000_000;
 const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Cover {
     Transitions,
     States,
@@ -43,10 +44,14 @@ impl Cover {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PlanOptions {
     pub cover: Cover,
+    /// Soft target for tour length, excluding the shortest setup to the current state.
     pub max_steps: usize,
+    /// Hard limit on all emitted replay steps.
+    pub step_budget: usize,
 }
 
 impl Default for PlanOptions {
@@ -54,11 +59,37 @@ impl Default for PlanOptions {
         Self {
             cover: Cover::Transitions,
             max_steps: DEFAULT_MAX_STEPS,
+            step_budget: MAX_PLAN_STEPS,
         }
     }
 }
 
+impl PlanOptions {
+    #[must_use]
+    pub fn cover(cover: Cover) -> Self {
+        Self {
+            cover,
+            ..Self::default()
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.max_steps == 0 || self.step_budget == 0 || self.step_budget > MAX_PLAN_STEPS {
+            return Err(Error::usage(format!(
+                "max_steps must be positive and step_budget must be in 1..={MAX_PLAN_STEPS}"
+            )));
+        }
+        if !u64::try_from(self.max_steps).is_ok_and(|n| n <= MAX_SAFE_INTEGER.unsigned_abs()) {
+            return Err(Error::usage(
+                "plan options must fit in a JavaScript safe integer",
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TestKind {
     Scenario,
     Witness,
@@ -90,8 +121,11 @@ pub struct PlanTest {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Plan {
     pub cover: Cover,
+    pub max_steps: usize,
+    pub step_budget: usize,
     pub tests: Vec<PlanTest>,
     pub accepted_steps: usize,
     pub rejected_steps: usize,
@@ -187,27 +221,28 @@ fn edge_index(graph: &Graph, state: u32, call: u32) -> Option<usize> {
     let start = graph.first_edge.get(at(state)).copied()?;
     graph
         .out(state)
-        .iter()
-        .position(|edge| edge.call == call)
+        .binary_search_by_key(&call, |edge| edge.call)
+        .ok()
         .map(|position| start + position)
 }
 
-fn pending_for(cover: Cover, model: &Model, graph: &Graph) -> Result<Pending> {
+fn pending_for(options: &PlanOptions, model: &Model, graph: &Graph) -> Result<Pending> {
     let mut pending = Pending::new(graph);
     let calls = index32(model.calls.len());
-    match cover {
+    match options.cover {
         Cover::Scenarios => {}
         Cover::Transitions => {
             let refusals = graph
                 .state_count()
                 .saturating_mul(model.calls.len())
                 .saturating_sub(graph.transition_count());
-            if graph.transition_count().saturating_add(refusals) > MAX_PLAN_STEPS {
+            if graph.transition_count().saturating_add(refusals) > options.step_budget {
                 return Err(Error::of(
                     ErrorKind::Limit,
                     None,
                     format!(
-                        "covering every transition and refusal needs more than {MAX_PLAN_STEPS} steps; use --cover states or --cover actions"
+                        "covering every transition and refusal needs more than {} steps; use --cover states or --cover actions",
+                        options.step_budget
                     ),
                 ));
             }
@@ -305,43 +340,89 @@ fn route_to_pending(graph: &Graph, pending: &Pending, from: u32) -> Vec<(u32, us
     path
 }
 
-fn tours(graph: &Graph, pending: &mut Pending, max_steps: usize) -> Vec<Vec<PlanStep>> {
+struct Budget {
+    remaining: usize,
+    limit: usize,
+}
+
+impl Budget {
+    fn new(limit: usize) -> Self {
+        Self {
+            remaining: limit,
+            limit,
+        }
+    }
+
+    fn charge(&mut self, steps: usize) -> Result<()> {
+        self.remaining = self.remaining.checked_sub(steps).ok_or_else(|| {
+            Error::of(
+                ErrorKind::Limit,
+                None,
+                format!(
+                    "plan exceeds the total replay budget of {} steps; reduce coverage or raise --step-budget",
+                    self.limit
+                ),
+            )
+        })?;
+        Ok(())
+    }
+}
+
+fn access_depths(graph: &Graph) -> Vec<usize> {
+    let mut depths = vec![0; graph.state_count()];
+    // A BFS parent is always discovered before its child.
+    for (state, parent) in graph.parents.iter().enumerate() {
+        if let Some((from, _)) = parent {
+            depths[state] = depths[at(*from)] + 1;
+        }
+    }
+    depths
+}
+
+fn tours(
+    graph: &Graph,
+    pending: &mut Pending,
+    max_steps: usize,
+    budget: &mut Budget,
+) -> Result<Vec<Vec<PlanStep>>> {
+    let depths = access_depths(graph);
     let mut tours = Vec::new();
     while pending.total > 0 {
         let mut steps = Vec::new();
-        let mut state: u32 = 0;
-        let mut progress = false;
+        let mut state = 0;
+        let initial_pending = pending.total;
         loop {
-            for call in pending.take_refusals(state) {
-                steps.push(PlanStep { call, to: None });
-                progress = true;
-            }
-            let start = graph.first_edge.get(at(state)).copied().unwrap_or(0);
-            let needed = (0..graph.out(state).len())
-                .find(|position| pending.edges.get(start + position).copied() == Some(true));
-            if let Some(position) = needed {
-                let Some(edge) = graph.out(state).get(position) else {
-                    break;
-                };
+            let refused = pending.take_refusals(state);
+            budget.charge(refused.len())?;
+            steps.extend(refused.into_iter().map(|call| PlanStep { call, to: None }));
+            let start = graph.first_edge[at(state)];
+            if let Some((position, edge)) = graph
+                .out(state)
+                .iter()
+                .enumerate()
+                .find(|(position, _)| pending.edges[start + position])
+            {
+                budget.charge(1)?;
                 pending.cover_edge(state, start + position);
                 steps.push(PlanStep {
                     call: edge.call,
                     to: Some(edge.to),
                 });
                 state = edge.to;
-                progress = true;
-            } else {
+            } else if pending.total > 0 {
                 let route = route_to_pending(graph, pending, state);
-                if route.is_empty() {
+                let Some((_, last)) = route.last() else { break };
+                let destination = graph.edges[*last].to;
+                // Restart only when a fresh setup is cheaper than continuing.
+                if pending.total < initial_pending
+                    && steps.len() + route.len()
+                        >= max_steps.saturating_add(depths[at(destination)])
+                {
                     break;
                 }
-                if progress && steps.len() + route.len() > max_steps {
-                    break;
-                }
+                budget.charge(route.len())?;
                 for (from, index) in route {
-                    let Some(edge) = graph.edges.get(index) else {
-                        break;
-                    };
+                    let edge = graph.edges[index];
                     pending.cover_edge(from, index);
                     steps.push(PlanStep {
                         call: edge.call,
@@ -350,28 +431,35 @@ fn tours(graph: &Graph, pending: &mut Pending, max_steps: usize) -> Vec<Vec<Plan
                     state = edge.to;
                 }
             }
-            if progress && steps.len() >= max_steps {
+            if pending.total == 0
+                || (pending.total < initial_pending
+                    && steps.len().saturating_sub(depths[at(state)]) >= max_steps)
+            {
                 break;
             }
         }
-        if !progress {
-            break;
+        if initial_pending == pending.total {
+            return Err(Error::new(
+                "planner could not reach its remaining coverage obligations",
+            ));
         }
         tours.push(steps);
     }
-    tours
+    Ok(tours)
 }
 
 impl Plan {
     pub fn build(verification: &Verification, options: &PlanOptions) -> Result<Self> {
         let model = &verification.model;
         let graph = &verification.graph;
+        options.validate()?;
         check_safe_integers(model)?;
-        let mut pending = pending_for(options.cover, model, graph)?;
+        let mut pending = pending_for(options, model, graph)?;
+        let mut budget = Budget::new(options.step_budget);
         let mut tests = Vec::new();
 
         for scenario in &verification.scenarios {
-            let steps = scenario
+            let steps: Vec<PlanStep> = scenario
                 .events
                 .iter()
                 .filter_map(|event| match event {
@@ -386,13 +474,18 @@ impl Plan {
                     ScenarioEvent::Expect { .. } => None,
                 })
                 .collect();
+            budget.charge(steps.len())?;
             tests.push(PlanTest {
                 name: format!("scenario: {}", scenario.name),
                 kind: TestKind::Scenario,
                 steps,
             });
         }
-        for property in &verification.properties {
+        for property in verification
+            .properties
+            .iter()
+            .filter(|_| options.cover != Cover::Scenarios)
+        {
             let (PropertyKind::Sometimes, Some(witness)) = (property.kind, property.witness) else {
                 continue;
             };
@@ -404,6 +497,7 @@ impl Plan {
                     to: Some(edge.to),
                 })
                 .collect();
+            budget.charge(steps.len())?;
             if !steps.is_empty() {
                 tests.push(PlanTest {
                     name: format!("reaches: {}", property.text),
@@ -426,7 +520,7 @@ impl Plan {
                 }
             }
         }
-        for (index, steps) in tours(graph, &mut pending, options.max_steps.max(1))
+        for (index, steps) in tours(graph, &mut pending, options.max_steps, &mut budget)?
             .into_iter()
             .enumerate()
         {
@@ -434,6 +528,14 @@ impl Plan {
                 name: format!("tour {}", index + 1),
                 kind: TestKind::Tour,
                 steps,
+            });
+        }
+        // An empty plan still checks the initial observation.
+        if tests.is_empty() && options.cover != Cover::Scenarios {
+            tests.push(PlanTest {
+                name: "initial state".into(),
+                kind: TestKind::Tour,
+                steps: Vec::new(),
             });
         }
         let accepted_steps = tests
@@ -444,6 +546,8 @@ impl Plan {
         let total: usize = tests.iter().map(|test| test.steps.len()).sum();
         Ok(Self {
             cover: options.cover,
+            max_steps: options.max_steps,
+            step_budget: options.step_budget,
             tests,
             accepted_steps,
             rejected_steps: total - accepted_steps,
@@ -544,6 +648,8 @@ impl Plan {
             ("system", Json::str(model.name.clone())),
             ("fingerprint", Json::str(model.fingerprint.clone())),
             ("cover", Json::str(self.cover.name())),
+            ("max_steps", Json::count(self.max_steps)),
+            ("step_budget", Json::count(self.step_budget)),
             (
                 "fields",
                 Json::Array(
@@ -597,6 +703,15 @@ impl Plan {
                 Json::object([
                     ("states", Json::count(graph.state_count())),
                     ("transitions", Json::count(graph.transition_count())),
+                    (
+                        "refusals",
+                        Json::count(
+                            graph
+                                .state_count()
+                                .saturating_mul(model.calls.len())
+                                .saturating_sub(graph.transition_count()),
+                        ),
+                    ),
                     ("tests", Json::count(self.tests.len())),
                     ("accepted_steps", Json::count(self.accepted_steps)),
                     ("rejected_steps", Json::count(self.rejected_steps)),
