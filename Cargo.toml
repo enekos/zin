@@ -2,7 +2,7 @@
 name = "zin-spec"
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "English-like specifications, exhaustively model checked, then run as conformance tests inside your test framework"
 license = "MIT"
 repository = "https://github.com/enekos/zin"
