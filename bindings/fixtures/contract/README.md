@@ -1,6 +1,6 @@
 # Runner contract cases
 
-Every runner (Python, JavaScript, Go) runs these files in its own test suite.
+Every runner (Python, JavaScript, Go, JUnit) runs these files in its own test suite.
 They pin the behavior that [docs/plan-format.md](../../../docs/plan-format.md#what-a-binding-must-do)
 specifies, so the runners cannot drift apart. A new runner passes them first.
 
@@ -9,10 +9,10 @@ specifies, so the runners cannot drift apart. A new runner passes them first.
 | `cases.json` `load` | Plan loading: fresh and stale plans, the combined fingerprint of included files, option compatibility, old plans without option keys, `.json` paths and malformed calls. Runs with a binary path that does not exist, so a case that needs `zin plan` reports it. `expect.errors` are fragments the error message must contain. |
 | `cases.json` `replay` | Replay and reporting against a scripted adapter. `expect.report` is the exact divergence text; `expect.raises` is an implementation error that must propagate unchanged; `expect.factories` counts the fresh implementations built. |
 | `observations.json` | Matching an observation against a state: partial maps, unknown keys and fields, strict types. |
-| `native-observations.json` | Normalizing native values first. `{"$enum": name}` stands for the runner's enum-like value (a Python `Enum` member, a Go named string type, a plain string in JavaScript); `{"$map": [[key, value], ...]}` for a map with non-string keys. |
+| `native-observations.json` | Normalizing native values first. `{"$enum": name}` stands for the runner's enum-like value (a Python `Enum` member, a Go named string type, a Java enum constant, a plain string in JavaScript); `{"$map": [[key, value], ...]}` for a map with non-string keys. |
 
 Option names are the plan's keys (`max_steps`); each runner maps them to its own
-spelling (`maxSteps`, `WithMaxSteps`).
+spelling (`maxSteps`, `WithMaxSteps`, `Options.maxSteps`).
 
 ## The scripted adapter
 
