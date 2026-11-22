@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-11-22
 
 - Composition: each component's clauses of a shared action resolve names
   against that component's own parameters, so a parameter declared only by
