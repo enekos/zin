@@ -1,7 +1,9 @@
 use crate::ast::PropertyKind;
 use crate::model::{Fault, Model, at, index32};
+use crate::symmetry::Symmetry;
 use crate::{Error, ErrorKind, Result, Trace, TraceStep};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 const MAX_TRANSITIONS: usize = 20_000_000;
 
@@ -18,8 +20,8 @@ pub struct Graph {
     pub(crate) edges: Vec<Edge>,
     pub(crate) first_edge: Vec<usize>,
     pub(crate) index: HashMap<Box<[i64]>, u32>,
-    /// States are representatives under the model's symmetry, not every state.
-    pub(crate) reduced: bool,
+    /// The relabelings that made states representatives, when reduced.
+    pub(crate) symmetry: Option<Arc<Symmetry>>,
 }
 
 impl Graph {
@@ -39,6 +41,18 @@ impl Graph {
         let start = self.first_edge.get(state).copied().unwrap_or(0);
         let end = self.first_edge.get(state + 1).copied().unwrap_or(start);
         self.edges.get(start..end).unwrap_or(&[])
+    }
+
+    /// Whether states are representatives under symmetry, not every state.
+    #[must_use]
+    pub fn reduced(&self) -> bool {
+        self.symmetry.is_some()
+    }
+
+    /// How many relabelings exploration used; zero without reduction.
+    #[must_use]
+    pub fn relabelings(&self) -> usize {
+        self.symmetry.as_ref().map_or(0, |s| s.relabeling_count())
     }
 
     #[must_use]
@@ -63,10 +77,10 @@ impl Graph {
     }
 
     /// The representative of a state the model reached.
-    pub(crate) fn canonical(&self, model: &Model, state: Box<[i64]>) -> Box<[i64]> {
-        match (&model.symmetry, self.reduced) {
-            (Some(symmetry), true) => symmetry.canonical(state),
-            _ => state,
+    pub(crate) fn canonical(&self, state: Box<[i64]>) -> Box<[i64]> {
+        match &self.symmetry {
+            Some(symmetry) => symmetry.canonical(state),
+            None => state,
         }
     }
 
@@ -103,12 +117,20 @@ fn path_to(parents: &[Option<(u32, u32)>], state: u32) -> Vec<Edge> {
 }
 
 fn trace(model: &Model, graph: &Graph, path: &[Edge], loop_from: Option<usize>) -> Trace {
-    if graph.reduced
-        && let Some(symmetry) = &model.symmetry
-        && let Some(trace) = symmetry.lift(model, &graph.states, path, loop_from)
+    if let Some(symmetry) = &graph.symmetry
+        && let Some((trace, _)) = symmetry.lift(model, &graph.states, path, loop_from)
     {
         return trace;
     }
+    representative_trace(model, graph, path, loop_from)
+}
+
+fn representative_trace(
+    model: &Model,
+    graph: &Graph,
+    path: &[Edge],
+    loop_from: Option<usize>,
+) -> Trace {
     let decode = |state: u32| model.decode(graph.state(state));
     Trace {
         initial: decode(0),
@@ -133,6 +155,35 @@ impl Explorer<'_> {
     fn fail(&self, kind: ErrorKind, line: usize, message: String, state: u32) -> Error {
         Error::of(kind, Some(line).filter(|line| *line > 0), message)
             .with_trace(self.graph.trace_to(self.model, state))
+    }
+
+    /// A model fault while taking `call` from `state`. Under symmetry the
+    /// fault is replayed on the concrete state the lifted trace reaches, so
+    /// the message names the same values as the trace. If that replay does
+    /// not reproduce it, the report stays on representatives throughout.
+    fn call_fault(&self, call: u32, fault: Fault, state: u32) -> Error {
+        let model = self.model;
+        if let Some(symmetry) = &self.graph.symmetry {
+            let path = self.graph.path_to(state);
+            return symmetry
+                .lift_fault(model, &self.graph.states, &path, call)
+                .unwrap_or_else(|| {
+                    let message = format!("{}: {}", model.call_text(call), fault.message);
+                    Error::of(
+                        ErrorKind::Model,
+                        Some(fault.line).filter(|l| *l > 0),
+                        message,
+                    )
+                    .with_trace(representative_trace(
+                        model,
+                        &self.graph,
+                        &path,
+                        None,
+                    ))
+                });
+        }
+        let message = format!("{}: {}", model.call_text(call), fault.message);
+        self.fail(ErrorKind::Model, fault.line, message, state)
     }
 
     fn fault(&self, fault: Fault, state: u32) -> Error {
@@ -186,9 +237,9 @@ impl Explorer<'_> {
     }
 }
 
-/// Explores every reachable state, or with `reduce` one representative of
+/// Explores every reachable state, or with `symmetry` one representative of
 /// each class of states the model's interchangeable types make equivalent.
-pub(crate) fn explore(model: &Model, reduce: bool) -> Result<Graph> {
+pub(crate) fn explore(model: &Model, symmetry: Option<Arc<Symmetry>>) -> Result<Graph> {
     let mut explorer = Explorer {
         model,
         graph: Graph {
@@ -197,7 +248,7 @@ pub(crate) fn explore(model: &Model, reduce: bool) -> Result<Graph> {
             edges: Vec::new(),
             first_edge: Vec::new(),
             index: HashMap::new(),
-            reduced: reduce && model.symmetry.is_some(),
+            symmetry,
         },
         locals: model.new_locals(),
     };
@@ -214,10 +265,7 @@ pub(crate) fn explore(model: &Model, reduce: bool) -> Result<Graph> {
             let next = match model.step(call, &current, &mut explorer.locals) {
                 Ok(Some(next)) => next,
                 Ok(None) => continue,
-                Err(fault) => {
-                    let message = format!("{}: {}", model.call_text(call), fault.message);
-                    return Err(explorer.fail(ErrorKind::Model, fault.line, message, from));
-                }
+                Err(fault) => return Err(explorer.call_fault(call, fault, from)),
             };
             if explorer.graph.edges.len() >= MAX_TRANSITIONS {
                 return Err(Error::of(
@@ -226,7 +274,7 @@ pub(crate) fn explore(model: &Model, reduce: bool) -> Result<Graph> {
                     format!("more than {MAX_TRANSITIONS} transitions are reachable"),
                 ));
             }
-            let next = explorer.graph.canonical(model, next);
+            let next = explorer.graph.canonical(next);
             let to = explorer.add(next, Some((from, call)))?;
             explorer.graph.edges.push(Edge { call, to });
         }

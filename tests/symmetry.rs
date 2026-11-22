@@ -233,3 +233,64 @@ fn an_enumeration_holds_all_interchangeable_values_or_none() {
     .unwrap_err();
     assert!(error.message.contains("only an enumeration"), "{error}");
 }
+
+#[test]
+fn short_circuiting_quantifiers_with_partial_bodies_use_concrete_evaluation() {
+    for workers in ["ann, ben", "ben, ann"] {
+        for (expr, kind) in [
+            ("1 / (1 - load of w) > 0", "division by zero"),
+            ("9223372036854775807 + load of w > 0", "integer overflow"),
+            ("valid of (load of w) is true", "is not a key"),
+        ] {
+            let model = format!(
+                "system \"Workers\"\ntypes\n  interchangeable worker is one of {workers}\n  zero is an integer from 0 to 0\nstate\n  load is a map from worker to an integer from 0 to 1\n  valid is a map from zero to a boolean\ninitially\n  load of every worker is 0\n  valid of every zero is true\nalways some w in worker satisfies {expr}\naction start(w is a worker)\n  requires every v in worker satisfies load of v is 0\n  load of w becomes 1\n"
+            );
+            let error = reduced(&model).unwrap_err();
+            assert_eq!(error, full(&model).unwrap_err());
+            assert!(error.message.contains(kind), "{error}");
+            assert_eq!(error.trace.unwrap().steps.len(), 1);
+            let safe = model.replace("load of w becomes 1", "load of w becomes 0");
+            let verification = reduced(&safe).unwrap();
+            assert!(!verification.reduced);
+            assert!(
+                verification
+                    .notes
+                    .iter()
+                    .any(|note| note.contains("quantifier"))
+            );
+        }
+    }
+}
+
+#[test]
+fn model_fault_names_the_same_concrete_worker_as_its_prefix() {
+    let model = r#"system "Climb"
+types
+  interchangeable worker is one of ann, ben
+state
+  load is a map from worker to an integer from 0 to 1
+initially
+  load of every worker is 0
+action increment(w is a worker)
+  load of w becomes load of w + 1
+"#;
+    let error = reduced(model).unwrap_err();
+    assert_eq!(error, full(model).unwrap_err());
+    assert!(
+        error
+            .message
+            .starts_with("increment(ann): load of ann would become 2")
+    );
+    assert_eq!(error.trace.unwrap().steps[0].call, "increment(ann)");
+}
+
+#[test]
+fn bounded_arithmetic_in_quantifiers_keeps_the_reduction() {
+    let source = include_str!("../examples/mutex.zin").replace(
+        "always possible holder is nobody",
+        "always possible holder is nobody\nalways every w in worker satisfies 0 + 1 > 0",
+    );
+    let verification = reduced(&source).unwrap();
+    assert!(verification.reduced, "{:?}", verification.notes);
+    assert_eq!(verification.graph.state_count(), 9);
+}

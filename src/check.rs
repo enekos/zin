@@ -2,7 +2,9 @@ use crate::ast::{Fairness, PropertyKind, Spec};
 use crate::explore::{Graph, explore};
 use crate::model::{CompiledStep, Model, index32};
 use crate::properties::check_properties;
+use crate::symmetry::Symmetry;
 use crate::{Error, ErrorKind, Result, Trace, TraceStep};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct PropertyResult {
@@ -103,15 +105,12 @@ pub fn verify_with(spec: &Spec, options: Options) -> Result<Verification> {
 fn verify_unlocated(spec: &Spec, options: Options) -> Result<Verification> {
     let model = Model::compile_unlocated(spec)?;
     let mut notes = Vec::new();
-    let mut reduce = options.symmetry && model.symmetry.is_some();
-    if reduce && fair_liveness(&model) {
-        reduce = false;
-        notes.push(
-            "symmetry reduction is off: liveness under fairness is checked on the full state space"
-                .to_string(),
-        );
-    }
-    let graph = explore(&model, reduce)?;
+    let symmetry = if options.symmetry && !model.interchangeable.is_empty() {
+        reduction(&model, &mut notes)
+    } else {
+        None
+    };
+    let graph = explore(&model, symmetry)?;
     let terminal_states = check_terminal(&model, &graph)?;
     let checked = check_properties(&model, &graph)?;
     notes.extend(checked.notes);
@@ -133,7 +132,7 @@ fn verify_unlocated(spec: &Spec, options: Options) -> Result<Verification> {
     let scenarios = run_scenarios(&model, &graph)?;
     Ok(Verification {
         model,
-        reduced: graph.reduced,
+        reduced: graph.reduced(),
         graph,
         properties: checked.results,
         scenarios,
@@ -178,6 +177,31 @@ fn check_terminal(model: &Model, graph: &Graph) -> Result<usize> {
 /// Whether a liveness property depends on fairness. Fairness is per call,
 /// and relabeling changes which call a representative's edge stands for, so
 /// these are not checked on representatives.
+/// The relabelings to explore with, or `None` with the reason in `notes`.
+fn reduction(model: &Model, notes: &mut Vec<String>) -> Option<Arc<Symmetry>> {
+    if fair_liveness(model) {
+        notes.push(
+            "symmetry reduction is off: liveness under fairness is checked on the full state space"
+                .to_string(),
+        );
+        return None;
+    }
+    if crate::definedness::order_sensitive(model) {
+        notes.push(
+            "symmetry reduction is off: a short-circuiting quantifier over interchangeable values can fault for one value and stop early for another"
+                .to_string(),
+        );
+        return None;
+    }
+    match Symmetry::new(model, &model.interchangeable) {
+        Ok(symmetry) => Some(Arc::new(symmetry)),
+        Err(error) => {
+            notes.push(format!("symmetry reduction is off: {}", error.message));
+            None
+        }
+    }
+}
+
 fn fair_liveness(model: &Model) -> bool {
     let fair = model
         .actions
@@ -230,7 +254,7 @@ fn run_scenarios(model: &Model, graph: &Graph) -> Result<Vec<ScenarioRun>> {
                             &trace,
                         ));
                     };
-                    let representative = graph.canonical(model, next.clone());
+                    let representative = graph.canonical(next.clone());
                     let to = graph.index.get(&representative).copied().ok_or_else(|| {
                         fail(
                             *line,
