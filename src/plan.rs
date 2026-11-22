@@ -483,6 +483,11 @@ impl Plan {
     pub fn build(verification: &Verification, options: &PlanOptions) -> Result<Self> {
         let model = &verification.model;
         let graph = &verification.graph;
+        if graph.reduced() {
+            return Err(Error::usage(
+                "conformance plans need concrete states; build them from verify(), which explores the full model",
+            ));
+        }
         options.validate()?;
         check_safe_integers(model)?;
         let mut pending = pending_for(options, model, graph)?;

@@ -1,4 +1,4 @@
-use zin::{ErrorKind, Options, Trace, Verification, parse, verify, verify_with};
+use zin::{ErrorKind, Options, Plan, PlanOptions, Trace, Verification, parse, verify, verify_with};
 
 fn reduced(source: &str) -> zin::Result<Verification> {
     verify_with(&parse(source)?, Options::default())
@@ -282,6 +282,16 @@ action increment(w is a worker)
             .starts_with("increment(ann): load of ann would become 2")
     );
     assert_eq!(error.trace.unwrap().steps[0].call, "increment(ann)");
+}
+
+#[test]
+fn representatives_cannot_become_concrete_plans() {
+    let source = include_str!("../examples/mutex.zin");
+    let representatives = reduced(source).unwrap();
+    assert!(representatives.reduced);
+    let error = Plan::build(&representatives, &PlanOptions::default()).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Usage);
+    assert!(Plan::build(&full(source).unwrap(), &PlanOptions::default()).is_ok());
 }
 
 #[test]
