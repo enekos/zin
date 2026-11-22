@@ -2,6 +2,7 @@ pub mod ast;
 mod audit;
 mod check;
 pub mod cli;
+mod component;
 mod compose;
 pub mod conform;
 mod explore;
@@ -22,6 +23,7 @@ pub use audit::{Audit, Mutant, MutantFate, audit};
 pub use check::{
     Options, PropertyResult, ScenarioEvent, ScenarioRun, Verification, verify, verify_with,
 };
+pub use component::verify_component;
 pub use explore::{Edge, Graph};
 pub use json::Json;
 pub use mermaid::{sequence_diagram, state_diagram};

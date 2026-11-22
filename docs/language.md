@@ -312,7 +312,29 @@ always waiting implies job is not 0
 - Types with the same name must be declared the same way in every block that
   declares them. The largest `explore at most` wins.
 
-Plans, traces and tests treat a composition as one system under test.
+Plans, traces and tests treat a composition as one system under test, unless
+you test one component in isolation.
+
+### Testing one component
+
+```sh
+zin plan examples/request-reply.zin --component Client --out client.plan.json
+```
+
+Zin checks the whole composition first, then builds a plan for the named
+block alone. Its adapter implements only that block's actions and observes
+only its fields. The other blocks become a controllable environment that may
+offer a shared action whenever the component's own `requires` allow it, so the
+plan can exercise local behavior that a particular implementation of the
+other components never requests: for the client, the server-only `work`
+disappears and a `reply` can follow a `request` at once.
+
+Whole-system scenarios seed the plan. Each keeps the component's calls and its
+own refusals; a call only the environment takes or refuses never reaches the
+adapter. Properties and `terminal when` describe the whole and are checked
+there, not on the component. The plan's `component` field names the block
+(`null` for a whole system). In Rust, pass `verify_component(&spec, "Client")`
+to `Plan::build`.
 
 ## Source files
 

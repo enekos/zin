@@ -195,6 +195,8 @@ pub struct Model {
     pub fingerprint: String,
     /// Included files and their fingerprints; see [`Spec::sources`].
     pub sources: BTreeMap<String, String>,
+    /// The component a model was isolated to by [`crate::verify_component`].
+    pub component: Option<String>,
     pub state_limit: usize,
     pub fields: Vec<FieldInfo>,
     pub actions: Vec<ActionInfo>,
@@ -672,6 +674,7 @@ impl<'a> Compiler<'a> {
             name: spec.name.clone(),
             fingerprint: spec.fingerprint.clone(),
             sources: spec.sources.clone(),
+            component: None,
             state_limit: spec.state_limit,
             fields: self.fields,
             actions,

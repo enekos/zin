@@ -22,7 +22,9 @@ usage:
   zin check <spec>... [--format json] [--symmetry on|off]
                                         prove every property over every reachable state
   zin plan <spec> [--out FILE] [--cover transitions|states|actions|scenarios|pairs] [--max-steps N] [--step-budget N] [--pair-limit N]
-                                        derive the conformance test plan (JSON)
+           [--component NAME]
+                                        derive the conformance test plan (JSON);
+                                        --component NAME tests one block of a composition
   zin trace <spec> <events.jsonl|->     check a recorded execution against the specification
   zin audit <spec>                      mutate the specification; list changes nothing notices
   zin init <framework> <spec>           print a conformance test skeleton
@@ -295,7 +297,14 @@ fn check(args: &[String]) -> Result<Output> {
 fn plan(args: &[String]) -> Result<Output> {
     let arguments = Arguments::parse(
         args,
-        &["out", "cover", "max-steps", "step-budget", "pair-limit"],
+        &[
+            "out",
+            "cover",
+            "max-steps",
+            "step-budget",
+            "pair-limit",
+            "component",
+        ],
     )?;
     let mut options = PlanOptions::default();
     if let Some(cover) = arguments.option("cover") {
@@ -321,7 +330,11 @@ fn plan(args: &[String]) -> Result<Output> {
         };
         options.cover = Cover::Pairs { limit: Some(limit) };
     }
-    let verification = load(arguments.one("specification file")?)?;
+    let spec = load_spec(arguments.one("specification file")?)?;
+    let verification = match arguments.option("component") {
+        Some(name) => crate::verify_component(&spec, name)?,
+        None => verify(&spec)?,
+    };
     let plan = Plan::build(&verification, &options)?;
     let mut text = plan.to_json(&verification).to_compact();
     text.push('\n');

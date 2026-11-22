@@ -56,6 +56,7 @@ pub(crate) fn compose(components: Vec<Spec>) -> Result<Spec> {
         .iter()
         .map(|component| component.name.clone())
         .collect();
+    spec.component_specs = components.clone().into();
     let mut limits = Vec::new();
     let mut terminal: Vec<Condition> = Vec::new();
     for component in components {

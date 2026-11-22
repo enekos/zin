@@ -731,6 +731,13 @@ impl Plan {
                         .collect(),
                 ),
             ),
+            (
+                "component",
+                model
+                    .component
+                    .as_ref()
+                    .map_or(Json::Null, |name| Json::str(name.clone())),
+            ),
             ("cover", Json::str(self.cover.name())),
             ("max_steps", Json::count(self.max_steps)),
             ("step_budget", Json::count(self.step_budget)),

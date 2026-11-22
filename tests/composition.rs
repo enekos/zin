@@ -192,3 +192,40 @@ fn the_strongest_fairness_of_a_shared_action_wins() {
     let reply = verification.model.action_index("reply").unwrap();
     assert_eq!(verification.model.actions[reply].fairness, Fairness::Strong);
 }
+
+#[test]
+fn a_component_is_driven_by_a_controllable_environment() {
+    let spec = zin::parse(include_str!("../examples/request-reply.zin")).unwrap();
+    let client = zin::verify_component(&spec, "Client").unwrap();
+    assert_eq!(client.model.component.as_deref(), Some("Client"));
+    assert_eq!(client.model.fields.len(), 2);
+    assert!(client.model.action_index("work").is_none());
+    let calls: Vec<_> = client.scenarios[0]
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            zin::ScenarioEvent::Call { call, .. } => Some(client.call_text(*call)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls, ["request(2)", "reply(2)"]);
+    // The whole system refuses an early reply because the server is still
+    // working. The client alone allows it, so that refusal never reaches it.
+    assert!(!client.scenarios[0].events.iter().any(|event| matches!(
+        event,
+        zin::ScenarioEvent::Reject { call } if client.call_text(*call) == "reply(2)"
+    )));
+    let plan = zin::Plan::build(&client, &zin::PlanOptions::default()).unwrap();
+    let json = plan.to_json(&client).to_compact();
+    assert!(json.contains("\"component\":\"Client\""), "{json}");
+}
+
+#[test]
+fn an_unknown_or_stateless_component_is_a_usage_error() {
+    let spec = zin::parse(include_str!("../examples/request-reply.zin")).unwrap();
+    let error = zin::verify_component(&spec, "Nobody").unwrap_err();
+    assert_eq!(error.kind, zin::ErrorKind::Usage);
+    assert!(error.message.contains("Client"), "{error}");
+    let error = zin::verify_component(&spec, "Request and reply").unwrap_err();
+    assert!(error.message.contains("no state"), "{error}");
+}
