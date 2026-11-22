@@ -99,12 +99,22 @@ type Plan struct {
 	MaxSteps    *int              `json:"max_steps"`
 	StepBudget  *int              `json:"step_budget"`
 	PairLimit   *int              `json:"pair_limit"`
+	Defaults    *Defaults         `json:"defaults"`
 	Actions     []Action          `json:"actions"`
 	States      []map[string]any  `json:"states"`
 	Parents     []*[2]int         `json:"parents"`
 	Calls       []Call            `json:"calls"`
 	Tests       []Test            `json:"tests"`
 	Summary     Summary           `json:"summary"`
+}
+
+// Defaults are the planning options zin plan uses when none are given.
+// Plans written before 0.3.1 do not record them.
+type Defaults struct {
+	Cover      string `json:"cover"`
+	MaxSteps   *int   `json:"max_steps"`
+	StepBudget *int   `json:"step_budget"`
+	PairLimit  *int   `json:"pair_limit"`
 }
 
 // Action is one action of the specification.
@@ -289,12 +299,28 @@ func fresh(plan *Plan, spec string) bool {
 	return currentFingerprint(spec, plan.Sources) == plan.Fingerprint
 }
 
-func equalInt(recorded, requested *int) bool {
-	return requested == nil || (recorded != nil && *recorded == *requested)
+func sameInt(left, right *int) bool {
+	return (left == nil) == (right == nil) && (left == nil || *left == *right)
 }
 
-// compatible compares only the options passed; the component is identity.
-func compatible(plan *Plan, settings config) bool {
+// matchInt compares a passed option with the plan, or an option left out with
+// the plan's default unless the plan was named explicitly.
+func matchInt(recorded, requested, fallback *int, explicit bool) bool {
+	switch {
+	case requested != nil:
+		return recorded != nil && *recorded == *requested
+	case explicit:
+		return true
+	default:
+		return sameInt(recorded, fallback)
+	}
+}
+
+// compatible requires passed options to match; the component is identity. A
+// sibling picked automatically must also match the plan's recorded defaults for
+// every option left out, so weaker coverage is never chosen silently. An
+// explicit plan is the opt-in to whatever it was derived with.
+func compatible(plan *Plan, settings config, explicit bool) bool {
 	recorded, requested := "", ""
 	if plan.Component != nil {
 		recorded = *plan.Component
@@ -302,11 +328,25 @@ func compatible(plan *Plan, settings config) bool {
 	if settings.component != nil {
 		requested = *settings.component
 	}
-	return recorded == requested &&
-		(settings.cover == nil || *settings.cover == plan.Cover) &&
-		equalInt(plan.MaxSteps, settings.maxSteps) &&
-		equalInt(plan.StepBudget, settings.stepBudget) &&
-		equalInt(plan.PairLimit, settings.pairLimit)
+	if recorded != requested {
+		return false
+	}
+	defaults := plan.Defaults
+	if defaults == nil {
+		if !explicit && (settings.cover == nil || settings.maxSteps == nil ||
+			settings.stepBudget == nil || settings.pairLimit == nil) {
+			return false
+		}
+		defaults = &Defaults{}
+	}
+	cover := plan.Cover == defaults.Cover || explicit
+	if settings.cover != nil {
+		cover = *settings.cover == plan.Cover
+	}
+	return cover &&
+		matchInt(plan.MaxSteps, settings.maxSteps, defaults.MaxSteps, explicit) &&
+		matchInt(plan.StepBudget, settings.stepBudget, defaults.StepBudget, explicit) &&
+		matchInt(plan.PairLimit, settings.pairLimit, defaults.PairLimit, explicit)
 }
 
 func (c config) arguments(spec string) []string {
@@ -381,7 +421,7 @@ func LoadPlan(spec string, options ...Option) (*Plan, error) {
 		switch {
 		case !fresh(plan, spec):
 			reason = fmt.Sprintf("%s was derived from a different version of %s", cached, filepath.Base(spec))
-		case !compatible(plan, settings):
+		case !compatible(plan, settings, settings.plan != ""):
 			reason = fmt.Sprintf("%s was derived with different planning options", cached)
 		default:
 			return plan, nil

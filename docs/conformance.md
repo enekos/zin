@@ -229,8 +229,10 @@ The Python, JavaScript, Go and JUnit bindings look, in order, for:
 
 A plan file is used only if it is fresh for the specification and every file
 it includes, and was derived with each planning option you passed (`cover`,
-`max_steps`, `step_budget`, `pair_limit`, `component`); options you leave out
-are not compared. All runners follow the same
+`max_steps`, `step_budget`, `pair_limit`, `component`). A sibling plan must
+also use zin's default for every option you leave out, so a committed plan
+with weaker coverage (say `--cover scenarios`) is never picked up silently;
+naming a plan explicitly is the opt-in to its options. All runners follow the same
 [contract](plan-format.md#what-a-binding-must-do) and run the same cases.
 
 So you choose per project:

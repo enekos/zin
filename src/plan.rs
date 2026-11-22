@@ -753,6 +753,7 @@ impl Plan {
                     _ => Json::Null,
                 },
             ),
+            ("defaults", default_options()),
             (
                 "fields",
                 Json::Array(
@@ -924,4 +925,17 @@ fn field_type_json(model: &Model, kind: &FieldType) -> Json {
             ("value", domain_json(model, value)),
         ]),
     }
+}
+
+/// The options `zin plan` uses when none are given. A runner that picks a
+/// cached plan by itself treats every option the caller left out as this
+/// value, so a plan with weaker coverage is never chosen silently.
+fn default_options() -> Json {
+    let defaults = PlanOptions::default();
+    Json::object([
+        ("cover", Json::str(defaults.cover.name())),
+        ("max_steps", Json::count(defaults.max_steps)),
+        ("step_budget", Json::count(defaults.step_budget)),
+        ("pair_limit", Json::Null),
+    ])
 }

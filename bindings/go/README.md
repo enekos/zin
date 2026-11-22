@@ -21,7 +21,9 @@ an error wrapping `zin.ErrRejected` when the implementation refuses; implement
 `WithComponent` pass the options of `zin plan`. A committed sibling
 `account.plan.json` (or `WithPlan`) is used when it is fresh for the
 specification and every included file, and was derived with each option you
-pass; options you leave out are not compared. A path to a `.json` plan replays
+pass. A sibling must also have been derived with zin's default for every
+option you leave out, so a plan with weaker coverage is never picked up
+silently; an explicit plan is your opt-in to its options. A path to a `.json` plan replays
 that plan, after checking it against `account.zin` beside it. See
 [the runner contract](../../docs/plan-format.md#what-a-binding-must-do).
 
