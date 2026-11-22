@@ -1,0 +1,15 @@
+{
+  "name": "zin-conformance-pilots",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node corpus.mjs",
+    "test:browser": "playwright test --config playwright.config.cjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.1",
+    "quick-lru-broken": "npm:quick-lru@6.0.0",
+    "quick-lru-fixed": "npm:quick-lru@6.0.1",
+    "zin-verify": "file:../../bindings/js"
+  }
+}

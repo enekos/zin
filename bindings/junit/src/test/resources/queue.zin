@@ -1,0 +1,21 @@
+system "Bounded queue"
+state
+  size is an integer from 0 to 2
+initially
+  size is 0
+
+action offer
+  requires size < 2
+  size becomes size + 1
+
+action poll
+  requires size > 0
+  size becomes size - 1
+
+scenario "Fill and empty"
+  offer
+  offer
+  reject offer
+  poll
+  poll
+  reject poll

@@ -1,0 +1,11 @@
+system "Account with two units of credit"
+state
+  balance is an integer from 0 to 2
+initially
+  balance is 0
+action credit
+  requires balance < 2
+  balance becomes balance + 1
+action debit
+  requires balance > 0
+  balance becomes balance - 1
