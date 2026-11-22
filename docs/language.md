@@ -129,6 +129,19 @@ Expressions are statically typed. Integers, booleans and each enum are
 distinct: `balance is open` is an error, reported before anything runs, even
 in actions that can never be enabled.
 
+Evaluation is left to right and short-circuits: `and`, `or` and `implies`
+skip their right side once the left decides the result, `if` evaluates one
+branch, `some` stops at its first witness and `every` at its first
+counterexample, in the type's declared order. A division by zero, an
+arithmetic overflow or a key outside a map's key type in a part that is
+evaluated is a model fault; in a part that is skipped it is not. So
+`load of w is 0 or 2 / load of w is 1` is safe where `2 / load of w is 1`
+alone faults.
+
+[Language cases](language-cases.md) pairs each of these rules with a passing
+specification and a one-line change that breaks it; the test suite checks
+both versions.
+
 ## Actions
 
 ```zin
