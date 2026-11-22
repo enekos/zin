@@ -17,7 +17,7 @@
 
 const { execFileSync } = require("node:child_process");
 const { appendFileSync, existsSync, readFileSync } = require("node:fs");
-const { basename } = require("node:path");
+const { basename, dirname, resolve } = require("node:path");
 const { fileURLToPath } = require("node:url");
 const recorder = require("./recorder.cjs");
 
@@ -39,9 +39,11 @@ class Rejected extends Error {
 
 /** The implementation does not behave as the specification says. */
 class Divergence extends Error {
-  constructor(message) {
+  constructor(message, fingerprint, scenario) {
     super(message);
     this.name = "Divergence";
+    this.fingerprint = fingerprint;
+    this.scenario = scenario;
   }
 }
 
@@ -97,30 +99,40 @@ function loadPlan(spec, options = {}) {
   } catch (error) {
     throw new PlanError(`cannot read specification ${path}: ${error.message}`);
   }
-  if (options.plan !== undefined) {
-    const planPath = toPath(options.plan);
-    const plan = readPlan(planPath);
-    if (plan.fingerprint !== wanted) {
-      throw new PlanError(
-        `${planPath} was derived from a different version of ${basename(path)}; ` +
-          `regenerate it with: zin plan ${path} --out ${planPath}`,
-      );
+  const defaults = { max_steps: 200, step_budget: 2_000_000, pair_limit: null };
+  const settings = { max_steps: options.maxSteps, step_budget: options.stepBudget, pair_limit: options.pairLimit };
+  const limit = [];
+  for (const [key, value] of Object.entries(settings)) {
+    if (value === undefined) continue;
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new PlanError(`${key} must be a positive integer`);
     }
-    return plan;
+    limit.push("--" + key.replaceAll("_", "-"), String(value));
   }
+  const explicit = options.plan !== undefined;
   const sibling = path.replace(/\.[^./\\]+$/, "") + ".plan.json";
+  const cached = explicit ? toPath(options.plan) : sibling;
   let stale = false;
-  const maxSteps = options.maxSteps;
-  if (maxSteps !== undefined && !(Number.isInteger(maxSteps) && maxSteps > 0)) {
-    throw new PlanError(`maxSteps must be a positive integer, not ${maxSteps}`);
-  }
-  if (existsSync(sibling)) {
-    const plan = readPlan(sibling);
-    if (plan.fingerprint === wanted && plan.cover === cover) return plan;
+  if (explicit || existsSync(cached)) {
+    const plan = readPlan(cached);
+    let fresh = plan.fingerprint === wanted;
+    try {
+      fresh &&= Object.entries(plan.sources || {}).every(([file, digest]) =>
+        fingerprint(readFileSync(resolve(dirname(path), file))) === digest);
+    } catch {
+      fresh = false;
+    }
+    const compatible = (explicit || !plan.component) && ((explicit && options.cover === undefined) || plan.cover === cover) &&
+      Object.entries(settings).every(([key, value]) => (explicit && value === undefined) ||
+        (plan[key] ?? defaults[key]) === (value ?? defaults[key]));
+    if (fresh && compatible) return plan;
+    if (explicit) {
+      const reason = fresh ? "has different planning options" : `was derived from a different version of ${basename(path)}`;
+      throw new PlanError(`${cached} ${reason}; regenerate with: zin plan ${path} --cover ${cover} ${limit.join(" ")} --out ${cached}`);
+    }
     stale = true;
   }
   const binary = options.bin || process.env.ZIN_BIN || "zin";
-  const limit = maxSteps === undefined ? [] : ["--max-steps", String(maxSteps)];
   let output;
   try {
     output = execFileSync(binary, ["plan", path, "--cover", cover, ...limit], {
@@ -133,7 +145,7 @@ function loadPlan(spec, options = {}) {
       const hint = stale ? `${basename(sibling)} is out of date and ` : "";
       throw new PlanError(
         `${hint}the zin binary was not found. Install it (cargo install zin-spec), set ZIN_BIN, ` +
-          `or commit a plan: zin plan ${path} --out ${sibling}${limit.length ? ` ${limit.join(" ")}` : ""}`,
+          `or commit a plan: zin plan ${path} --cover ${cover}${limit.length ? ` ${limit.join(" ")}` : ""} --out ${sibling}`,
       );
     }
     throw new PlanError(`zin plan ${path} failed:\n${String(error.stderr ?? error.message).trim()}`);
@@ -158,8 +170,8 @@ function same(expected, observed) {
   if (expected !== null && typeof expected === "object") {
     return (
       observed !== null &&
-      typeof observed === "object" &&
-      Object.entries(observed).every(([key, item]) => key in expected && same(expected[key], item))
+      Object.prototype.toString.call(observed) === "[object Object]" &&
+      Object.entries(observed).every(([key, item]) => Object.hasOwn(expected, key) && same(expected[key], item))
     );
   }
   return expected === observed;
@@ -193,17 +205,19 @@ class Runner {
   }
 
   /** One observation: `{ message, waitable }`; only a wrong value can still become right. */
-  async mismatch(adapter, state, after) {
+  async mismatch(adapter, state, after, progress) {
     const observed = await adapter.observe();
     if (observed === null || observed === undefined) return null;
-    if (typeof observed !== "object") {
+    const fields = plain(observed);
+    if (Object.prototype.toString.call(fields) !== "[object Object]") {
       return { message: `observe() must return an object of state fields, not ${typeof observed}` };
     }
     const expected = this.plan.states[state];
-    for (const [field, raw] of Object.entries(plain(observed))) {
-      if (!(field in expected)) {
+    for (const [field, raw] of Object.entries(fields)) {
+      if (!Object.hasOwn(expected, field)) {
         return { message: `observe() returned '${field}', which is not a state field of the specification` };
       }
+      progress?.fields.add(field);
       if (!same(expected[field], raw)) {
         return {
           message: `${after}, ${field} is ${show(raw)}, but the specification says ${show(expected[field])}`,
@@ -215,11 +229,11 @@ class Runner {
   }
 
   /** Compares what the adapter observes with a model state, waiting up to `observeTimeout` for it to match. */
-  async compare(adapter, state, after) {
+  async compare(adapter, state, after, progress) {
     if (typeof adapter.observe !== "function") return null;
     const deadline = Date.now() + this.observeTimeout;
     for (;;) {
-      const found = await this.mismatch(adapter, state, after);
+      const found = await this.mismatch(adapter, state, after, progress);
       if (found === null) return null;
       if (!found.waitable || this.observeTimeout <= 0) return found.message;
       if (Date.now() >= deadline) return `${found.message} (waited ${this.observeTimeout} ms)`;
@@ -245,26 +259,28 @@ class Runner {
   }
 
   /** The `[step number, message]` of the first divergence, if any. */
-  async run(adapter, steps) {
-    let message = await this.compare(adapter, 0, "before any action");
+  async run(adapter, steps, progress) {
+    let message = await this.compare(adapter, 0, "before any action", progress);
     if (message) return [0, message];
     let state = 0;
     for (const [index, step] of steps.entries()) {
       const [callId, to] = step;
       const call = this.plan.calls[callId];
       message = await this.step(this.text(step), async () => {
+        if (progress) progress.attempted = index + 1;
         const accepted = await this.perform(adapter, call);
         if (typeof adapter.settle === "function") await adapter.settle();
         if (to >= 0 && accepted) {
           state = to;
-          return this.compare(adapter, state, `after ${call.text}`);
+          return this.compare(adapter, state, `after ${call.text}`, progress);
         }
-        if (to < 0 && !accepted) return this.compare(adapter, state, `after rejecting ${call.text}`);
+        if (to < 0 && !accepted) return this.compare(adapter, state, `after rejecting ${call.text}`, progress);
         return accepted
           ? `the implementation accepted ${call.text}, but the specification rejects it`
           : `the implementation rejected ${call.text}, but the specification allows it`;
       });
       if (message) return [index + 1, message];
+      if (progress) progress.matched = index + 1;
     }
     return null;
   }
@@ -294,32 +310,39 @@ class Runner {
     }
   }
 
-  async check(test, factory) {
+  async check(test, factory, progress) {
     const steps = test.steps;
-    const found = await this.withAdapter(factory, (adapter) => this.run(adapter, steps));
+    const found = await this.withAdapter(factory, (adapter) => this.run(adapter, steps, progress));
     if (found === null) return;
     const [failed, message] = found;
     const taken = steps.slice(0, failed);
     let report =
       `${this.plan.system}: implementation diverges from the specification ` +
       `in test "${test.name}" at step ${failed}\n${message}\nsteps taken:\n${this.listing(taken)}`;
+    const scenario = ['scenario "Replay divergence"', ...(taken.length
+      ? taken.map(step => "  " + this.text(step)) : ["  expect true"])].join("\n");
+    report += `\nspec fingerprint: ${this.plan.fingerprint}\n${scenario}`;
     if (failed > 0) {
       const short = this.shortest(steps, failed);
       if (short.length < taken.length) {
-        const again = await this.withAdapter(factory, (adapter) => this.run(adapter, short));
-        report += again
+        let again;
+        try {
+          again = await this.withAdapter(factory, (adapter) => this.run(adapter, short));
+        } catch (error) {
+          report += `\nshorter replay failed: ${error.message ?? error}`;
+        }
+        report += again && again[0] === short.length && again[1] === message
           ? `\nshortest reproduction:\n${this.listing(short.slice(0, again[0]))}`
-          : "\nthe shortest path to the same specification state does not reproduce this: " +
-            "the implementation keeps state the specification does not model";
+          : "\nthe shortest path to the same specification state does not reproduce the original mismatch";
       }
     }
-    throw new Divergence(report);
+    throw new Divergence(report, this.plan.fingerprint, scenario);
   }
 }
 
 /** Runs one plan test against fresh adapters from `factory`. */
 async function runTest(plan, test, factory, options = {}) {
-  await new Runner(plan, options).check(test, factory);
+  await new Runner(plan, options).check(test, factory, options.progress);
 }
 
 /** Runs every plan test; rejects with `Divergence` on the first failure. */

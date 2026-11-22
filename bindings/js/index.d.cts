@@ -18,7 +18,7 @@ export type Factory = () => Awaitable<Adapter>;
 
 export interface PlanTest {
   name: string;
-  kind: "scenario" | "tour";
+  kind: "scenario" | "witness" | "tour" | "pair";
   /** `[call, to]`; `to` is -1 when the call must be rejected. */
   steps: [number, number][];
 }
@@ -28,16 +28,20 @@ export interface Plan {
   system: string;
   fingerprint: string;
   cover: Cover;
+  max_steps?: number;
+  step_budget?: number;
+  pair_limit?: number | null;
+  sources?: Record<string, string>;
   fields: { name: string; type: unknown }[];
   actions: { name: string; params: { name: string; type: unknown }[] }[];
   states: Record<string, unknown>[];
   parents: ([number, number] | null)[];
   calls: { action: string; args: Scalar[]; text: string }[];
   tests: PlanTest[];
-  summary: { states: number; transitions: number; tests: number; accepted_steps: number; rejected_steps: number };
+  summary: { refusals?: number; eligible_pairs?: number; covered_pairs?: number; states: number; transitions: number; tests: number; accepted_steps: number; rejected_steps: number };
 }
 
-export type Cover = "transitions" | "states" | "actions" | "scenarios";
+export type Cover = "transitions" | "states" | "actions" | "scenarios" | "pairs";
 
 export interface PlanOptions {
   cover?: Cover;
@@ -45,8 +49,12 @@ export interface PlanOptions {
   plan?: string | URL;
   /** Path of the `zin` binary; defaults to `$ZIN_BIN`, then `zin` on PATH. */
   bin?: string;
-  /** Step limit for generated tours, passed to `zin plan --max-steps`. A committed plan keeps the limit it was derived with. */
+  /** Soft target for the length of generated tours. */
   maxSteps?: number;
+  /** Hard budget for the total number of replay steps. */
+  stepBudget?: number;
+  /** Deterministic sample size for adjacent-call coverage. */
+  pairLimit?: number;
 }
 
 export interface RunOptions {
@@ -76,7 +84,10 @@ export interface VerifyOptions extends PlanOptions, RunOptions {
 
 export const PLAN_FORMAT: "plan/1";
 export class Rejected extends Error {}
-export class Divergence extends Error {}
+export class Divergence extends Error {
+  readonly fingerprint: string;
+  readonly scenario: string;
+}
 export class PlanError extends Error {}
 export function fingerprint(bytes: Uint8Array): string;
 export function loadPlan(spec: string | URL, options?: PlanOptions): Plan;

@@ -1,0 +1,9 @@
+[
+  {"name":"partial map","expected":{"flags":{"one":false,"two":true}},"observed":{"flags":{"one":false}},"matches":true},
+  {"name":"unknown map key","expected":{"flags":{"one":false}},"observed":{"flags":{"two":false}},"matches":false},
+  {"name":"wrong map value","expected":{"flags":{"one":false}},"observed":{"flags":{"one":true}},"matches":false},
+  {"name":"wrong scalar type","expected":{"count":0},"observed":{"count":false},"matches":false},
+  {"name":"scalar observation","expected":{"status":"open","count":1},"observed":{"status":"open"},"matches":true},
+  {"name":"unknown field","expected":{"count":0},"observed":{"other":0},"matches":false},
+  {"name":"acceptance only","expected":{"count":0},"observed":{},"matches":true}
+]

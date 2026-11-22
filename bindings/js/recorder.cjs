@@ -8,7 +8,7 @@ function plain(value) {
   if (value instanceof Map) {
     return Object.fromEntries([...value].map(([key, item]) => [String(key), plain(item)]));
   }
-  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+  if (Object.prototype.toString.call(value) === "[object Object]") {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, plain(item)]));
   }
   return value;

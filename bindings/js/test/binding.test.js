@@ -230,8 +230,64 @@ test("settle runs after every action and step wraps every step", async () => {
 
 test("maxSteps shortens the generated tours", () => {
   const longest = (plan) => Math.max(...plan.tests.map((item) => item.steps.length));
-  assert.equal(longest(loadPlan(ACCOUNT)), 200);
-  assert.ok(longest(loadPlan(ACCOUNT, { maxSteps: 40 })) < 60);
+  const full = loadPlan(ACCOUNT);
+  const shorter = loadPlan(ACCOUNT, { maxSteps: 40 });
+  assert.equal(full.max_steps, 200);
+  assert.equal(shorter.max_steps, 40);
+  assert.ok(longest(shorter) < longest(full));
   assert.throws(() => loadPlan(ACCOUNT, { maxSteps: 0 }), PlanError);
   assert.throws(() => loadPlan(ACCOUNT, { maxSteps: 40, bin: "/nonexistent/zin" }), /--max-steps 40/);
+});
+
+test("shared observation contract", async () => {
+  const fixtures = JSON.parse(readFileSync(new URL("../../../tests/fixtures/observations.json", import.meta.url)));
+  for (const item of fixtures) {
+    const plan = { system: item.name, actions: [], states: [item.expected] };
+    const replay = runTest(plan, { name: item.name, steps: [] }, () => ({ observe: () => item.observed }));
+    if (item.matches) await replay;
+    else await assert.rejects(replay, Divergence);
+  }
+});
+
+test("saved plans match all requested options and every included file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "zin-plan-"));
+  const path = join(dir, "switch.zin");
+  const cache = join(dir, "switch.plan.json");
+  const fixtures = new URL("../../../tests/fixtures/v0.2/", import.meta.url);
+  copyFileSync(new URL("switch.zin", fixtures), path);
+  copyFileSync(new URL("switch.plan.json", fixtures), cache);
+  const options = { bin: "/no/zin", cover: "scenarios" };
+  assert.ok(loadPlan(path, options).tests.length);
+  assert.throws(() => loadPlan(path, { ...options, maxSteps: 1 }), /out of date/);
+  assert.throws(() => loadPlan(path, { plan: cache, stepBudget: 5 }), /planning options/);
+  const model = JSON.parse(readFileSync(cache));
+  model.sources = { "child.zin": fingerprint(Buffer.from("child")) };
+  writeFileSync(cache, JSON.stringify(model));
+  writeFileSync(join(dir, "child.zin"), "child");
+  assert.deepEqual(loadPlan(path, options), model);
+  writeFileSync(join(dir, "child.zin"), "changed");
+  assert.throws(() => loadPlan(path, { plan: cache }), /different version/);
+});
+
+test("a shorter path that fails differently preserves the original scenario", async () => {
+  const plan = { ...LIGHT, fingerprint: "example" };
+  const steps = [[0,1],[0,0],[0,1],[1,-1]];
+  let made = 0;
+  await assert.rejects(runTest(plan, { name:"original", steps }, () => {
+    const first = made++ === 0;
+    return { actions: { toggle: () => first, smash: () => true } };
+  }), error => {
+    assert.ok(error instanceof Divergence);
+    assert.equal(error.fingerprint, "example");
+    assert.equal(error.scenario, 'scenario "Replay divergence"\n  toggle\n  toggle\n  toggle\n  reject smash');
+    assert.doesNotMatch(error.message, /shortest reproduction:/);
+    return true;
+  });
+});
+
+test("observations distinguish unsupported object types from a partial map", async () => {
+  const plan = { system: "Types", actions: [], states: [{ flags: { enabled: true } }] };
+  for (const observed of [new Date(), { flags: new Date() }, { flags: [] }]) {
+    await assert.rejects(runTest(plan, { name: "wrong type", steps: [] }, () => ({ observe: () => observed })), Divergence);
+  }
 });

@@ -15,11 +15,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -89,16 +91,21 @@ type Observer interface {
 
 // Plan is a derived test plan, as written by `zin plan`.
 type Plan struct {
-	Format      string           `json:"zin"`
-	System      string           `json:"system"`
-	Fingerprint string           `json:"fingerprint"`
-	Cover       string           `json:"cover"`
-	Actions     []Action         `json:"actions"`
-	States      []map[string]any `json:"states"`
-	Parents     []*[2]int        `json:"parents"`
-	Calls       []Call           `json:"calls"`
-	Tests       []Test           `json:"tests"`
-	Summary     Summary          `json:"summary"`
+	Format      string            `json:"zin"`
+	System      string            `json:"system"`
+	Fingerprint string            `json:"fingerprint"`
+	Cover       string            `json:"cover"`
+	MaxSteps    int               `json:"max_steps"`
+	StepBudget  int               `json:"step_budget"`
+	PairLimit   *int              `json:"pair_limit"`
+	Component   string            `json:"component"`
+	Sources     map[string]string `json:"sources"`
+	Actions     []Action          `json:"actions"`
+	States      []map[string]any  `json:"states"`
+	Parents     []*[2]int         `json:"parents"`
+	Calls       []Call            `json:"calls"`
+	Tests       []Test            `json:"tests"`
+	Summary     Summary           `json:"summary"`
 }
 
 // Action is one action of the specification.
@@ -134,9 +141,10 @@ type Summary struct {
 }
 
 type config struct {
-	cover  string
-	plan   string
-	binary string
+	cover                           string
+	plan                            string
+	binary                          string
+	maxSteps, stepBudget, pairLimit *int
 }
 
 // Option adjusts how the plan is obtained.
@@ -151,6 +159,15 @@ func WithPlan(path string) Option { return func(c *config) { c.plan = path } }
 
 // WithBinary sets the path of the zin binary.
 func WithBinary(path string) Option { return func(c *config) { c.binary = path } }
+
+// WithMaxSteps sets a soft target for each tour.
+func WithMaxSteps(n int) Option { return func(c *config) { c.maxSteps = &n } }
+
+// WithStepBudget limits the total number of steps across all tests.
+func WithStepBudget(n int) Option { return func(c *config) { c.stepBudget = &n } }
+
+// WithPairLimit selects a deterministic sample of adjacent calls.
+func WithPairLimit(n int) Option { return func(c *config) { c.pairLimit = &n } }
 
 // Fingerprint is the FNV-1a 64 hash of the specification bytes, as `zin plan`
 // records it.
@@ -186,7 +203,7 @@ func parsePlan(data []byte, origin string) (*Plan, error) {
 // of `zin plan` (WithBinary, $ZIN_BIN, or zin on PATH). spec may itself be a
 // plan file.
 func LoadPlan(spec string, options ...Option) (*Plan, error) {
-	settings := config{cover: "transitions"}
+	settings := config{}
 	for _, option := range options {
 		option(&settings)
 	}
@@ -198,29 +215,75 @@ func LoadPlan(spec string, options ...Option) (*Plan, error) {
 		return nil, fmt.Errorf("zin: cannot read specification: %w", err)
 	}
 	wanted := Fingerprint(source)
-	if settings.plan != "" {
-		plan, err := readPlan(settings.plan)
-		if err != nil {
-			return nil, err
+	cover := settings.cover
+	if cover == "" {
+		cover = "transitions"
+	}
+	args := []string{"plan", spec, "--cover", cover}
+	for _, opt := range []struct {
+		name  string
+		value *int
+	}{
+		{"--max-steps", settings.maxSteps}, {"--step-budget", settings.stepBudget}, {"--pair-limit", settings.pairLimit},
+	} {
+		if opt.value != nil {
+			if *opt.value < 1 {
+				return nil, fmt.Errorf("zin: %s must be positive", opt.name)
+			}
+			args = append(args, opt.name, strconv.Itoa(*opt.value))
 		}
-		if plan.Fingerprint != wanted {
-			return nil, fmt.Errorf(
-				"zin: %s was derived from a different version of %s; regenerate it with: zin plan %s --out %s",
-				settings.plan, filepath.Base(spec), spec, settings.plan)
-		}
-		return plan, nil
 	}
 	sibling := strings.TrimSuffix(spec, filepath.Ext(spec)) + ".plan.json"
+	cached := settings.plan
+	explicit := cached != ""
+	if !explicit {
+		cached = sibling
+	}
+	regenerate := "zin " + strings.Join(args, " ") + " --out " + cached
 	stale := ""
-	if _, err := os.Stat(sibling); err == nil {
-		plan, err := readPlan(sibling)
+	if _, err := os.Stat(cached); explicit || err == nil {
+		plan, err := readPlan(cached)
 		if err != nil {
 			return nil, err
 		}
-		if plan.Fingerprint == wanted && plan.Cover == settings.cover {
+		fresh := plan.Fingerprint == wanted
+		for path, digest := range plan.Sources {
+			data, err := os.ReadFile(filepath.Join(filepath.Dir(spec), filepath.FromSlash(path)))
+			if err != nil || Fingerprint(data) != digest {
+				fresh = false
+				break
+			}
+		}
+		maxSteps, budget := plan.MaxSteps, plan.StepBudget
+		if maxSteps == 0 {
+			maxSteps = 200
+		}
+		if budget == 0 {
+			budget = 2_000_000
+		}
+		matches := func(wanted *int, fallback, actual int) bool {
+			if wanted == nil {
+				return explicit || fallback == actual
+			}
+			return *wanted == actual
+		}
+		pairLimit := 0
+		if plan.PairLimit != nil {
+			pairLimit = *plan.PairLimit
+		}
+		compatible := ((explicit && settings.cover == "") || plan.Cover == cover) &&
+			(explicit || plan.Component == "") &&
+			matches(settings.maxSteps, 200, maxSteps) && matches(settings.stepBudget, 2_000_000, budget) && matches(settings.pairLimit, 0, pairLimit)
+		if fresh && compatible {
 			return plan, nil
 		}
-		stale = filepath.Base(sibling) + " is out of date and "
+		if explicit {
+			if !fresh {
+				return nil, fmt.Errorf("zin: %s was derived from a different version of %s; regenerate with: %s", cached, spec, regenerate)
+			}
+			return nil, fmt.Errorf("zin: %s has different planning options; regenerate with: %s", cached, regenerate)
+		}
+		stale = filepath.Base(cached) + " is out of date and "
 	}
 	binary := settings.binary
 	if binary == "" {
@@ -232,10 +295,10 @@ func LoadPlan(spec string, options ...Option) (*Plan, error) {
 	resolved, err := exec.LookPath(binary)
 	if err != nil {
 		return nil, fmt.Errorf(
-			"zin: %sthe zin binary was not found. Install it (cargo install zin-spec), set ZIN_BIN, or commit a plan: zin plan %s --out %s",
-			stale, spec, sibling)
+			"zin: %sthe zin binary was not found. Install it (cargo install zin-spec), set ZIN_BIN, or commit a plan: %s",
+			stale, regenerate)
 	}
-	command := exec.Command(resolved, "plan", spec, "--cover", settings.cover)
+	command := exec.Command(resolved, args...)
 	var stderr strings.Builder
 	command.Stderr = &stderr
 	output, err := command.Output()
@@ -264,7 +327,10 @@ func plain(value any) any {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		return reflected.Int()
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return int64(reflected.Uint())
+		if n := reflected.Uint(); n <= math.MaxInt64 {
+			return int64(n)
+		}
+		return reflected.Uint()
 	case reflect.Bool:
 		return reflected.Bool()
 	case reflect.String:
@@ -458,25 +524,36 @@ func (r *runner) check(test Test, factory func() Adapter) error {
 	taken := test.Steps[:failed]
 	report := fmt.Sprintf("%s: implementation diverges from the specification in test %q at step %d\n%s\nsteps taken:\n%s",
 		r.plan.System, test.Name, failed, message, r.listing(taken))
+	var scenario strings.Builder
+	scenario.WriteString("scenario \"Replay divergence\"")
+	for _, step := range taken {
+		scenario.WriteString("\n  " + r.text(step))
+	}
+	if len(taken) == 0 {
+		scenario.WriteString("\n  expect true")
+	}
+	report += "\nspec fingerprint: " + r.plan.Fingerprint + "\n" + scenario.String()
 	if failed > 0 {
 		if short := r.shortest(test.Steps, failed); len(short) < len(taken) {
 			again, repeated, err := r.run(factory(), short)
 			switch {
 			case err != nil:
-			case repeated != "":
+			case again == len(short) && repeated == message:
 				report += "\nshortest reproduction:\n" + r.listing(short[:again])
 			default:
-				report += "\nthe shortest path to the same specification state does not reproduce this: the implementation keeps state the specification does not model"
+				report += "\nthe shortest path to the same specification state does not reproduce the original mismatch"
 			}
 		}
 	}
-	return &Divergence{Report: report}
+	return &Divergence{Report: report, Fingerprint: r.plan.Fingerprint, Scenario: scenario.String()}
 }
 
 // Divergence reports that the implementation does not behave as the
 // specification says.
 type Divergence struct {
-	Report string
+	Report      string
+	Fingerprint string
+	Scenario    string
 }
 
 func (d *Divergence) Error() string { return d.Report }

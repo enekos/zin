@@ -58,7 +58,12 @@ class Rejected(Exception):
 
 
 class Divergence(AssertionError):
-    """The implementation does not behave as the specification says."""
+    """A conformance failure with its original, pasteable Zin scenario."""
+
+    def __init__(self, message: str, fingerprint: str = "", scenario: str = ""):
+        super().__init__(message)
+        self.fingerprint = fingerprint
+        self.scenario = scenario
 
 
 class PlanError(RuntimeError):
@@ -86,59 +91,62 @@ def _read_plan(path: Path) -> dict:
 def load_plan(
     spec: PathLike,
     *,
-    cover: str = "transitions",
+    cover: Optional[str] = None,
     plan: Optional[PathLike] = None,
     bin: Optional[str] = None,
+    max_steps: Optional[int] = None,
+    step_budget: Optional[int] = None,
+    pair_limit: Optional[int] = None,
 ) -> dict:
-    """The plan for `spec`.
-
-    Uses `plan` when given, else a sibling ``<name>.plan.json`` that matches
-    the specification, else runs ``zin plan`` (``$ZIN_BIN`` or ``zin`` on PATH).
-    `spec` may itself be a plan file.
-    """
+    """Load an explicitly selected plan, a compatible sibling, or derive one."""
     spec = Path(spec)
     if spec.suffix == ".json":
         return _read_plan(spec)
+    options = {"max_steps": max_steps, "step_budget": step_budget, "pair_limit": pair_limit}
+    for key, value in options.items():
+        if value is not None and (type(value) is not int or value < 1):
+            raise PlanError(f"{key} must be a positive integer")
     try:
         wanted = fingerprint(spec.read_bytes())
     except OSError as error:
         raise PlanError(f"cannot read specification {spec}: {error}") from error
-
-    def usable(candidate: dict) -> bool:
-        return candidate.get("fingerprint") == wanted and candidate.get("cover") == cover
-
-    if plan is not None:
-        loaded = _read_plan(Path(plan))
-        if loaded.get("fingerprint") != wanted:
-            raise PlanError(
-                f"{plan} was derived from a different version of {spec.name}; "
-                f"regenerate it with: zin plan {spec} --out {plan}"
-            )
-        return loaded
+    args = ["plan", str(spec), "--cover", cover or "transitions"]
+    for key, value in options.items():
+        if value is not None:
+            args.extend(["--" + key.replace("_", "-"), str(value)])
     sibling = spec.with_suffix(".plan.json")
-    stale = False
-    if sibling.exists():
-        loaded = _read_plan(sibling)
-        if usable(loaded):
+    cached = Path(plan) if plan is not None else sibling
+    regenerate = "zin " + " ".join([*args, "--out", str(cached)])
+    if plan is not None or cached.exists():
+        loaded = _read_plan(cached)
+        fresh = loaded.get("fingerprint") == wanted
+        try:
+            fresh = fresh and all(
+                fingerprint((spec.parent / path).read_bytes()) == digest
+                for path, digest in (loaded.get("sources") or {}).items()
+            )
+        except OSError:
+            fresh = False
+        if plan is not None and not fresh:
+            raise PlanError(f"{cached} was derived from a different version of {spec.name}; regenerate with: {regenerate}")
+        defaults = {"max_steps": 200, "step_budget": 2_000_000, "pair_limit": None}
+        compatible = (cover is None and plan is not None) or loaded.get("cover") == (cover or "transitions")
+        compatible &= plan is not None or not loaded.get("component")
+        for key, value in options.items():
+            if value is not None or plan is None:
+                compatible &= loaded.get(key, defaults[key]) == (defaults[key] if value is None else value)
+        if fresh and compatible:
             return loaded
-        stale = True
+        if plan is not None:
+            raise PlanError(f"{cached} has different planning options; regenerate with: {regenerate}")
     binary = bin or os.environ.get("ZIN_BIN") or shutil.which("zin")
+    hint = f"{sibling.name} is out of date; " if sibling.exists() else ""
     if not binary:
-        hint = f"{sibling.name} is out of date and " if stale else ""
-        raise PlanError(
-            f"{hint}the zin binary was not found. Install it (cargo install zin-spec), set ZIN_BIN, "
-            f"or commit a plan: zin plan {spec} --out {sibling}"
-        )
+        raise PlanError(f"{hint}the zin binary was not found. Install zin-spec, set ZIN_BIN, or run: {regenerate}")
     try:
-        done = subprocess.run(
-            [binary, "plan", str(spec), "--cover", cover],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
-        )
+        done = subprocess.run([binary, *args], capture_output=True, text=True, encoding="utf-8", check=False)
     except OSError as error:
-        raise PlanError(f"cannot run {binary}: {error}") from error
+        raise PlanError(f"{hint}cannot run {binary}: {error}; regenerate with: {regenerate}") from error
     if done.returncode != 0:
         raise PlanError(f"zin plan {spec} failed:\n{done.stderr.strip()}")
     derived = json.loads(done.stdout)
@@ -195,7 +203,7 @@ class _Runner:
         call = self.plan["calls"][step[0]]["text"]
         return call if step[1] >= 0 else f"reject {call}"
 
-    def compare(self, adapter: Any, state: int, after: str) -> Optional[str]:
+    def compare(self, adapter: Any, state: int, after: str, progress=None) -> Optional[str]:
         observe = getattr(adapter, "observe", None)
         if observe is None:
             return None
@@ -208,6 +216,8 @@ class _Runner:
         for field, actual in observed.items():
             if field not in expected:
                 return f"observe() returned {field!r}, which is not a state field of the specification"
+            if progress is not None:
+                progress["fields"].add(field)
             actual = _plain(actual)
             if not _same(expected[field], actual):
                 return (
@@ -217,7 +227,9 @@ class _Runner:
         return None
 
     def perform(self, adapter: Any, call: dict) -> bool:
-        method = getattr(adapter, _python_name(call["action"]), None)
+        aliases = getattr(adapter, "zin_actions", {})
+        handler = aliases.get(call["action"])
+        method = getattr(adapter, handler or _python_name(call["action"]), None)
         if method is None:
             raise PlanError(
                 f"{type(adapter).__name__} has no method for the action {call['action']!r}"
@@ -227,18 +239,22 @@ class _Runner:
         }
         rejects = (Rejected, *tuple(getattr(adapter, "rejects", ())))
         try:
+            if handler:
+                return method(dict(zip(self.params[call["action"]], call["args"]))) is not False
             return method(**arguments) is not False
         except rejects:
             return False
 
-    def run(self, adapter: Any, steps: list) -> Optional[tuple]:
+    def run(self, adapter: Any, steps: list, progress=None) -> Optional[tuple]:
         """The (step number, message) of the first divergence, if any."""
-        message = self.compare(adapter, 0, "before any action")
+        message = self.compare(adapter, 0, "before any action", progress)
         if message:
             return 0, message
         state = 0
         for number, (call_id, to) in enumerate(steps, start=1):
             call = self.plan["calls"][call_id]
+            if progress is not None:
+                progress["attempted"] = number
             try:
                 accepted = self.perform(adapter, call)
             except Exception as error:
@@ -249,9 +265,9 @@ class _Runner:
                 raise
             if to >= 0 and accepted:
                 state = to
-                message = self.compare(adapter, state, f"after {call['text']}")
+                message = self.compare(adapter, state, f"after {call['text']}", progress)
             elif to < 0 and not accepted:
-                message = self.compare(adapter, state, f"after rejecting {call['text']}")
+                message = self.compare(adapter, state, f"after rejecting {call['text']}", progress)
             elif accepted:
                 message = (
                     f"the implementation accepted {call['text']}, but the specification rejects it"
@@ -262,6 +278,8 @@ class _Runner:
                 )
             if message:
                 return number, message
+            if progress is not None:
+                progress["matched"] = number
         return None
 
     def listing(self, steps: list) -> str:
@@ -286,9 +304,18 @@ class _Runner:
         path.reverse()
         return path + [steps[failed - 1]]
 
-    def check(self, test: dict, factory: Callable[[], Any]) -> None:
+    def check(self, test: dict, factory: Callable[[], Any], progress=None) -> None:
         steps = test["steps"]
-        found = self.run(factory(), steps)
+        def fresh(sequence: list, tracking=None):
+            adapter = factory()
+            try:
+                return self.run(adapter, sequence, tracking)
+            finally:
+                teardown = getattr(adapter, "teardown", None)
+                if teardown is not None:
+                    teardown()
+
+        found = fresh(steps, progress)
         if found is None:
             return
         failed, message = found
@@ -297,18 +324,25 @@ class _Runner:
             f"{self.plan['system']}: implementation diverges from the specification "
             f"in test \"{test['name']}\" at step {failed}\n{message}\nsteps taken:\n{self.listing(taken)}"
         )
+        scenario = 'scenario "Replay divergence"\n' + ("\n".join("  " + self.text(step) for step in taken) or "  expect true")
+        digest = self.plan.get("fingerprint", "")
+        report += f"\nspec fingerprint: {digest}\n{scenario}"
         if failed > 0:
             short = self.shortest(steps, failed)
             if len(short) < len(taken):
-                again = self.run(factory(), short)
-                if again:
+                try:
+                    again = fresh(short)
+                except Exception as error:
+                    again = None
+                    report += f"\nshorter replay failed: {error}"
+                if again == (len(short), message):
                     report += "\nshortest reproduction:\n" + self.listing(short[: again[0]])
                 else:
                     report += (
                         "\nthe shortest path to the same specification state does not reproduce "
-                        "this: the implementation keeps state the specification does not model"
+                        "the original mismatch"
                     )
-        raise Divergence(report)
+        raise Divergence(report, digest, scenario)
 
 
 def run_test(plan: dict, test: dict, factory: Callable[[], Any]) -> None:
@@ -326,8 +360,11 @@ def check(
     spec: PathLike,
     factory: Callable[[], Any],
     *,
-    cover: str = "transitions",
+    cover: Optional[str] = None,
     plan: Optional[PathLike] = None,
+    max_steps: Optional[int] = None,
+    step_budget: Optional[int] = None,
+    pair_limit: Optional[int] = None,
 ) -> dict:
     """Runs every plan test; raises `Divergence` on the first failure.
 
@@ -335,7 +372,8 @@ def check(
     summary.
     """
     base = _caller_directory(2)
-    loaded = load_plan(base / spec, cover=cover, plan=None if plan is None else base / plan)
+    loaded = load_plan(base / spec, cover=cover, plan=None if plan is None else base / plan,
+                           max_steps=max_steps, step_budget=step_budget, pair_limit=pair_limit)
     runner = _Runner(loaded)
     for test in loaded["tests"]:
         runner.check(test, factory)
@@ -350,8 +388,11 @@ def _method_name(index: int, name: str, width: int) -> str:
 def verify(
     spec: PathLike,
     *,
-    cover: str = "transitions",
+    cover: Optional[str] = None,
     plan: Optional[PathLike] = None,
+    max_steps: Optional[int] = None,
+    step_budget: Optional[int] = None,
+    pair_limit: Optional[int] = None,
 ) -> Callable[[type], type]:
     """Class decorator: turn an adapter class into a `unittest.TestCase`.
 
@@ -365,7 +406,8 @@ def verify(
             base = Path(inspect.getfile(adapter_class)).resolve().parent
         except (TypeError, OSError):
             base = Path.cwd()
-        loaded = load_plan(base / spec, cover=cover, plan=None if plan is None else base / plan)
+        loaded = load_plan(base / spec, cover=cover, plan=None if plan is None else base / plan,
+                           max_steps=max_steps, step_budget=step_budget, pair_limit=pair_limit)
         runner = _Runner(loaded)
         namespace: dict = {
             "__module__": adapter_class.__module__,
@@ -378,24 +420,22 @@ def verify(
 
         def make(test: dict) -> Callable[[unittest.TestCase], None]:
             def method(self: unittest.TestCase) -> None:
-                made = []
-
                 def factory() -> Any:
                     adapter = adapter_class()
-                    made.append(adapter)
                     setup = getattr(adapter, "setup", None)
                     if setup is not None:
-                        setup()
+                        try:
+                            setup()
+                        except BaseException:
+                            teardown = getattr(adapter, "teardown", None)
+                            if teardown is not None:
+                                teardown()
+                            raise
                     return adapter
 
-                try:
-                    runner.check(test, factory)
-                finally:
-                    for adapter in made:
-                        teardown = getattr(adapter, "teardown", None)
-                        if teardown is not None:
-                            teardown()
+                runner.check(test, factory, getattr(self, "_zin_progress", None))
 
+            method._zin_plan_test = test
             method.__doc__ = f"{loaded['system']}: {test['name']}"
             return method
 
