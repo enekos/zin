@@ -197,12 +197,20 @@ pub fn check<A: Adapter>(
 pub fn check_spec<A: Adapter>(
     spec: &crate::Spec,
     options: &PlanOptions,
+    factory: impl FnMut() -> A,
+) -> Result<Conformance> {
+    check_verified(&verify(spec)?, options, factory)
+}
+
+/// Replay a full verification, including the result of [`crate::verify_component`].
+pub fn check_verified<A: Adapter>(
+    verification: &Verification,
+    options: &PlanOptions,
     mut factory: impl FnMut() -> A,
 ) -> Result<Conformance> {
-    let verification = verify(spec)?;
-    let plan = Plan::build(&verification, options)?;
+    let plan = Plan::build(verification, options)?;
     for test in &plan.tests {
-        let Some(divergence) = run(&mut factory(), &verification, &test.steps) else {
+        let Some(divergence) = run(&mut factory(), verification, &test.steps) else {
             continue;
         };
         let taken = test.steps.get(..divergence.step).unwrap_or(&test.steps);
@@ -212,7 +220,7 @@ pub fn check_spec<A: Adapter>(
             test.name,
             divergence.step,
             divergence.message,
-            listing(&verification, taken)
+            listing(verification, taken)
         );
         message.push_str(&format!(
             "\nspec fingerprint: {}\nscenario \"Replay divergence\"\n",
@@ -230,14 +238,14 @@ pub fn check_spec<A: Adapter>(
                 message.push_str(&verification.call_text(step.call));
             }
         }
-        let short = shortest(&verification, &test.steps, divergence.step);
+        let short = shortest(verification, &test.steps, divergence.step);
         if divergence.step > 0 && short.len() < taken.len() {
-            match run(&mut factory(), &verification, &short) {
+            match run(&mut factory(), verification, &short) {
                 Some(again) if again.step == short.len() && again.message == divergence.message => {
                     let short = short.get(..again.step).unwrap_or(&short);
                     message.push_str(&format!(
                         "\nshortest reproduction:\n{}",
-                        listing(&verification, short)
+                        listing(verification, short)
                     ));
                 }
                 _ => message.push_str(

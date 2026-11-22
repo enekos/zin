@@ -37,7 +37,7 @@ replays do not count twice. With `cover="pairs"`, the report also counts
 adjacent calls. From a source checkout the plugin can be loaded explicitly
 with `python -m pytest -p zin.pytest_plugin --zin-coverage`.
 
-Pass `max_steps` for a soft tour target, `step_budget` for a hard total, or
+Select a component of a composition with `component="Client"`. Pass `max_steps` for a soft tour target, `step_budget` for a hard total, or
 `cover="pairs", pair_limit=100` for a deterministic sample. Sibling plans
 must match the requested settings and fingerprints of the entry and its included
 files. A direct plan JSON path is a self-contained artifact. A specification

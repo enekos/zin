@@ -291,3 +291,14 @@ test("observations distinguish unsupported object types from a partial map", asy
     await assert.rejects(runTest(plan, { name: "wrong type", steps: [] }, () => ({ observe: () => observed })), Divergence);
   }
 });
+
+test("component selection uses the projected plan only when requested", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "zin-component-")), "protocol.zin");
+  copyFileSync(new URL("../../../examples/request-reply.zin", import.meta.url), path);
+  const component = loadPlan(path, { component: "Client" });
+  assert.equal(component.component, "Client");
+  assert.ok("asked" in component.states[0] && !("job" in component.states[0]));
+  writeFileSync(path.replace(".zin", ".plan.json"), JSON.stringify(component));
+  assert.deepEqual(loadPlan(path, { component: "Client", bin: "/no/zin" }), component);
+  assert.throws(() => loadPlan(path, { bin: "/no/zin" }), /out of date/);
+});

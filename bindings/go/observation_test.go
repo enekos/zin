@@ -79,3 +79,35 @@ func TestLargeUnsignedObservationDoesNotWrapToANegativeInteger(t *testing.T) {
 		t.Fatal("unsigned observation compared equal to -1")
 	}
 }
+
+func TestComponentSelection(t *testing.T) {
+	dir := t.TempDir()
+	spec := filepath.Join(dir, "protocol.zin")
+	data, err := os.ReadFile("../../examples/request-reply.zin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(spec, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := LoadPlan(spec, WithComponent("Client"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Component != "Client" {
+		t.Fatalf("wrong component: %s", plan.Component)
+	}
+	data, err = json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(dir, "protocol.plan.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = LoadPlan(spec, WithComponent("Client"), WithBinary("/no/zin")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = LoadPlan(spec, WithBinary("/no/zin")); err == nil {
+		t.Fatal("whole-system run reused a component plan")
+	}
+}

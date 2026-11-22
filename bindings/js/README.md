@@ -132,6 +132,7 @@ counts adjacent calls when planning with `cover: "pairs"`. Name filters,
 failures and workers are supported. Counts exclude replays made to shorten a
 failure. Older plans without a model denominator show planned coverage.
 
+Select a component of a composition with `component: "Client"`.
 `maxSteps` is a soft tour target. `stepBudget` bounds total replay steps and
 `pairLimit` selects a deterministic sample in pairs mode. Cached plans must
 match the requested settings and the fingerprints of included files. A direct

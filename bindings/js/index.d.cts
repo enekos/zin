@@ -31,6 +31,7 @@ export interface Plan {
   max_steps?: number;
   step_budget?: number;
   pair_limit?: number | null;
+  component?: string | null;
   sources?: Record<string, string>;
   fields: { name: string; type: unknown }[];
   actions: { name: string; params: { name: string; type: unknown }[] }[];
@@ -55,6 +56,8 @@ export interface PlanOptions {
   stepBudget?: number;
   /** Deterministic sample size for adjacent-call coverage. */
   pairLimit?: number;
+  /** Test one component with the rest of the composition as its environment. */
+  component?: string;
 }
 
 export interface RunOptions {

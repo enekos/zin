@@ -141,6 +141,7 @@ type Summary struct {
 }
 
 type config struct {
+	component                       *string
 	cover                           string
 	plan                            string
 	binary                          string
@@ -159,6 +160,9 @@ func WithPlan(path string) Option { return func(c *config) { c.plan = path } }
 
 // WithBinary sets the path of the zin binary.
 func WithBinary(path string) Option { return func(c *config) { c.binary = path } }
+
+// WithComponent derives the plan for one component of a composition.
+func WithComponent(name string) Option { return func(c *config) { c.component = &name } }
 
 // WithMaxSteps sets a soft target for each tour.
 func WithMaxSteps(n int) Option { return func(c *config) { c.maxSteps = &n } }
@@ -233,6 +237,11 @@ func LoadPlan(spec string, options ...Option) (*Plan, error) {
 			args = append(args, opt.name, strconv.Itoa(*opt.value))
 		}
 	}
+	component := ""
+	if settings.component != nil {
+		component = *settings.component
+		args = append(args, "--component", component)
+	}
 	sibling := strings.TrimSuffix(spec, filepath.Ext(spec)) + ".plan.json"
 	cached := settings.plan
 	explicit := cached != ""
@@ -272,7 +281,7 @@ func LoadPlan(spec string, options ...Option) (*Plan, error) {
 			pairLimit = *plan.PairLimit
 		}
 		compatible := ((explicit && settings.cover == "") || plan.Cover == cover) &&
-			(explicit || plan.Component == "") &&
+			((explicit && settings.component == nil) || plan.Component == component) &&
 			matches(settings.maxSteps, 200, maxSteps) && matches(settings.stepBudget, 2_000_000, budget) && matches(settings.pairLimit, 0, pairLimit)
 		if fresh && compatible {
 			return plan, nil

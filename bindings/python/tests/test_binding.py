@@ -322,3 +322,15 @@ class Switch:
         done = subprocess.run([*cmd, selector], text=True, capture_output=True, env=env)
         assert done.returncode == code and row in done.stdout, done.stdout + done.stderr
         assert "observed: active" in done.stdout
+
+
+def test_component_selection_matches_cached_scope(tmp_path):
+    path = tmp_path / "protocol.zin"
+    shutil.copy(EXAMPLES / "request-reply.zin", path)
+    component = zin.load_plan(path, component="Client")
+    assert component["component"] == "Client"
+    assert "asked" in component["states"][0] and "job" not in component["states"][0]
+    path.with_suffix(".plan.json").write_text(json.dumps(component))
+    assert zin.load_plan(path, component="Client", bin="/no/zin") == component
+    with pytest.raises(zin.PlanError, match="out of date"):
+        zin.load_plan(path, bin="/no/zin")

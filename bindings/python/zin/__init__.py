@@ -97,6 +97,7 @@ def load_plan(
     max_steps: Optional[int] = None,
     step_budget: Optional[int] = None,
     pair_limit: Optional[int] = None,
+    component: Optional[str] = None,
 ) -> dict:
     """Load an explicitly selected plan, a compatible sibling, or derive one."""
     spec = Path(spec)
@@ -114,6 +115,8 @@ def load_plan(
     for key, value in options.items():
         if value is not None:
             args.extend(["--" + key.replace("_", "-"), str(value)])
+    if component is not None:
+        args.extend(["--component", component])
     sibling = spec.with_suffix(".plan.json")
     cached = Path(plan) if plan is not None else sibling
     regenerate = "zin " + " ".join([*args, "--out", str(cached)])
@@ -131,7 +134,8 @@ def load_plan(
             raise PlanError(f"{cached} was derived from a different version of {spec.name}; regenerate with: {regenerate}")
         defaults = {"max_steps": 200, "step_budget": 2_000_000, "pair_limit": None}
         compatible = (cover is None and plan is not None) or loaded.get("cover") == (cover or "transitions")
-        compatible &= plan is not None or not loaded.get("component")
+        if component is not None or plan is None:
+            compatible &= loaded.get("component") == component
         for key, value in options.items():
             if value is not None or plan is None:
                 compatible &= loaded.get(key, defaults[key]) == (defaults[key] if value is None else value)
@@ -365,6 +369,7 @@ def check(
     max_steps: Optional[int] = None,
     step_budget: Optional[int] = None,
     pair_limit: Optional[int] = None,
+    component: Optional[str] = None,
 ) -> dict:
     """Runs every plan test; raises `Divergence` on the first failure.
 
@@ -373,7 +378,7 @@ def check(
     """
     base = _caller_directory(2)
     loaded = load_plan(base / spec, cover=cover, plan=None if plan is None else base / plan,
-                           max_steps=max_steps, step_budget=step_budget, pair_limit=pair_limit)
+                           max_steps=max_steps, step_budget=step_budget, pair_limit=pair_limit, component=component)
     runner = _Runner(loaded)
     for test in loaded["tests"]:
         runner.check(test, factory)
@@ -393,6 +398,7 @@ def verify(
     max_steps: Optional[int] = None,
     step_budget: Optional[int] = None,
     pair_limit: Optional[int] = None,
+    component: Optional[str] = None,
 ) -> Callable[[type], type]:
     """Class decorator: turn an adapter class into a `unittest.TestCase`.
 
@@ -407,7 +413,7 @@ def verify(
         except (TypeError, OSError):
             base = Path.cwd()
         loaded = load_plan(base / spec, cover=cover, plan=None if plan is None else base / plan,
-                           max_steps=max_steps, step_budget=step_budget, pair_limit=pair_limit)
+                           max_steps=max_steps, step_budget=step_budget, pair_limit=pair_limit, component=component)
         runner = _Runner(loaded)
         namespace: dict = {
             "__module__": adapter_class.__module__,

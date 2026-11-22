@@ -109,6 +109,7 @@ function loadPlan(spec, options = {}) {
     }
     limit.push("--" + key.replaceAll("_", "-"), String(value));
   }
+  if (options.component !== undefined) limit.push("--component", options.component);
   const explicit = options.plan !== undefined;
   const sibling = path.replace(/\.[^./\\]+$/, "") + ".plan.json";
   const cached = explicit ? toPath(options.plan) : sibling;
@@ -122,7 +123,8 @@ function loadPlan(spec, options = {}) {
     } catch {
       fresh = false;
     }
-    const compatible = (explicit || !plan.component) && ((explicit && options.cover === undefined) || plan.cover === cover) &&
+    const componentMatches = (explicit && options.component === undefined) || (plan.component ?? null) === (options.component ?? null);
+    const compatible = componentMatches && ((explicit && options.cover === undefined) || plan.cover === cover) &&
       Object.entries(settings).every(([key, value]) => (explicit && value === undefined) ||
         (plan[key] ?? defaults[key]) === (value ?? defaults[key]));
     if (fresh && compatible) return plan;
