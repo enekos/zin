@@ -26,7 +26,7 @@ pub use json::Json;
 pub use mermaid::{sequence_diagram, state_diagram};
 pub use model::{ActionInfo, Domain, FieldInfo, FieldType, Model, Param};
 pub use parser::parse;
-pub use plan::{Cover, Plan, PlanOptions, PlanStep, PlanTest, TestKind};
+pub use plan::{Cover, Coverage, Plan, PlanOptions, PlanStep, PlanTest, TestKind};
 pub use report::render_markdown;
 pub use scaffold::{Framework, scaffold};
 pub use trace::{TraceReport, check_trace};

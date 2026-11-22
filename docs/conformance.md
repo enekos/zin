@@ -207,6 +207,18 @@ So you choose per project:
 | `states` | a visit to every reachable state |
 | `actions` | every action accepted once and, where possible, rejected once |
 | `scenarios` | only the scenarios you wrote |
+| `pairs` | every pair of adjacent calls from every reachable state, including repeated and rejected calls |
+
+`transitions` checks each call once per model state. An implementation that
+keeps history the model does not, such as an `ack` that accepts the first
+acknowledgement and rejects the second, passes it: the model is in the same
+state both times. `pairs` makes each (state, first call, second call) an
+obligation. A refusal leaves the model in place, so `ack, ack` and
+`reject close, deposit(1)` count. Pairs are chained into tours like
+transitions, so a pair plan costs roughly one step per pair, not a fresh
+setup per pair. `--pair-limit N` selects a deterministic sample, repetitions
+first. The summary reports covered and eligible pairs; covered counts every
+distinct adjacent pair the plan exercises, setup included.
 
 `--max-steps` (default 200) is a soft target for tour length. It does not
 count the shortest setup to the state a tour has reached, so a deep model is

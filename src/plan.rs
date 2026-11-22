@@ -6,6 +6,8 @@ use crate::model::{Domain, FieldType, Model, at, index32};
 use crate::{Error, ErrorKind, Result};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 
+mod pairs;
+
 pub const PLAN_FORMAT: &str = "plan/1";
 const DEFAULT_MAX_STEPS: usize = 200;
 const MAX_PLAN_STEPS: usize = 2_000_000;
@@ -18,6 +20,11 @@ pub enum Cover {
     States,
     Actions,
     Scenarios,
+    /// Every feasible pair of adjacent calls from each reachable state, or a
+    /// deterministic sample of `limit` of them.
+    Pairs {
+        limit: Option<usize>,
+    },
 }
 
 impl Cover {
@@ -28,6 +35,7 @@ impl Cover {
             Self::States => "states",
             Self::Actions => "actions",
             Self::Scenarios => "scenarios",
+            Self::Pairs { .. } => "pairs",
         }
     }
 
@@ -37,8 +45,9 @@ impl Cover {
             "states" => Ok(Self::States),
             "actions" => Ok(Self::Actions),
             "scenarios" => Ok(Self::Scenarios),
+            "pairs" => Ok(Self::Pairs { limit: None }),
             other => Err(Error::usage(format!(
-                "unknown coverage '{other}'; use transitions, states, actions, or scenarios"
+                "unknown coverage '{other}'; use transitions, states, actions, scenarios, or pairs"
             ))),
         }
     }
@@ -78,6 +87,14 @@ impl PlanOptions {
             return Err(Error::usage(format!(
                 "max_steps must be positive and step_budget must be in 1..={MAX_PLAN_STEPS}"
             )));
+        }
+        if let Cover::Pairs { limit: Some(limit) } = self.cover
+            && (limit == 0
+                || !u64::try_from(limit).is_ok_and(|n| n <= MAX_SAFE_INTEGER.unsigned_abs()))
+        {
+            return Err(Error::usage(
+                "a pair limit must be a positive JavaScript safe integer",
+            ));
         }
         if !u64::try_from(self.max_steps).is_ok_and(|n| n <= MAX_SAFE_INTEGER.unsigned_abs()) {
             return Err(Error::usage(
@@ -120,10 +137,24 @@ pub struct PlanTest {
     pub steps: Vec<PlanStep>,
 }
 
+/// What the plan's generated tests account for, beyond the requested cover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Coverage {
+    Obligations,
+    Pairs {
+        /// Feasible (state, first call, second call) obligations in the model.
+        eligible: u64,
+        /// Distinct adjacent pairs the plan exercises, including setup steps.
+        covered: usize,
+    },
+}
+
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Plan {
     pub cover: Cover,
+    pub coverage: Coverage,
     pub max_steps: usize,
     pub step_budget: usize,
     pub tests: Vec<PlanTest>,
@@ -230,7 +261,7 @@ fn pending_for(options: &PlanOptions, model: &Model, graph: &Graph) -> Result<Pe
     let mut pending = Pending::new(graph);
     let calls = index32(model.calls.len());
     match options.cover {
-        Cover::Scenarios => {}
+        Cover::Scenarios | Cover::Pairs { .. } => {}
         Cover::Transitions => {
             let refusals = graph
                 .state_count()
@@ -309,7 +340,7 @@ fn pending_for(options: &PlanOptions, model: &Model, graph: &Graph) -> Result<Pe
     Ok(pending)
 }
 
-fn route_to_pending(graph: &Graph, pending: &Pending, from: u32) -> Vec<(u32, usize)> {
+fn route_to_pending(graph: &Graph, waiting: impl Fn(u32) -> bool, from: u32) -> Vec<(u32, usize)> {
     let mut parents: HashMap<u32, (u32, usize)> = HashMap::new();
     let mut queue = VecDeque::from([from]);
     let mut found = None;
@@ -320,7 +351,7 @@ fn route_to_pending(graph: &Graph, pending: &Pending, from: u32) -> Vec<(u32, us
                 continue;
             }
             parents.insert(edge.to, (state, start + position));
-            if pending.waiting(edge.to) {
+            if waiting(edge.to) {
                 found = Some(edge.to);
                 break 'search;
             }
@@ -383,9 +414,9 @@ fn tours(
     graph: &Graph,
     pending: &mut Pending,
     max_steps: usize,
+    depths: &[usize],
     budget: &mut Budget,
 ) -> Result<Vec<Vec<PlanStep>>> {
-    let depths = access_depths(graph);
     let mut tours = Vec::new();
     while pending.total > 0 {
         let mut steps = Vec::new();
@@ -410,7 +441,7 @@ fn tours(
                 });
                 state = edge.to;
             } else if pending.total > 0 {
-                let route = route_to_pending(graph, pending, state);
+                let route = route_to_pending(graph, |state| pending.waiting(state), state);
                 let Some((_, last)) = route.last() else { break };
                 let destination = graph.edges[*last].to;
                 // Restart only when a fresh setup is cheaper than continuing.
@@ -520,10 +551,48 @@ impl Plan {
                 }
             }
         }
-        for (index, steps) in tours(graph, &mut pending, options.max_steps, &mut budget)?
-            .into_iter()
-            .enumerate()
-        {
+        let depths = access_depths(graph);
+        let (generated, coverage) = match options.cover {
+            Cover::Pairs { limit } => {
+                let calls = index32(model.calls.len());
+                let eligible = pairs::eligible(graph, calls)?;
+                let wanted = limit.map_or(eligible, |n| eligible.min(n as u64));
+                let target = usize::try_from(wanted)
+                    .ok()
+                    .filter(|n| *n <= options.step_budget)
+                    .ok_or_else(|| {
+                        Error::of(
+                            ErrorKind::Limit,
+                            None,
+                            format!(
+                                "covering {wanted} adjacent-call pairs needs more than {} replay steps; use --pair-limit to sample pairs",
+                                options.step_budget
+                            ),
+                        )
+                    })?;
+                let mut selected = pairs::Pairs::select(graph, calls, target);
+                for test in &tests {
+                    selected.record(&test.steps);
+                }
+                let tours = pairs::pair_tours(
+                    graph,
+                    &mut selected,
+                    options.max_steps,
+                    &depths,
+                    &mut budget,
+                )?;
+                let coverage = Coverage::Pairs {
+                    eligible,
+                    covered: selected.covered.len(),
+                };
+                (tours, coverage)
+            }
+            _ => (
+                tours(graph, &mut pending, options.max_steps, &depths, &mut budget)?,
+                Coverage::Obligations,
+            ),
+        };
+        for (index, steps) in generated.into_iter().enumerate() {
             tests.push(PlanTest {
                 name: format!("tour {}", index + 1),
                 kind: TestKind::Tour,
@@ -546,6 +615,7 @@ impl Plan {
         let total: usize = tests.iter().map(|test| test.steps.len()).sum();
         Ok(Self {
             cover: options.cover,
+            coverage,
             max_steps: options.max_steps,
             step_budget: options.step_budget,
             tests,
@@ -556,8 +626,12 @@ impl Plan {
 
     #[must_use]
     pub fn summary(&self) -> String {
+        let pairs = match self.coverage {
+            Coverage::Pairs { eligible, covered } => format!(", {covered} of {eligible} pairs"),
+            Coverage::Obligations => String::new(),
+        };
         format!(
-            "{} tests, {} accepted steps, {} rejected steps (cover: {})",
+            "{} tests, {} accepted steps, {} rejected steps (cover: {}{pairs})",
             self.tests.len(),
             self.accepted_steps,
             self.rejected_steps,
@@ -651,6 +725,13 @@ impl Plan {
             ("max_steps", Json::count(self.max_steps)),
             ("step_budget", Json::count(self.step_budget)),
             (
+                "pair_limit",
+                match self.cover {
+                    Cover::Pairs { limit: Some(limit) } => Json::count(limit),
+                    _ => Json::Null,
+                },
+            ),
+            (
                 "fields",
                 Json::Array(
                     model
@@ -711,6 +792,22 @@ impl Plan {
                                 .saturating_mul(model.calls.len())
                                 .saturating_sub(graph.transition_count()),
                         ),
+                    ),
+                    (
+                        "eligible_pairs",
+                        match self.coverage {
+                            Coverage::Pairs { eligible, .. } => {
+                                Json::Int(i64::try_from(eligible).unwrap_or(i64::MAX))
+                            }
+                            Coverage::Obligations => Json::Null,
+                        },
+                    ),
+                    (
+                        "covered_pairs",
+                        match self.coverage {
+                            Coverage::Pairs { covered, .. } => Json::count(covered),
+                            Coverage::Obligations => Json::Null,
+                        },
                     ),
                     ("tests", Json::count(self.tests.len())),
                     ("accepted_steps", Json::count(self.accepted_steps)),
