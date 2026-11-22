@@ -261,3 +261,25 @@ fn short_circuiting_quantifiers_with_partial_bodies_use_concrete_evaluation() {
         }
     }
 }
+
+#[test]
+fn model_fault_names_the_same_concrete_worker_as_its_prefix() {
+    let model = r#"system "Climb"
+types
+  interchangeable worker is one of ann, ben
+state
+  load is a map from worker to an integer from 0 to 1
+initially
+  load of every worker is 0
+action increment(w is a worker)
+  load of w becomes load of w + 1
+"#;
+    let error = reduced(model).unwrap_err();
+    assert_eq!(error, full(model).unwrap_err());
+    assert!(
+        error
+            .message
+            .starts_with("increment(ann): load of ann would become 2")
+    );
+    assert_eq!(error.trace.unwrap().steps[0].call, "increment(ann)");
+}

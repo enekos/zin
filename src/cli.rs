@@ -291,7 +291,14 @@ fn check(args: &[String]) -> Result<Output> {
                 }
             }
             Err(error) => {
-                let _ = writeln!(output.stderr, "{path}: {}: {error}", error.kind.label());
+                if error
+                    .source_span()
+                    .is_some_and(|span| !span.file.is_empty())
+                {
+                    let _ = writeln!(output.stderr, "{}: {error}", error.kind.label());
+                } else {
+                    let _ = writeln!(output.stderr, "{path}: {}: {error}", error.kind.label());
+                }
             }
         }
     }

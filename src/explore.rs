@@ -104,7 +104,7 @@ fn path_to(parents: &[Option<(u32, u32)>], state: u32) -> Vec<Edge> {
 fn trace(model: &Model, graph: &Graph, path: &[Edge], loop_from: Option<usize>) -> Trace {
     if graph.reduced
         && let Some(symmetry) = &model.symmetry
-        && let Some(trace) = symmetry.lift(model, &graph.states, path, loop_from)
+        && let Some((trace, _)) = symmetry.lift(model, &graph.states, path, loop_from)
     {
         return trace;
     }
@@ -214,6 +214,17 @@ pub(crate) fn explore(model: &Model, reduce: bool) -> Result<Graph> {
                 Ok(Some(next)) => next,
                 Ok(None) => continue,
                 Err(fault) => {
+                    if explorer.graph.reduced
+                        && let Some(symmetry) = &model.symmetry
+                        && let Some(error) = symmetry.lift_fault(
+                            model,
+                            &explorer.graph.states,
+                            &explorer.graph.path_to(from),
+                            call,
+                        )
+                    {
+                        return Err(error);
+                    }
                     let message = format!("{}: {}", model.call_text(call), fault.message);
                     return Err(explorer.fail(ErrorKind::Model, fault.line, message, from));
                 }

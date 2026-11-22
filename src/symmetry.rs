@@ -234,6 +234,29 @@ impl Symmetry {
             .copied()
     }
 
+    /// The prefix and the failing call must use the same concrete worker names.
+    pub(crate) fn lift_fault(
+        &self,
+        model: &Model,
+        states: &[Box<[i64]>],
+        path: &[Edge],
+        call: u32,
+    ) -> Option<Error> {
+        let (trace, concrete) = self.lift(model, states, path, None)?;
+        let end = path.last().map_or(0, |edge| edge.to);
+        let renaming = self.relabeling_onto(states.get(at(end))?, &concrete)?;
+        let call = self.relabel_call(model, renaming, call)?;
+        let fault = model.step(call, &concrete, &mut model.new_locals()).err()?;
+        Some(
+            Error::of(
+                crate::ErrorKind::Model,
+                Some(fault.line),
+                format!("{}: {}", model.call_text(call), fault.message),
+            )
+            .with_trace(trace),
+        )
+    }
+
     /// Replays a path through representatives on the real state space.
     ///
     /// Each step finds a relabeling that takes the representative to the
@@ -247,7 +270,7 @@ impl Symmetry {
         states: &[Box<[i64]>],
         path: &[Edge],
         loop_from: Option<usize>,
-    ) -> Option<Trace> {
+    ) -> Option<(Trace, Box<[i64]>)> {
         let representative = |state: u32| states.get(at(state)).map(|state| &**state);
         let mut locals = model.new_locals();
         let mut concrete: Box<[i64]> = representative(0)?.into();
@@ -277,13 +300,13 @@ impl Symmetry {
         let (prefix, cycle) = path.split_at(loop_from.unwrap_or(path.len()).min(path.len()));
         walk(prefix, &mut concrete, &mut from, &mut trace.steps)?;
         if loop_from.is_none() {
-            return Some(trace);
+            return Some((trace, concrete));
         }
         let mut starts: Vec<(Box<[i64]>, usize)> = Vec::new();
         for _ in 0..=self.relabelings.len() {
             if let Some((_, step)) = starts.iter().find(|(state, _)| *state == concrete) {
                 trace.loop_from = Some(*step);
-                return Some(trace);
+                return Some((trace, concrete));
             }
             starts.push((concrete.clone(), trace.steps.len()));
             walk(cycle, &mut concrete, &mut from, &mut trace.steps)?;
