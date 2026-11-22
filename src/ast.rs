@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 
 pub const DEFAULT_STATE_LIMIT: usize = 1_000_000;
 
@@ -124,6 +125,10 @@ pub struct Condition {
     pub line: usize,
     /// The condition's text.
     pub span: Span,
+    /// The action parameters this clause may read. `None` means all of them.
+    /// A shared action carries each component's clauses with that component's
+    /// own parameters, so another component's parameter never shadows a name.
+    pub params: Option<Arc<[String]>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,6 +192,8 @@ pub struct Assignment {
     pub line: usize,
     /// The assigned field's name.
     pub target: Span,
+    /// The action parameters this clause may read. `None` means all of them.
+    pub params: Option<Arc<[String]>>,
 }
 
 /// What the environment promises about an action's calls.

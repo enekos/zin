@@ -528,6 +528,7 @@ fn parse_condition(source: &str, at: At) -> Result<Condition> {
         source: source.trim().to_string(),
         line: at.line,
         span: at.span(source),
+        params: None,
     })
 }
 
@@ -557,6 +558,7 @@ fn parse_assignment(source: &str, keyword: &str, at: At) -> Result<Assignment> {
         source: source.trim().to_string(),
         line: at.line,
         target,
+        params: None,
     })
 }
 

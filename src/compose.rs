@@ -10,6 +10,7 @@
 use crate::ast::{Action, BinaryOperator, Condition, Expr, Field, Span, Spec, TargetKey, TypeDecl};
 use crate::{Error, Result};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// Merges parsed components into one specification.
 pub(crate) fn compose(components: Vec<Spec>) -> Result<Spec> {
@@ -82,6 +83,7 @@ pub(crate) fn compose(components: Vec<Spec>) -> Result<Spec> {
         source: format!("({}) and ({})", left.source, right.source),
         line: left.line,
         span: left.span,
+        params: None,
         expr: Expr::Binary {
             operator: BinaryOperator::And,
             left: Box::new(left.expr),
@@ -239,7 +241,16 @@ fn merge_type(types: &mut Vec<TypeDecl>, declaration: TypeDecl, component: &str)
     Ok(())
 }
 
-fn merge_action(actions: &mut Vec<Action>, action: Action, component: &str) -> Result<()> {
+fn merge_action(actions: &mut Vec<Action>, mut action: Action, component: &str) -> Result<()> {
+    // Resolve names against this component's parameters only, before the
+    // merge widens the parameter list.
+    let own: Arc<[String]> = action.params.iter().map(|p| p.name.clone()).collect();
+    for condition in &mut action.requires {
+        condition.params = Some(Arc::clone(&own));
+    }
+    for assignment in &mut action.assignments {
+        assignment.params = Some(Arc::clone(&own));
+    }
     let Some(shared) = actions.iter_mut().find(|other| other.name == action.name) else {
         actions.push(action);
         return Ok(());
