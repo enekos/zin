@@ -42,6 +42,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Packaged consumer checks
+        run: python3 scripts/package_smoke.py
       - name: JavaScript binding
         working-directory: bindings/js
         run: |
