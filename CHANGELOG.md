@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+- Composition: each component's clauses of a shared action resolve names
+  against that component's own parameters, so a parameter declared only by
+  another component (say `red`) no longer shadows an enum value or changes
+  what the checker proves.
+- Conformance: Python raises `PlanError` when an action method returns a
+  coroutine or generator instead of counting a step whose body never ran.
+  Rust no longer converts every `Result` into an `Outcome`: only
+  `Result<_, Refused>` converts, and `Outcome::refused_if` names which errors
+  are refusals; any other error panics. **Breaking** for adapters that used
+  `.into()` on other error types.
+- Plans record zin's `defaults`. A sibling `<name>.plan.json` picked
+  automatically must use the default for every option the caller leaves out,
+  so a committed `--cover scenarios` plan no longer silently replaces default
+  coverage. An explicit plan stays the opt-in. All four runners and the
+  contract cases follow the new rule; siblings written before this release
+  are regenerated.
+- `zin trace` verifies the specification the way `check` does (symmetry
+  reduction, `--symmetry on|off`) instead of exploring the full graph first.
+- Rust: `check_file` and `assert_conforms_file` load a specification with its
+  includes; `zin init rust` generates the path-based call.
+
 ## 0.3.0 — 2026-11-22
 
 - Checker: model faults inside `some`/`every` over interchangeable values are
