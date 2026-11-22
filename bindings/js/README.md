@@ -59,10 +59,11 @@ the plan. `@playwright/test` is an optional peer dependency. See
 
 ## Jest
 
-Install from a checkout (the package is not published on npm yet):
+Install the released binding, or use a local checkout to try unreleased features.
 
 ```sh
-npm install /path/to/zin/bindings/js
+npm install -D zin-verify
+# Local checkout: npm install -D /path/to/zin/bindings/js
 npm install --save-dev jest
 ```
 
@@ -112,3 +113,27 @@ To run this binding's own checks, set `ZIN_BIN` to your built `zin` executable,
 then run `npm ci && npm test`. CI runs both Jest module formats and `node:test`,
 including a deliberately broken implementation whose failing Jest exit status
 and per-case diagnostics are checked.
+
+## Vitest model coverage
+
+Use `import { verify } from "zin-verify/vitest"` when registering the suite.
+Configure the reporter with Vitest 5:
+
+```js
+import { defineConfig } from "vitest/config";
+import ZinReporter from "zin-verify/vitest-reporter";
+
+export default defineConfig({ test: { reporters: ["default", new ZinReporter()] } });
+```
+
+The report counts unique (model state, call) operations attempted, planned and
+eligible, the operations that failed, and fields actually compared. It also
+counts adjacent calls when planning with `cover: "pairs"`. Name filters,
+failures and workers are supported. Counts exclude replays made to shorten a
+failure. Older plans without a model denominator show planned coverage.
+
+`maxSteps` is a soft tour target. `stepBudget` bounds total replay steps and
+`pairLimit` selects a deterministic sample in pairs mode. Cached plans must
+match the requested settings and the fingerprints of included files. A direct
+JSON path replays the artifact. On a mismatch, the `Divergence` includes the
+spec `fingerprint` and a pasteable Zin `scenario` with the original prefix.

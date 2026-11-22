@@ -1,6 +1,6 @@
 {
   "name": "zin-verify",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Run Zin specifications as conformance tests in Jest, Vitest, node:test, Mocha and Playwright",
   "license": "MIT",
   "author": "Eneko Sarasola",
@@ -46,6 +46,14 @@
         "types": "./recorder.d.cts",
         "default": "./recorder.cjs"
       }
+    },
+    "./vitest": {
+      "types": "./vitest.d.ts",
+      "import": "./vitest.js"
+    },
+    "./vitest-reporter": {
+      "types": "./vitest-reporter.d.ts",
+      "import": "./vitest-reporter.js"
     }
   },
   "files": [
@@ -61,7 +69,11 @@
     "recorder.cjs",
     "recorder.d.ts",
     "recorder.d.cts",
-    "LICENSE"
+    "LICENSE",
+    "vitest.js",
+    "vitest.d.ts",
+    "vitest-reporter.js",
+    "vitest-reporter.d.ts"
   ],
   "scripts": {
     "test": "npm run test:node && npm run test:jest && npm run test:jest:esm && npm run test:vitest && npm run test:mocha && npm run test:playwright",

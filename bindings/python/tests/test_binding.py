@@ -243,3 +243,82 @@ def test_recorder_output_is_accepted_by_zin_trace(tmp_path):
     done = subprocess.run([ZIN, "trace", str(ACCOUNT), str(log)], capture_output=True, text=True)
     assert done.returncode == 1
     assert "balance" in done.stderr
+
+
+def test_observation_contract():
+    fixtures = json.loads((EXAMPLES.parent / "tests/fixtures/observations.json").read_text())
+    for case in fixtures:
+        plan = {"system": case["name"], "actions": [], "states": [case["expected"]]}
+        adapter = type("Observer", (), {"observe": lambda self: case["observed"]})
+        test = {"name": case["name"], "steps": []}
+        if case["matches"]:
+            zin.run_test(plan, test, adapter)
+        else:
+            with pytest.raises(zin.Divergence):
+                zin.run_test(plan, test, adapter)
+
+
+def test_old_plan_options_and_include_freshness(tmp_path):
+    source = EXAMPLES.parent / "tests/fixtures/v0.2"
+    spec = tmp_path / "switch.zin"
+    cache = spec.with_suffix(".plan.json")
+    shutil.copy(source / spec.name, spec)
+    shutil.copy(source / cache.name, cache)
+    assert zin.load_plan(spec, cover="scenarios", bin="/no/zin")["tests"]
+    with pytest.raises(zin.PlanError, match="out of date"):
+        zin.load_plan(spec, cover="scenarios", max_steps=1, bin="/no/zin")
+    with pytest.raises(zin.PlanError, match="planning options"):
+        zin.load_plan(spec, plan=cache, step_budget=1)
+    model = json.loads(cache.read_text())
+    component = tmp_path / "component.zin"
+    component.write_text("first")
+    model["sources"] = {component.name: zin.fingerprint(component.read_bytes())}
+    cache.write_text(json.dumps(model))
+    assert zin.load_plan(spec, plan=cache) == model
+    component.write_text("changed")
+    with pytest.raises(zin.PlanError, match="different version"):
+        zin.load_plan(spec, plan=cache)
+
+
+def test_generated_keyword_and_lifecycle_handlers(tmp_path, monkeypatch):
+    import sys
+    from types import ModuleType
+    spec = tmp_path / "actions.zin"
+    spec.write_text('system "10 Jobs"\nstate\n  x is a boolean\ninitially\n  x is false\n'
+                    'action class(self is a boolean)\n  x becomes self\naction setup\n  x becomes false\n')
+    source = subprocess.check_output([ZIN, "init", "pytest", str(spec)], text=True)
+    module = ModuleType("generated_zin_actions")
+    module.__file__ = str(tmp_path / "test_actions.py")
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    namespace = vars(module)
+    exec(compile(source, module.__file__, "exec"), namespace)
+    generated = next(c for c in namespace.values() if isinstance(c, type) and issubclass(c, unittest.TestCase))
+    cls = generated.adapter
+    calls = []
+    for action, name in cls.zin_actions.items():
+        setattr(cls, name, lambda self, args, a=action: calls.append((a, args)))
+    result = unittest.TestResult()
+    unittest.defaultTestLoader.loadTestsFromTestCase(generated).run(result)
+    assert result.wasSuccessful(), result.errors + result.failures
+    assert ("class", {"self": False}) in calls and ("setup", {}) in calls
+
+
+def test_pytest_reporter_tracks_filtered_failures(tmp_path):
+    import sys
+    plan = EXAMPLES.parent / "tests/fixtures/v0.2/switch.plan.json"
+    test = tmp_path / "test_switch.py"
+    test.write_text(f'''import zin
+@zin.verify({str(plan)!r})
+class Switch:
+    def setup(self): self.active = False
+    def observe(self): return {{"active": self.active}}
+    def start(self): self.active = True
+    def stop(self): self.active = False
+''')
+    env = dict(os.environ, PYTEST_DISABLE_PLUGIN_AUTOLOAD="1", PYTHONPATH=str(EXAMPLES.parent / "bindings/python"))
+    cmd = [sys.executable, "-m", "pytest", "-q", "-p", "zin.pytest_plugin", "--zin-coverage", str(test), "-k"]
+    for selector, code, row in [("start_only", 0, "operations 1/3 planned, 0 failed"),
+                                ("cycle", 1, "operations 2/3 planned, 1 failed")]:
+        done = subprocess.run([*cmd, selector], text=True, capture_output=True, env=env)
+        assert done.returncode == code and row in done.stdout, done.stdout + done.stderr
+        assert "observed: active" in done.stdout
