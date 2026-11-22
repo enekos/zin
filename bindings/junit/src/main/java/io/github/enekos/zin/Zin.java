@@ -206,7 +206,7 @@ public final class Zin {
             JsonNode plan = readPlan(cached);
             if (!fresh(plan, spec)) {
                 reason = cached + " was derived from a different version of " + name;
-            } else if (!compatible(plan, options.planning)) {
+            } else if (!compatible(plan, options.planning, options.plan != null)) {
                 reason = cached + " was derived with different planning options";
             } else {
                 return new Plan(plan);
@@ -295,19 +295,30 @@ public final class Zin {
         return Objects.equals(currentFingerprint(spec, plan.get("sources")), plan.path("fingerprint").asText(null));
     }
 
-    // Only options that were set are compared; the component is identity.
-    private static boolean compatible(JsonNode plan, Map<String, Object> requested) {
+    // The plan keys that shape coverage; "component" is identity, not an option.
+    private static final List<String> PLANNING_OPTIONS = List.of("cover", "max_steps", "step_budget", "pair_limit");
+
+    // Passed options must match; the component is identity. A sibling picked
+    // automatically must also match the plan's recorded defaults for every
+    // option left out, so weaker coverage is never chosen silently. An explicit
+    // plan is the opt-in to whatever it was derived with.
+    private static boolean compatible(JsonNode plan, Map<String, Object> requested, boolean explicit) {
         JsonNode component = plan.get("component");
         String recorded = component == null || component.isNull() ? null : component.asText();
         if (!Objects.equals(recorded, requested.get("component"))) return false;
-        for (var option : requested.entrySet()) {
-            if (option.getKey().equals("component")) continue;
-            JsonNode value = plan.get(option.getKey());
-            if (value == null) return false;
-            boolean same = option.getValue() instanceof Integer number
-                    ? value.isIntegralNumber() && value.longValue() == number
-                    : value.isTextual() && value.textValue().equals(option.getValue());
-            if (!same) return false;
+        JsonNode defaults = plan.get("defaults");
+        for (String key : PLANNING_OPTIONS) {
+            JsonNode value = plan.get(key);
+            if (requested.containsKey(key)) {
+                Object wanted = requested.get(key);
+                boolean same = value != null && (wanted instanceof Integer number
+                        ? value.isIntegralNumber() && value.longValue() == number
+                        : value.isTextual() && value.textValue().equals(wanted));
+                if (!same) return false;
+            } else if (!explicit) {
+                JsonNode fallback = defaults == null || !defaults.isObject() ? null : defaults.get(key);
+                if (value == null || fallback == null || !value.equals(fallback)) return false;
+            }
         }
         return true;
     }

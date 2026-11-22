@@ -1052,17 +1052,15 @@ impl<'a> Compiler<'a> {
     }
 
     fn action(&mut self, action: &Action, params: Vec<Param>) -> Result<ActionInfo> {
-        self.scope = params
-            .iter()
-            .map(|param| (param.name.clone(), Ty::of(&param.domain)))
-            .collect();
-        self.locals = self.locals.max(self.scope.len());
+        self.locals = self.locals.max(params.len());
         let mut requires = Vec::new();
         for condition in &action.requires {
+            self.enter_action(&params, condition.params.as_deref());
             requires.push(self.condition(condition)?);
         }
         let mut assignments = Vec::new();
         for assignment in &action.assignments {
+            self.enter_action(&params, assignment.params.as_deref());
             assignments.push(self.assignment(assignment)?);
         }
         check_duplicate_targets(&assignments)?;
@@ -1075,6 +1073,21 @@ impl<'a> Compiler<'a> {
             requires,
             assignments,
         })
+    }
+
+    /// Puts the action's parameters in scope at their call positions. A
+    /// parameter outside `visible` keeps its slot but cannot be named.
+    fn enter_action(&mut self, params: &[Param], visible: Option<&[String]>) {
+        self.scope = params
+            .iter()
+            .map(|param| {
+                let name = match visible {
+                    Some(visible) if !visible.contains(&param.name) => String::new(),
+                    _ => param.name.clone(),
+                };
+                (name, Ty::of(&param.domain))
+            })
+            .collect();
     }
 
     fn condition(&mut self, condition: &Condition) -> Result<CompiledCondition> {

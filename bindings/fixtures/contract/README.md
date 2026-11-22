@@ -38,8 +38,10 @@ zin plan latch.zin --out latch.plan.json
 zin plan latch.zin --cover states --out states.plan.json
 zin plan composed/main.zin --out composed/main.plan.json
 cp composed/main.plan.json drifted/main.plan.json
+zin plan weaker/latch.zin --cover states --out weaker/latch.plan.json
 ```
 
 `stale.plan.json` was derived from an earlier `latch.zin`, `arity.plan.json` is
-`latch.plan.json` with an extra argument on its first call, and `v02/` holds a
+`latch.plan.json` with an extra argument on its first call, `weaker/` is a
+sibling plan with weaker coverage than the default, and `v02/` holds a
 specification and plan saved by zin 0.2.

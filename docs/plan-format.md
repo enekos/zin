@@ -80,9 +80,14 @@ runner passes those cases before it ships.
      path (relative to the specification) and a newline for each source in
      byte order of `path`. A missing file is not fresh.
    - *Compatible:* every option the caller passed equals the plan's recorded
-     value (an older plan without the key is not compatible). Options left out
-     are not compared, so runners hold no defaults. `component` is identity:
-     the plan's (null when absent) must equal the requested one.
+     value (an older plan without the key is not compatible). For the sibling,
+     every coverage option left out (`cover`, `max_steps`, `step_budget`,
+     `pair_limit`) must equal the plan's recorded `defaults` entry, so runners
+     hold no defaults and a plan with weaker coverage is never chosen
+     silently; a sibling without `defaults` (written before 0.3.1) is not
+     compatible then. An explicit plan compares only the options passed:
+     naming it is the opt-in to its coverage. `component` is identity: the
+     plan's (null when absent) must equal the requested one.
 3. An explicit plan that is not usable is an error naming the reason ("was
    derived from a different version of" or "was derived with different
    planning options") and the `zin plan` command that regenerates it.

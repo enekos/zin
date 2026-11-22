@@ -86,6 +86,8 @@ OPTIONS = {
     "pair_limit": "--pair-limit",
     "component": "--component",
 }
+# The plan keys that shape coverage; `component` is identity, not an option.
+PLANNING_OPTIONS = ("cover", "max_steps", "step_budget", "pair_limit")
 
 
 def _current_fingerprint(spec: Path, sources: dict) -> Optional[str]:
@@ -110,11 +112,28 @@ def _fresh(plan: dict, spec: Path) -> bool:
     return _current_fingerprint(spec, plan.get("sources") or {}) == plan.get("fingerprint")
 
 
-def _compatible(plan: dict, options: dict) -> bool:
-    """Only options the caller passed are compared; the component is identity."""
+def _compatible(plan: dict, options: dict, explicit: bool) -> bool:
+    """Passed options must match; the component is identity.
+
+    A sibling picked automatically must also match the plan's recorded defaults
+    for every option left out, so weaker coverage is never chosen silently. An
+    explicit plan is the opt-in to whatever it was derived with.
+    """
     if plan.get("component") != options.get("component"):
         return False
-    return all(key in plan and plan[key] == value for key, value in options.items() if key != "component")
+    defaults = plan.get("defaults")
+    for key in PLANNING_OPTIONS:
+        if key in options:
+            wanted = options[key]
+        elif explicit:
+            continue
+        elif isinstance(defaults, dict) and key in defaults:
+            wanted = defaults[key]
+        else:
+            return False
+        if key not in plan or plan[key] != wanted:
+            return False
+    return True
 
 
 def _validate(plan: Any, origin: Any) -> dict:
@@ -167,8 +186,9 @@ def load_plan(
 
     Uses `plan` when given, else a sibling ``<name>.plan.json``, as long as it
     is fresh and was derived with every option passed here; otherwise runs
-    ``zin plan`` (`bin`, ``$ZIN_BIN`` or ``zin`` on PATH). Options left out are
-    not compared. `spec` may itself be a plan file.
+    ``zin plan`` (`bin`, ``$ZIN_BIN`` or ``zin`` on PATH). A sibling must also
+    use the default for every option left out; an explicit `plan` is not
+    compared on those. `spec` may itself be a plan file.
     """
     spec = Path(spec)
     options = {
@@ -210,7 +230,7 @@ def load_plan(
         loaded = _read_plan(cached)
         if not _fresh(loaded, spec):
             reason = f"{cached} was derived from a different version of {spec.name}"
-        elif not _compatible(loaded, options):
+        elif not _compatible(loaded, options, plan is not None):
             reason = f"{cached} was derived with different planning options"
         else:
             return loaded
@@ -321,9 +341,19 @@ class _Runner:
         }
         rejects = (Rejected, *tuple(getattr(adapter, "rejects", ())))
         try:
-            return method(**arguments) is not False
+            result = method(**arguments)
         except rejects:
             return False
+        if inspect.isawaitable(result) or inspect.isgenerator(result):
+            close = getattr(result, "close", None)
+            if close is not None:
+                close()
+            raise PlanError(
+                f"{type(adapter).__name__}.{_python_name(call['action'])} returned "
+                f"{type(result).__name__} without running its body; adapter methods must be "
+                "synchronous, so drive async code inside the method, e.g. with asyncio.run()"
+            )
+        return result is not False
 
     def run(self, adapter: Any, steps: list, progress: Optional[dict] = None) -> Optional[tuple]:
         """The (step number, message) of the first divergence, if any.

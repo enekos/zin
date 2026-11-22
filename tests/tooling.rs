@@ -1,5 +1,7 @@
 use std::collections::BTreeSet;
-use zin::conform::{Adapter, Args, Outcome, assert_conforms, check};
+use zin::conform::{
+    Adapter, Args, Outcome, Refused, assert_conforms, assert_conforms_file, check, check_file,
+};
 use zin::{
     Cover, ErrorKind, Framework, Json, MutantFate, Plan, PlanOptions, State, Value, Verification,
     audit, check_trace, parse, scaffold, verify,
@@ -130,34 +132,34 @@ struct Account {
 }
 
 impl Account {
-    fn deposit(&mut self, amount: i64) -> Result<(), ()> {
+    fn deposit(&mut self, amount: i64) -> Result<(), Refused> {
         let cap = if self.bug == Some("cap") { 21 } else { 20 };
         if self.closed || self.balance + amount > cap {
-            return Err(());
+            return Err(Refused);
         }
         self.balance += amount;
         Ok(())
     }
 
-    fn withdraw(&mut self, amount: i64) -> Result<(), ()> {
+    fn withdraw(&mut self, amount: i64) -> Result<(), Refused> {
         if self.closed || amount > self.balance {
-            return Err(());
+            return Err(Refused);
         }
         self.balance -= amount;
         Ok(())
     }
 
-    fn close(&mut self) -> Result<(), ()> {
+    fn close(&mut self) -> Result<(), Refused> {
         if self.closed || (self.balance != 0 && self.bug != Some("close")) {
-            return Err(());
+            return Err(Refused);
         }
         self.closed = true;
         Ok(())
     }
 
-    fn reopen(&mut self) -> Result<(), ()> {
+    fn reopen(&mut self) -> Result<(), Refused> {
         if !self.closed {
-            return Err(());
+            return Err(Refused);
         }
         self.closed = false;
         Ok(())
@@ -256,6 +258,33 @@ fn a_missing_guard_is_caught_with_a_short_reproduction() {
     if let Some((_, reproduction)) = error.message.split_once("shortest reproduction:\n") {
         assert!(reproduction.lines().count() <= 2, "{error}");
     }
+}
+
+#[test]
+fn an_unexpected_error_is_a_crash_not_a_rejection() {
+    struct TimingOut(Harness);
+    impl Adapter for TimingOut {
+        fn call(&mut self, action: &str, args: &Args) -> Outcome {
+            if action == "close" {
+                let timeout: std::io::Result<()> = Err(std::io::ErrorKind::TimedOut.into());
+                return Outcome::refused_if(timeout, |error| {
+                    error.kind() == std::io::ErrorKind::PermissionDenied
+                });
+            }
+            self.0.call(action, args)
+        }
+    }
+    let mut make = harness(None, false);
+    let crash = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        check(ACCOUNT, &PlanOptions::default(), || TimingOut(make()))
+    }))
+    .expect_err("a timeout must not pass as a rejection");
+    let message = crash
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .unwrap_or_default();
+    assert!(message.contains("failed instead of refusing"), "{message}");
+    assert!(message.contains("TimedOut"), "{message}");
 }
 
 #[test]
@@ -536,4 +565,92 @@ fn command_line_plan_report_and_diagram_render() {
         diagram.stdout
     );
     assert_eq!(cli(&["audit", "examples/job.zin"]).code, 0);
+}
+
+#[test]
+fn trace_needs_only_the_proof_that_check_needs() {
+    let dir = std::env::temp_dir().join(format!("zin-trace-symmetry-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let spec = dir.join("mutex.zin");
+    let source = std::fs::read_to_string("examples/mutex.zin").unwrap();
+    std::fs::write(&spec, format!("{source}\nexplore at most 10 states\n")).unwrap();
+    let events = dir.join("events.jsonl");
+    std::fs::write(
+        &events,
+        "{\"action\":\"want\",\"args\":[\"cid\"]}\n{\"action\":\"enter\",\"args\":[\"cid\"]}\n",
+    )
+    .unwrap();
+    let spec = spec.to_str().unwrap();
+    let events = events.to_str().unwrap();
+
+    let checked = cli(&["check", spec]);
+    assert_eq!(checked.code, 0, "{}", checked.stderr);
+    let traced = cli(&["trace", spec, events]);
+    assert_eq!(traced.code, 0, "{}", traced.stderr);
+    assert!(
+        traced.stdout.contains("2 events in 1 run(s)"),
+        "{}",
+        traced.stdout
+    );
+    let full = cli(&["trace", spec, events, "--symmetry", "off"]);
+    assert_eq!(full.code, 2, "{}", full.stderr);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_specification_with_includes_conforms_from_its_file() {
+    #[derive(Default)]
+    struct Doorbell {
+        open: bool,
+        rang: bool,
+    }
+    impl Adapter for Doorbell {
+        fn call(&mut self, action: &str, _: &Args) -> Outcome {
+            match action {
+                "push" if !self.open => {
+                    self.open = true;
+                    self.rang = true;
+                    Outcome::Accepted
+                }
+                "pull" if self.open => {
+                    self.open = false;
+                    Outcome::Accepted
+                }
+                "push" | "pull" => Outcome::Rejected,
+                other => panic!("unknown action {other}"),
+            }
+        }
+        fn observe(&self) -> Option<State> {
+            Some(State::from([
+                ("open".to_string(), Value::Boolean(self.open)),
+                ("rang".to_string(), Value::Boolean(self.rang)),
+            ]))
+        }
+    }
+    let spec = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/bindings/fixtures/contract/composed/main.zin"
+    );
+    let source = std::fs::read_to_string(spec).unwrap();
+    let error = check(&source, &PlanOptions::default(), Doorbell::default)
+        .expect_err("source text cannot resolve an include");
+    assert!(error.message.contains("parse_file"), "{error}");
+    let conformance = assert_conforms_file(spec, Doorbell::default);
+    assert!(conformance.tests > 0);
+    let error = check_file(spec, &PlanOptions::default(), || Doorbell {
+        rang: true,
+        ..Doorbell::default()
+    })
+    .expect_err("a wrong initial observation must be found");
+    assert!(error.message.contains("rang is true"), "{error}");
+
+    let scaffold = cli(&["init", "rust", spec]);
+    assert_eq!(scaffold.code, 0, "{}", scaffold.stderr);
+    assert!(
+        scaffold.stdout.contains(
+            "assert_conforms_file(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/main.zin\")"
+        ),
+        "{}",
+        scaffold.stdout
+    );
 }

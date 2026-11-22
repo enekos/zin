@@ -5,8 +5,10 @@ use crate::ast::Value;
 use crate::check::{Verification, verify};
 use crate::model::named_values;
 use crate::plan::{Plan, PlanOptions, PlanStep};
-use crate::{Error, ErrorKind, Result, State, parse};
+use crate::{Error, ErrorKind, Result, State, parse, parse_file};
 use std::collections::BTreeMap;
+use std::fmt;
+use std::path::Path;
 
 pub type Args = BTreeMap<String, Value>;
 
@@ -26,16 +28,50 @@ impl From<bool> for Outcome {
     }
 }
 
-impl<T, E> From<std::result::Result<T, E>> for Outcome {
-    fn from(result: std::result::Result<T, E>) -> Self {
+/// A deliberate refusal by the implementation, as opposed to a failure.
+///
+/// Only `Result<T, Refused>` converts into an [`Outcome`]. Any other error
+/// type must say which of its errors are refusals, through
+/// [`Outcome::refused_if`], so an I/O timeout can never pass as a rejection:
+///
+/// ```compile_fail
+/// let timeout: Result<(), std::io::Error> = Err(std::io::ErrorKind::TimedOut.into());
+/// let _: zin::conform::Outcome = timeout.into();
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Refused;
+
+impl<T> From<std::result::Result<T, Refused>> for Outcome {
+    fn from(result: std::result::Result<T, Refused>) -> Self {
         Self::from(result.is_ok())
+    }
+}
+
+impl Outcome {
+    /// Accepted on `Ok`, rejected on an error that `refused` recognises as a
+    /// refusal.
+    ///
+    /// # Panics
+    ///
+    /// Panics on any other error: an unexpected failure fails the test as a
+    /// crash, never counting as a rejection.
+    pub fn refused_if<T, E: fmt::Debug>(
+        result: std::result::Result<T, E>,
+        refused: impl FnOnce(&E) -> bool,
+    ) -> Self {
+        match result {
+            Ok(_) => Self::Accepted,
+            Err(error) if refused(&error) => Self::Rejected,
+            Err(error) => panic!("the implementation failed instead of refusing: {error:?}"),
+        }
     }
 }
 
 /// Connects the implementation under test to the specification's actions.
 ///
 /// `call` must leave the implementation unchanged when it returns
-/// [`Outcome::Rejected`]. A panic is a crash, never a rejection.
+/// [`Outcome::Rejected`]. A panic is a crash, never a rejection; so is an
+/// error that is not a refusal (see [`Outcome::refused_if`]).
 pub trait Adapter {
     fn call(&mut self, action: &str, args: &Args) -> Outcome;
 
@@ -192,6 +228,16 @@ pub fn check<A: Adapter>(
     replay(&verify(&parse(spec_source)?)?, options, factory)
 }
 
+/// Like [`check`], but reads the specification from `path` and the files it
+/// includes, so a multi-file specification can be tested.
+pub fn check_file<A: Adapter>(
+    path: impl AsRef<Path>,
+    options: &PlanOptions,
+    factory: impl FnMut() -> A,
+) -> Result<Conformance> {
+    replay(&verify(&parse_file(path)?)?, options, factory)
+}
+
 fn replay<A: Adapter>(
     verification: &Verification,
     options: &PlanOptions,
@@ -260,6 +306,24 @@ fn replay<A: Adapter>(
 /// implementation diverges from it.
 pub fn assert_conforms<A: Adapter>(spec_source: &str, factory: impl FnMut() -> A) -> Conformance {
     match check(spec_source, &PlanOptions::default(), factory) {
+        Ok(conformance) => conformance,
+        Err(error) => panic!("{error}"),
+    }
+}
+
+/// Like [`assert_conforms`], but reads the specification from `path` and the
+/// files it includes. Use `concat!(env!("CARGO_MANIFEST_DIR"), "/tests/spec.zin")`
+/// for a path that does not depend on the working directory.
+///
+/// # Panics
+///
+/// Panics when a file cannot be read, the specification is invalid or fails
+/// its own checks, or the implementation diverges from it.
+pub fn assert_conforms_file<A: Adapter>(
+    path: impl AsRef<Path>,
+    factory: impl FnMut() -> A,
+) -> Conformance {
+    match check_file(path, &PlanOptions::default(), factory) {
         Ok(conformance) => conformance,
         Err(error) => panic!("{error}"),
     }

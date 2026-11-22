@@ -78,6 +78,8 @@ const OPTIONS = [
   ["pairLimit", "pair_limit", "--pair-limit"],
   ["component", "component", "--component"],
 ];
+// The plan keys that shape coverage; `component` is identity, not an option.
+const PLANNING_OPTIONS = ["cover", "max_steps", "step_budget", "pair_limit"];
 
 const byCodePoint = (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b));
 
@@ -101,12 +103,20 @@ function currentFingerprint(spec, sources) {
 
 const fresh = (plan, spec) => currentFingerprint(spec, plan.sources) === plan.fingerprint;
 
-/** Only options the caller passed are compared; the component is identity. */
-function compatible(plan, requested) {
+/**
+ * Passed options must match; the component is identity. A sibling picked
+ * automatically must also match the plan's recorded defaults for every option
+ * left out, so weaker coverage is never chosen silently. An explicit plan is
+ * the opt-in to whatever it was derived with.
+ */
+function compatible(plan, requested, explicit) {
   if ((plan.component ?? null) !== (requested.component ?? null)) return false;
-  return Object.entries(requested).every(
-    ([key, value]) => key === "component" || (key in plan && plan[key] === value),
-  );
+  const defaults = plan.defaults !== null && typeof plan.defaults === "object" ? plan.defaults : {};
+  return PLANNING_OPTIONS.every((key) => {
+    if (key in requested) return key in plan && plan[key] === requested[key];
+    if (explicit) return true;
+    return key in defaults && key in plan && plan[key] === defaults[key];
+  });
 }
 
 function validate(plan, origin) {
@@ -161,7 +171,8 @@ function readPlan(path) {
  * `options.plan` when given, else a sibling `<name>.plan.json`, as long as it
  * is fresh and was derived with every planning option passed here; otherwise
  * the output of `zin plan` (`options.bin`, `$ZIN_BIN`, or `zin` on PATH).
- * Options left out are not compared. `spec` may itself be a plan file.
+ * A sibling must also use the default for every option left out; an explicit
+ * `options.plan` is not compared on those. `spec` may itself be a plan file.
  */
 function loadPlan(spec, options = {}) {
   const path = toPath(spec);
@@ -199,7 +210,7 @@ function loadPlan(spec, options = {}) {
   if (explicit || existsSync(cached)) {
     const plan = readPlan(cached);
     if (!fresh(plan, path)) reason = `${cached} was derived from a different version of ${basename(path)}`;
-    else if (!compatible(plan, requested)) reason = `${cached} was derived with different planning options`;
+    else if (!compatible(plan, requested, explicit)) reason = `${cached} was derived with different planning options`;
     else return plan;
     if (explicit) throw new PlanError(`${reason}; regenerate it with: ${regenerate}`);
   }

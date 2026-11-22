@@ -43,7 +43,7 @@ as a rejection.
 | Python | raises `zin.Rejected` or a type listed in `rejects`, or returns `False` |
 | JavaScript | throws `Rejected` or an error for which `rejects(error)` is true, or returns `false` |
 | Go | returns an error wrapping `zin.ErrRejected` |
-| Rust | returns `Outcome::Rejected` (`Result` and `bool` convert) |
+| Rust | returns `Outcome::Rejected`; `bool` and `Result<_, Refused>` convert, other errors go through `Outcome::refused_if` |
 
 **What state can be seen?** `observe` is optional and may return any subset of
 the specification's fields; only the returned fields are compared. Maps are
@@ -161,7 +161,10 @@ use zin::conform::{Adapter, Args, Outcome, assert_conforms};
 impl Adapter for Harness {
     fn call(&mut self, action: &str, args: &Args) -> Outcome {
         match action {
-            "close" => self.account.close().into(),
+            // Only a refusal is a rejection; any other error panics and fails the test.
+            "close" => Outcome::refused_if(self.account.close(), |error| {
+                matches!(error, AccountError::NotEmpty | AccountError::Closed)
+            }),
             other => panic!("unknown action {other}"),
         }
     }
@@ -174,7 +177,10 @@ fn conforms() {
 ```
 
 The Rust binding is the `zin` crate itself (a dev-dependency); the plan is
-derived in-process, so there is nothing to install or commit.
+derived in-process, so there is nothing to install or commit. A specification
+that uses `include` needs its files, not just its text: call
+`assert_conforms_file(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/spec.zin"), ...)`
+(or `check_file`), which is what `zin init rust` generates.
 
 ### JUnit 5
 
@@ -226,8 +232,10 @@ The Python, JavaScript, Go and JUnit bindings look, in order, for:
 
 A plan file is used only if it is fresh for the specification and every file
 it includes, and was derived with each planning option you passed (`cover`,
-`max_steps`, `step_budget`, `pair_limit`, `component`); options you leave out
-are not compared. All runners follow the same
+`max_steps`, `step_budget`, `pair_limit`, `component`). A sibling plan must
+also use zin's default for every option you leave out, so a committed plan
+with weaker coverage (say `--cover scenarios`) is never picked up silently;
+naming a plan explicitly is the opt-in to its options. All runners follow the same
 [contract](plan-format.md#what-a-binding-must-do) and run the same cases.
 
 So you choose per project:

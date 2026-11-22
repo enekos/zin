@@ -59,6 +59,27 @@
       }
     },
     {
+      "name": "a sibling with weaker coverage is not chosen by default",
+      "spec": "weaker/latch.zin",
+      "expect": {
+        "errors": [
+          "latch.plan.json was derived with different planning options",
+          "the zin binary was not found"
+        ]
+      }
+    },
+    {
+      "name": "a sibling with weaker coverage is chosen when its options are passed",
+      "spec": "weaker/latch.zin",
+      "options": {
+        "cover": "states"
+      },
+      "expect": {
+        "fingerprint": "2153b57d1322ba83",
+        "cover": "states"
+      }
+    },
+    {
       "name": "a component the sibling was not derived for needs a new plan",
       "spec": "latch.zin",
       "options": {
@@ -151,11 +172,22 @@
       }
     },
     {
-      "name": "a plan from before 0.3 is read",
+      "name": "a plan from before 0.3 is read when named",
       "spec": "v02/switch.zin",
+      "plan": "v02/switch.plan.json",
       "expect": {
         "fingerprint": "0fd132c61d49a16d",
         "cover": "scenarios"
+      }
+    },
+    {
+      "name": "a sibling from before 0.3 does not record its defaults",
+      "spec": "v02/switch.zin",
+      "expect": {
+        "errors": [
+          "switch.plan.json was derived with different planning options",
+          "the zin binary was not found"
+        ]
       }
     },
     {

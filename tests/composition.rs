@@ -229,3 +229,47 @@ fn an_unknown_or_stateless_component_is_a_usage_error() {
     let error = zin::verify_component(&spec, "Request and reply").unwrap_err();
     assert!(error.message.contains("no state"), "{error}");
 }
+
+#[test]
+fn another_components_parameter_never_changes_what_a_name_means() {
+    let painter = r#"system "Painter"
+state
+  hue is one of red, blue
+  coats is an integer from 0 to 2
+initially
+  hue is blue
+  coats is 0
+action paint
+  requires coats is 0
+  hue becomes red
+  coats becomes coats + 1
+always hue is red or coats is 0
+always coats is 0 or coats is 1
+"#;
+    check(painter).unwrap();
+    let composed = format!(
+        r#"{painter}
+system "Palette"
+state
+  picked is one of red, blue
+initially
+  picked is red
+action paint(red is one of red, blue)
+  picked becomes red
+"#
+    );
+    let verification = check(&composed).unwrap();
+    let hues: BTreeSet<String> = transitions(&verification)
+        .into_iter()
+        .filter(|edge| edge.contains("--paint"))
+        .collect();
+    assert!(
+        hues.iter()
+            .all(|edge| edge.contains("--> coats=1, hue=red,")),
+        "{hues:#?}"
+    );
+    assert!(
+        hues.iter().any(|edge| edge.contains("picked=blue")),
+        "{hues:#?}"
+    );
+}
