@@ -1,6 +1,6 @@
 {
   "name": "zin-verify",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Run Zin specifications as conformance tests in Jest, Vitest, node:test, Mocha and Playwright",
   "license": "MIT",
   "author": "Eneko Sarasola",
