@@ -87,18 +87,24 @@ type Observer interface {
 	Observe() map[string]any
 }
 
-// Plan is a derived test plan, as written by `zin plan`.
+// Plan is a derived test plan, as written by `zin plan`. docs/plan.schema.json
+// defines it; the pointer fields are absent from plans written before 0.3.
 type Plan struct {
-	Format      string           `json:"zin"`
-	System      string           `json:"system"`
-	Fingerprint string           `json:"fingerprint"`
-	Cover       string           `json:"cover"`
-	Actions     []Action         `json:"actions"`
-	States      []map[string]any `json:"states"`
-	Parents     []*[2]int        `json:"parents"`
-	Calls       []Call           `json:"calls"`
-	Tests       []Test           `json:"tests"`
-	Summary     Summary          `json:"summary"`
+	Format      string            `json:"zin"`
+	System      string            `json:"system"`
+	Fingerprint string            `json:"fingerprint"`
+	Sources     map[string]string `json:"sources"`
+	Component   *string           `json:"component"`
+	Cover       string            `json:"cover"`
+	MaxSteps    *int              `json:"max_steps"`
+	StepBudget  *int              `json:"step_budget"`
+	PairLimit   *int              `json:"pair_limit"`
+	Actions     []Action          `json:"actions"`
+	States      []map[string]any  `json:"states"`
+	Parents     []*[2]int         `json:"parents"`
+	Calls       []Call            `json:"calls"`
+	Tests       []Test            `json:"tests"`
+	Summary     Summary           `json:"summary"`
 }
 
 // Action is one action of the specification.
@@ -126,25 +132,59 @@ type Test struct {
 
 // Summary counts what a plan covers.
 type Summary struct {
-	States        int `json:"states"`
-	Transitions   int `json:"transitions"`
-	Tests         int `json:"tests"`
-	AcceptedSteps int `json:"accepted_steps"`
-	RejectedSteps int `json:"rejected_steps"`
+	States        int  `json:"states"`
+	Transitions   int  `json:"transitions"`
+	Refusals      *int `json:"refusals"`
+	EligiblePairs *int `json:"eligible_pairs"`
+	CoveredPairs  *int `json:"covered_pairs"`
+	Tests         int  `json:"tests"`
+	AcceptedSteps int  `json:"accepted_steps"`
+	RejectedSteps int  `json:"rejected_steps"`
 }
 
 type config struct {
-	cover  string
-	plan   string
-	binary string
+	cover      *string
+	maxSteps   *int
+	stepBudget *int
+	pairLimit  *int
+	component  *string
+	plan       string
+	binary     string
+	invalid    []string
 }
 
-// Option adjusts how the plan is obtained.
+// Option adjusts how the plan is obtained. Only the planning options passed
+// are compared with a committed plan's recorded ones.
 type Option func(*config)
 
-// WithCover selects the coverage goal: transitions (default), states,
-// actions or scenarios.
-func WithCover(cover string) Option { return func(c *config) { c.cover = cover } }
+// WithCover selects the coverage goal: transitions, states, actions,
+// scenarios or pairs. Without it, `zin plan` uses transitions.
+func WithCover(cover string) Option { return func(c *config) { c.cover = &cover } }
+
+func (c *config) positive(name string, value int) *int {
+	if value < 1 {
+		c.invalid = append(c.invalid, fmt.Sprintf("%s must be a positive integer, not %d", name, value))
+	}
+	return &value
+}
+
+// WithMaxSteps sets the soft target for tour length (`zin plan --max-steps`).
+func WithMaxSteps(steps int) Option {
+	return func(c *config) { c.maxSteps = c.positive("max steps", steps) }
+}
+
+// WithStepBudget sets the hard limit on all replay steps (`zin plan --step-budget`).
+func WithStepBudget(steps int) Option {
+	return func(c *config) { c.stepBudget = c.positive("step budget", steps) }
+}
+
+// WithPairLimit samples this many adjacent-call pairs with WithCover("pairs").
+func WithPairLimit(pairs int) Option {
+	return func(c *config) { c.pairLimit = c.positive("pair limit", pairs) }
+}
+
+// WithComponent tests one block of a composition in isolation (`zin plan --component`).
+func WithComponent(name string) Option { return func(c *config) { c.component = &name } }
 
 // WithPlan uses a pre-derived plan file instead of running `zin plan`.
 func WithPlan(path string) Option { return func(c *config) { c.plan = path } }
@@ -165,62 +205,194 @@ func Fingerprint(source []byte) string {
 func readPlan(path string) (*Plan, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("zin: cannot read plan: %w", err)
+		return nil, fmt.Errorf("zin: cannot read plan %s: %w", path, err)
 	}
 	return parsePlan(data, path)
 }
 
 func parsePlan(data []byte, origin string) (*Plan, error) {
+	var format struct {
+		Format string `json:"zin"`
+	}
+	if json.Unmarshal(data, &format) != nil || format.Format != PlanFormat {
+		return nil, fmt.Errorf("zin: %s is not a %s file", origin, PlanFormat)
+	}
 	var plan Plan
 	if err := json.Unmarshal(data, &plan); err != nil {
-		return nil, fmt.Errorf("zin: %s is not a plan: %w", origin, err)
+		return nil, fmt.Errorf("zin: the plan is malformed: %s: %w", origin, err)
 	}
-	if plan.Format != PlanFormat {
-		return nil, fmt.Errorf("zin: %s is %q, but this package reads %s", origin, plan.Format, PlanFormat)
+	if err := validate(&plan); err != nil {
+		return nil, err
 	}
 	return &plan, nil
 }
 
-// LoadPlan returns the plan for spec: the WithPlan file when given, else a
-// sibling <name>.plan.json that matches the specification, else the output
-// of `zin plan` (WithBinary, $ZIN_BIN, or zin on PATH). spec may itself be a
-// plan file.
+func validate(plan *Plan) error {
+	params := make(map[string]int, len(plan.Actions))
+	for _, action := range plan.Actions {
+		params[action.Name] = len(action.Params)
+	}
+	for index, call := range plan.Calls {
+		want, known := params[call.Action]
+		if !known {
+			return fmt.Errorf("zin: the plan is malformed: call %d (%s) uses the unknown action %s", index, call.Text, call.Action)
+		}
+		if len(call.Args) != want {
+			return fmt.Errorf("zin: the plan is malformed: call %d (%s) has %d arguments, but %s takes %d",
+				index, call.Text, len(call.Args), call.Action, want)
+		}
+	}
+	if len(plan.States) == 0 || len(plan.Parents) != len(plan.States) {
+		return errors.New("zin: the plan is malformed: states and parents do not line up")
+	}
+	for _, test := range plan.Tests {
+		for _, step := range test.Steps {
+			if step[0] < 0 || step[0] >= len(plan.Calls) || step[1] < -1 || step[1] >= len(plan.States) {
+				return fmt.Errorf("zin: the plan is malformed: step %v is out of range", step)
+			}
+		}
+	}
+	return nil
+}
+
+// currentFingerprint is the fingerprint `zin plan` would record now, or ""
+// if a file is unreadable. With included files, the entry file's hash and
+// each source's current hash, sorted by path, are hashed together (see
+// docs/plan-format.md).
+func currentFingerprint(spec string, sources map[string]string) string {
+	source, err := os.ReadFile(spec)
+	if err != nil {
+		return ""
+	}
+	entry := Fingerprint(source)
+	if len(sources) == 0 {
+		return entry
+	}
+	paths := make([]string, 0, len(sources))
+	for path := range sources {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	var text strings.Builder
+	text.WriteString(entry + "\n")
+	for _, path := range paths {
+		included, err := os.ReadFile(filepath.Join(filepath.Dir(spec), filepath.FromSlash(path)))
+		if err != nil {
+			return ""
+		}
+		text.WriteString(path + "\t" + Fingerprint(included) + "\n")
+	}
+	return Fingerprint([]byte(text.String()))
+}
+
+func fresh(plan *Plan, spec string) bool {
+	return currentFingerprint(spec, plan.Sources) == plan.Fingerprint
+}
+
+func equalInt(recorded, requested *int) bool {
+	return requested == nil || (recorded != nil && *recorded == *requested)
+}
+
+// compatible compares only the options passed; the component is identity.
+func compatible(plan *Plan, settings config) bool {
+	recorded, requested := "", ""
+	if plan.Component != nil {
+		recorded = *plan.Component
+	}
+	if settings.component != nil {
+		requested = *settings.component
+	}
+	return recorded == requested &&
+		(settings.cover == nil || *settings.cover == plan.Cover) &&
+		equalInt(plan.MaxSteps, settings.maxSteps) &&
+		equalInt(plan.StepBudget, settings.stepBudget) &&
+		equalInt(plan.PairLimit, settings.pairLimit)
+}
+
+func (c config) arguments(spec string) []string {
+	args := []string{"plan", spec}
+	if c.cover != nil {
+		args = append(args, "--cover", *c.cover)
+	}
+	for _, option := range []struct {
+		flag  string
+		value *int
+	}{{"--max-steps", c.maxSteps}, {"--step-budget", c.stepBudget}, {"--pair-limit", c.pairLimit}} {
+		if option.value != nil {
+			args = append(args, option.flag, fmt.Sprint(*option.value))
+		}
+	}
+	if c.component != nil {
+		args = append(args, "--component", *c.component)
+	}
+	return args
+}
+
+func (c config) any() bool {
+	return c.cover != nil || c.maxSteps != nil || c.stepBudget != nil || c.pairLimit != nil || c.component != nil
+}
+
+// LoadPlan returns the plan for spec, following the runner contract in
+// docs/plan-format.md: the WithPlan file when given, else a sibling
+// <name>.plan.json, as long as it is fresh and was derived with every
+// planning option passed here; otherwise the output of `zin plan`
+// (WithBinary, $ZIN_BIN, or zin on PATH). spec may itself be a plan file.
 func LoadPlan(spec string, options ...Option) (*Plan, error) {
-	settings := config{cover: "transitions"}
+	var settings config
 	for _, option := range options {
 		option(&settings)
 	}
+	if len(settings.invalid) > 0 {
+		return nil, errors.New("zin: " + settings.invalid[0])
+	}
 	if strings.HasSuffix(spec, ".json") {
-		return readPlan(spec)
-	}
-	source, err := os.ReadFile(spec)
-	if err != nil {
-		return nil, fmt.Errorf("zin: cannot read specification: %w", err)
-	}
-	wanted := Fingerprint(source)
-	if settings.plan != "" {
-		plan, err := readPlan(settings.plan)
+		if settings.any() || settings.plan != "" {
+			return nil, errors.New("zin: planning options need a .zin specification, not a plan file")
+		}
+		plan, err := readPlan(spec)
 		if err != nil {
 			return nil, err
 		}
-		if plan.Fingerprint != wanted {
-			return nil, fmt.Errorf(
-				"zin: %s was derived from a different version of %s; regenerate it with: zin plan %s --out %s",
-				settings.plan, filepath.Base(spec), spec, settings.plan)
+		if strings.HasSuffix(spec, ".plan.json") {
+			source := strings.TrimSuffix(spec, ".plan.json") + ".zin"
+			if _, err := os.Stat(source); err == nil && !fresh(plan, source) {
+				return nil, fmt.Errorf("zin: %s was derived from a different version of %s; regenerate it with: zin plan %s --out %s",
+					spec, filepath.Base(source), source, spec)
+			}
 		}
 		return plan, nil
 	}
+	if info, err := os.Stat(spec); err != nil || info.IsDir() {
+		return nil, fmt.Errorf("zin: cannot read specification %s", spec)
+	}
+	args := settings.arguments(spec)
 	sibling := strings.TrimSuffix(spec, filepath.Ext(spec)) + ".plan.json"
-	stale := ""
-	if _, err := os.Stat(sibling); err == nil {
-		plan, err := readPlan(sibling)
+	cached := sibling
+	if settings.plan != "" {
+		cached = settings.plan
+	}
+	regenerate := "zin " + strings.Join(append(append([]string{}, args...), "--out", cached), " ")
+	reason := ""
+	if _, err := os.Stat(cached); settings.plan != "" || err == nil {
+		plan, err := readPlan(cached)
 		if err != nil {
 			return nil, err
 		}
-		if plan.Fingerprint == wanted && plan.Cover == settings.cover {
+		switch {
+		case !fresh(plan, spec):
+			reason = fmt.Sprintf("%s was derived from a different version of %s", cached, filepath.Base(spec))
+		case !compatible(plan, settings):
+			reason = fmt.Sprintf("%s was derived with different planning options", cached)
+		default:
 			return plan, nil
 		}
-		stale = filepath.Base(sibling) + " is out of date and "
+		if settings.plan != "" {
+			return nil, fmt.Errorf("zin: %s; regenerate it with: %s", reason, regenerate)
+		}
+	}
+	prefix := ""
+	if reason != "" {
+		prefix = reason + "; "
 	}
 	binary := settings.binary
 	if binary == "" {
@@ -231,11 +403,10 @@ func LoadPlan(spec string, options ...Option) (*Plan, error) {
 	}
 	resolved, err := exec.LookPath(binary)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"zin: %sthe zin binary was not found. Install it (cargo install zin-spec), set ZIN_BIN, or commit a plan: zin plan %s --out %s",
-			stale, spec, sibling)
+		return nil, fmt.Errorf("zin: %sthe zin binary was not found. Install zin-spec, set ZIN_BIN, or regenerate the plan: %s",
+			prefix, regenerate)
 	}
-	command := exec.Command(resolved, "plan", spec, "--cover", settings.cover)
+	command := exec.Command(resolved, args...)
 	var stderr strings.Builder
 	command.Stderr = &stderr
 	output, err := command.Output()
@@ -320,6 +491,9 @@ type runner struct {
 }
 
 func newRunner(plan *Plan) (*runner, error) {
+	if err := validate(plan); err != nil {
+		return nil, err
+	}
 	params := make(map[string][]string, len(plan.Actions))
 	for _, action := range plan.Actions {
 		names := make([]string, 0, len(action.Params))
@@ -327,16 +501,6 @@ func newRunner(plan *Plan) (*runner, error) {
 			names = append(names, param.Name)
 		}
 		params[action.Name] = names
-	}
-	for _, test := range plan.Tests {
-		for _, step := range test.Steps {
-			if step[0] < 0 || step[0] >= len(plan.Calls) || step[1] >= len(plan.States) {
-				return nil, fmt.Errorf("zin: the plan is malformed: step %v is out of range", step)
-			}
-		}
-	}
-	if len(plan.States) == 0 || len(plan.Parents) != len(plan.States) {
-		return nil, errors.New("zin: the plan is malformed: states and parents do not line up")
 	}
 	return &runner{plan: plan, params: params}, nil
 }
@@ -400,13 +564,11 @@ func (r *runner) run(adapter Adapter, steps [][2]int) (int, string, error) {
 		names := r.params[call.Action]
 		args := make(Args, len(call.Args))
 		for position, value := range call.Args {
-			if position < len(names) {
-				args[names[position]] = plain(value)
-			}
+			args[names[position]] = plain(value)
 		}
 		err := adapter.Call(call.Action, args)
 		if err != nil && !errors.Is(err, ErrRejected) {
-			return index + 1, "", fmt.Errorf("%s failed: %w\nsteps taken:\n%s", call.Text, err, r.listing(steps[:index+1]))
+			return index + 1, "", &adapterError{call: call.Text, err: err, steps: r.listing(steps[:index+1])}
 		}
 		accepted := err == nil
 		message := ""
@@ -447,6 +609,19 @@ func (r *runner) shortest(steps [][2]int, failed int) [][2]int {
 	return append(path, steps[failed-1])
 }
 
+// adapterError is an error the adapter returned that is not a rejection.
+type adapterError struct {
+	call  string
+	err   error
+	steps string
+}
+
+func (e *adapterError) Error() string {
+	return fmt.Sprintf("%s failed: %v\nsteps taken:\n%s", e.call, e.err, e.steps)
+}
+
+func (e *adapterError) Unwrap() error { return e.err }
+
 func (r *runner) check(test Test, factory func() Adapter) error {
 	failed, message, err := r.run(factory(), test.Steps)
 	if err != nil {
@@ -456,27 +631,43 @@ func (r *runner) check(test Test, factory func() Adapter) error {
 		return nil
 	}
 	taken := test.Steps[:failed]
-	report := fmt.Sprintf("%s: implementation diverges from the specification in test %q at step %d\n%s\nsteps taken:\n%s",
-		r.plan.System, test.Name, failed, message, r.listing(taken))
+	lines := make([]string, 0, len(taken))
+	for _, step := range taken {
+		lines = append(lines, "  "+r.text(step))
+	}
+	if len(lines) == 0 {
+		lines = append(lines, "  expect true")
+	}
+	scenario := "scenario \"Replay divergence\"\n" + strings.Join(lines, "\n")
+	report := fmt.Sprintf("%s: implementation diverges from the specification in test \"%s\" at step %d\n%s\nsteps taken:\n%s\nspec fingerprint: %s\n%s",
+		r.plan.System, test.Name, failed, message, r.listing(taken), r.plan.Fingerprint, scenario)
 	if failed > 0 {
 		if short := r.shortest(test.Steps, failed); len(short) < len(taken) {
 			again, repeated, err := r.run(factory(), short)
+			var raised *adapterError
 			switch {
+			case errors.As(err, &raised):
+				report += "\nthe shorter replay raised: " + raised.err.Error()
 			case err != nil:
-			case repeated != "":
-				report += "\nshortest reproduction:\n" + r.listing(short[:again])
+				report += "\nthe shorter replay raised: " + err.Error()
+			case again == len(short) && repeated == message:
+				report += "\nshortest reproduction:\n" + r.listing(short)
 			default:
-				report += "\nthe shortest path to the same specification state does not reproduce this: the implementation keeps state the specification does not model"
+				report += "\nthe shortest path to the same specification state does not reproduce the original mismatch"
 			}
 		}
 	}
-	return &Divergence{Report: report}
+	return &Divergence{Report: report, Fingerprint: r.plan.Fingerprint, Scenario: scenario}
 }
 
 // Divergence reports that the implementation does not behave as the
 // specification says.
 type Divergence struct {
 	Report string
+	// Fingerprint identifies the specification the plan was derived from.
+	Fingerprint string
+	// Scenario is the original failing steps as a Zin scenario, ready to paste.
+	Scenario string
 }
 
 func (d *Divergence) Error() string { return d.Report }
