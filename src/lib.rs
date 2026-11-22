@@ -5,6 +5,7 @@ pub mod cli;
 mod component;
 mod compose;
 pub mod conform;
+mod definedness;
 mod explore;
 mod json;
 mod mermaid;

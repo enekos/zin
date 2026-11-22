@@ -74,7 +74,13 @@ The checker holds you to it:
 Conformance plans, `zin trace` and diagrams always use the full state space,
 because tests drive real values. Liveness under fairness is also checked on
 the full state space: fairness is per call, and renaming changes which call
-is which. `zin check --symmetry off` turns the reduction off.
+is which. So is a model where a `some` or `every` over interchangeable values
+can fault (divide by zero, overflow, read a missing map key) for one value and
+stop early on another: the order the quantifier visits values in then decides
+whether the fault happens, and a representative could hide it. Zin judges this
+from the declared ranges, so `load of w + 1` over a bounded map keeps the
+reduction. `zin check` notes why it explored the full state space. `zin check
+--symmetry off` turns the reduction off.
 
 ## State and initial values
 

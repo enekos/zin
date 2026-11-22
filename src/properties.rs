@@ -509,7 +509,7 @@ mod tests {
             edges: Vec::new(),
             first_edge: Vec::new(),
             index: HashMap::new(),
-            reduced: false,
+            symmetry: None,
         };
         for _ in 0..states {
             graph.first_edge.push(graph.edges.len());

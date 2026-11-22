@@ -3,7 +3,6 @@ use crate::ast::{
     PropertyKind, Quantifier, ScenarioStep, Spec, TargetKey, TypeDecl, TypeExpr, UnaryOperator,
     Value, display_call,
 };
-use crate::symmetry::Symmetry;
 use crate::{Error, Result, State};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -209,7 +208,8 @@ pub struct Model {
     pub(crate) calls: Vec<Call>,
     pub(crate) call_ids: HashMap<Call, u32>,
     pub(crate) locals: usize,
-    pub(crate) symmetry: Option<Symmetry>,
+    /// Raw values of each `interchangeable` type; empty when there are none.
+    pub(crate) interchangeable: Vec<Vec<i64>>,
 }
 
 pub(crate) fn index32(value: usize) -> u32 {
@@ -687,21 +687,12 @@ impl<'a> Compiler<'a> {
             calls,
             call_ids,
             locals: self.locals.max(1),
-            symmetry: None,
+            interchangeable: groups
+                .into_iter()
+                .map(|(_, ids, _)| ids.into_iter().map(i64::from).collect())
+                .collect(),
         };
-        if !groups.is_empty() {
-            let raws: Vec<Vec<i64>> = groups
-                .iter()
-                .map(|(_, ids, _)| ids.iter().map(|id| i64::from(*id)).collect())
-                .collect();
-            let symmetry = Symmetry::new(&model, &raws)?;
-            if symmetry.canonical(model.initial.clone()) != model.initial {
-                return Err(Error::new(
-                    "the initial state treats interchangeable values differently",
-                ));
-            }
-            model.symmetry = Some(symmetry);
-        }
+        crate::symmetry::validate(&model)?;
         let mut scenarios = Compiler {
             spec,
             symbols: model.symbols.clone(),
