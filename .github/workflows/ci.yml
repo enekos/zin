@@ -3,18 +3,28 @@ on:
   push:
   pull_request:
 jobs:
+  minimum-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Keep in step with rust-version in Cargo.toml.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.88.0
+      - run: cargo test --locked
   test:
     runs-on: ubuntu-latest
     env:
       ZIN_BIN: ${{ github.workspace }}/target/debug/zin
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.99.1
           components: rustfmt, clippy
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      - run: cargo test --locked
       - run: cargo build
       - name: Check and audit the examples
         run: |
@@ -32,6 +42,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Packaged consumer checks
+        run: python3 scripts/package_smoke.py
       - name: JavaScript binding
         working-directory: bindings/js
         run: |
