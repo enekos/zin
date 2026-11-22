@@ -291,7 +291,9 @@ testing, use `states`, or run `transitions` nightly.
   concurrent runs, record them and use `zin trace`.
 - State the specification does not model is invisible, except that the report
   tells you when a failure depends on it ("the shortest path to the same
-  specification state does not reproduce this").
+  specification state does not reproduce the original mismatch"). A shorter
+  reproduction is only reported when it fails at the same call with the same
+  mismatch.
 - Liveness is proven about the model. A test cannot show that an
   implementation eventually does something.
 

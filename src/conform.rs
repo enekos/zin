@@ -58,6 +58,17 @@ struct Divergence {
     message: String,
 }
 
+fn matches_observation(expected: &Value, actual: &Value) -> bool {
+    if let (Value::Map(expected), Value::Map(actual)) = (expected, actual) {
+        return actual.iter().all(|(key, item)| {
+            expected
+                .get(key)
+                .is_some_and(|wanted| matches_observation(wanted, item))
+        });
+    }
+    expected == actual
+}
+
 fn compare<A: Adapter>(
     adapter: &A,
     verification: &Verification,
@@ -74,7 +85,7 @@ fn compare<A: Adapter>(
                 "observe() returned '{field}', which is not a state field of the specification"
             ));
         };
-        if wanted != actual {
+        if !matches_observation(wanted, actual) {
             return Err(format!(
                 "{after}, {field} is {}, but the specification says {}",
                 actual.source(),
@@ -176,12 +187,19 @@ fn shortest(verification: &Verification, steps: &[PlanStep], failed: usize) -> V
 pub fn check<A: Adapter>(
     spec_source: &str,
     options: &PlanOptions,
+    factory: impl FnMut() -> A,
+) -> Result<Conformance> {
+    replay(&verify(&parse(spec_source)?)?, options, factory)
+}
+
+fn replay<A: Adapter>(
+    verification: &Verification,
+    options: &PlanOptions,
     mut factory: impl FnMut() -> A,
 ) -> Result<Conformance> {
-    let verification = verify(&parse(spec_source)?)?;
-    let plan = Plan::build(&verification, options)?;
+    let plan = Plan::build(verification, options)?;
     for test in &plan.tests {
-        let Some(divergence) = run(&mut factory(), &verification, &test.steps) else {
+        let Some(divergence) = run(&mut factory(), verification, &test.steps) else {
             continue;
         };
         let taken = test.steps.get(..divergence.step).unwrap_or(&test.steps);
@@ -191,20 +209,36 @@ pub fn check<A: Adapter>(
             test.name,
             divergence.step,
             divergence.message,
-            listing(&verification, taken)
+            listing(verification, taken)
         );
-        let short = shortest(&verification, &test.steps, divergence.step);
+        message.push_str(&format!(
+            "\nspec fingerprint: {}\nscenario \"Replay divergence\"\n",
+            verification.model.fingerprint
+        ));
+        if taken.is_empty() {
+            message.push_str("  expect true");
+        } else {
+            for (index, step) in taken.iter().enumerate() {
+                if index > 0 {
+                    message.push('\n');
+                }
+                let prefix = if step.to.is_some() { "  " } else { "  reject " };
+                message.push_str(prefix);
+                message.push_str(&verification.call_text(step.call));
+            }
+        }
+        let short = shortest(verification, &test.steps, divergence.step);
         if divergence.step > 0 && short.len() < taken.len() {
-            match run(&mut factory(), &verification, &short) {
-                Some(again) => {
+            match run(&mut factory(), verification, &short) {
+                Some(again) if again.step == short.len() && again.message == divergence.message => {
                     let short = short.get(..again.step).unwrap_or(&short);
                     message.push_str(&format!(
                         "\nshortest reproduction:\n{}",
-                        listing(&verification, short)
+                        listing(verification, short)
                     ));
                 }
-                None => message.push_str(
-                    "\nthe shortest path to the same specification state does not reproduce this: the implementation keeps state the specification does not model",
+                _ => message.push_str(
+                    "\nthe shortest path to the same specification state does not reproduce the original mismatch",
                 ),
             }
         }
