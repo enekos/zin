@@ -15,6 +15,20 @@
   and `component`, and a plan's `fingerprint` covers every included file.
 - Breaking for Rust callers: AST nodes gain `span` fields and
   `Expr::Name` is a struct variant; `Error` has a private field.
+- Runners: `docs/plan.schema.json` defines the plan, and the Python,
+  JavaScript and Go runners pass one shared set of contract cases
+  (`bindings/fixtures/contract`): staleness over included files, option
+  compatibility, malformed calls, observation normalization and the exact
+  divergence report. All three accept `max_steps`, `step_budget`,
+  `pair_limit` and `component` and compare only the options passed with a
+  committed plan, so a plan for `cover="pairs"` or a component is never
+  replaced silently. A `Divergence` carries the spec `fingerprint` and a
+  pasteable `scenario`. Go no longer drops the error from a shorter replay,
+  and every runner rejects a call whose arguments do not fit its action.
+- Model coverage: `pytest --zin-coverage` and the `zin-verify/vitest` entry
+  with `zin-verify/vitest-reporter` report the model operations executed,
+  planned and eligible, failures and observed fields. `vitest` is an optional
+  peer dependency.
 
 ## 0.2.0 — 2026-11-18
 
