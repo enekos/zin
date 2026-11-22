@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 — unreleased
+## 0.3.0 — 2026-11-22
 
 - Checker: model faults inside `some`/`every` over interchangeable values are
   no longer hidden by symmetry reduction. An interval analysis over declared
