@@ -172,6 +172,17 @@ fn check_json(path: &str, spec: Option<&Spec>, result: &Result<Verification>) ->
             ("ok", Json::Bool(true)),
             ("system", Json::str(verification.model.name.clone())),
             ("states", Json::count(verification.graph.state_count())),
+            ("calls", Json::count(verification.model.call_count())),
+            (
+                "attempted_calls",
+                Json::count(
+                    verification
+                        .graph
+                        .state_count()
+                        .saturating_mul(verification.model.call_count()),
+                ),
+            ),
+            ("relabelings", Json::count(verification.graph.relabelings())),
             (
                 "transitions",
                 Json::count(verification.graph.transition_count()),

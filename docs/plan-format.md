@@ -137,8 +137,9 @@ Written by `zin check --format json`.
 
 ```json
 {"zin": "check/1", "results": [
-  {"file": "job.zin", "ok": true, "system": "Background job", "states": 10, "transitions": 9,
-   "up_to_symmetry": false, "terminal_states": 4, "properties": [{"property": "eventually ...", "line": 22,
+  {"file": "job.zin", "ok": true, "system": "Background job", "states": 10, "calls": 3,
+   "attempted_calls": 30, "relabelings": 0, "transitions": 9, "up_to_symmetry": false, "terminal_states": 4,
+   "properties": [{"property": "eventually ...", "line": 22,
      "span": {"file": "job.zin", "line": 22, "column": 1, "end_column": 41}}],
    "scenarios": ["Third time lucky"], "notes": []},
   {"file": "stuck.zin", "ok": false, "error": {
@@ -155,8 +156,11 @@ Written by `zin check --format json`.
 declared range or divides by zero), `violation`, `limit` or `usage`.
 `loop_from` is `null` for a finite counterexample; otherwise the steps from
 that index on repeat forever. `up_to_symmetry` is `true` when `states` and
-`transitions` count representatives of interchangeable values (an added
-field; readers of `check/1` should ignore fields they do not know).
+`transitions` count representatives of interchangeable values.
+`attempted_calls` is `states` times `calls`, the work exploration did, and
+`relabelings` is the size of the relabeling tables it built (0 without
+reduction). These are added fields; readers of `check/1` should ignore fields
+they do not know.
 
 `code` is a stable identifier for the diagnostic: `name.unknown`,
 `type.mismatch`, `component.field_conflict`, `component.type_conflict`,
