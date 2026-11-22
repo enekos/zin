@@ -7,7 +7,7 @@ use crate::mermaid::{sequence_diagram, state_diagram};
 use crate::plan::{Cover, Plan, PlanOptions, state_json};
 use crate::report::render_markdown;
 use crate::scaffold::{Framework, scaffold};
-use crate::trace::check_trace;
+use crate::trace::check_trace_reader;
 use crate::{Error, ErrorKind, Result, SourceSpan, Spec, parse, parse_file};
 use std::fmt::Write as _;
 use std::io::Read as _;
@@ -379,7 +379,21 @@ fn trace(args: &[String]) -> Result<Output> {
         ));
     };
     let verification = load(spec)?;
-    let report = check_trace(&verification.model, &read(events, MAX_TRACE_BYTES)?)?;
+    let report = if events == "-" {
+        check_trace_reader(
+            &verification.model,
+            std::io::stdin().lock(),
+            MAX_TRACE_BYTES,
+        )?
+    } else {
+        let file = std::fs::File::open(events)
+            .map_err(|e| Error::usage(format!("cannot read {events}: {e}")))?;
+        check_trace_reader(
+            &verification.model,
+            std::io::BufReader::new(file),
+            MAX_TRACE_BYTES,
+        )?
+    };
     Ok(ok(format!(
         "ok {}: {} events in {} run(s) conform to the specification\n",
         verification.model.name, report.events, report.runs
@@ -405,6 +419,24 @@ fn run_audit(args: &[String]) -> Result<Output> {
             "{mark} line {}: {} ({detail})",
             mutant.line, mutant.description
         );
+        if let Some(witness) = &mutant.witness {
+            let outcome = |state: &Option<crate::State>| {
+                state.as_ref().map_or_else(
+                    || "rejected".to_string(),
+                    |state| format!("accepted, {}", crate::display_state(state)),
+                )
+            };
+            for call in &witness.prefix {
+                let _ = writeln!(stdout, "  {call}");
+            }
+            let _ = writeln!(
+                stdout,
+                "  {} → original {}, mutant {}",
+                witness.call,
+                outcome(&witness.original),
+                outcome(&witness.mutated)
+            );
+        }
     }
     if audit.truncated {
         let _ = writeln!(

@@ -291,7 +291,9 @@ testing, use `states`, or run `transitions` nightly.
   concurrent runs, record them and use `zin trace`.
 - State the specification does not model is invisible, except that the report
   tells you when a failure depends on it ("the shortest path to the same
-  specification state does not reproduce this").
+  specification state does not reproduce the original mismatch"). A shorter
+  reproduction is only reported when it fails at the same call with the same
+  mismatch.
 - Liveness is proven about the model. A test cannot show that an
   implementation eventually does something.
 
@@ -323,7 +325,8 @@ applies small changes (drop a `requires`, drop an assignment, flip a
 comparison, shift a constant) and re-checks each mutant:
 
 - **caught**: a property or scenario fails. Good.
-- **SURVIVED**: the reachable behavior changed and nothing noticed. Add a
+- **SURVIVED**: the reachable behavior changed and nothing noticed. The report
+  shows a shortest distinguishing prefix, the call, and both outcomes. Add a
   property or a scenario (a `reject` line is often enough), or delete the
   redundant rule.
 - **same**: the reachable behavior is unchanged; the rule is implied by others.

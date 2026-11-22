@@ -1,6 +1,7 @@
 use crate::ast::{BinaryOperator, Expr, Spec, Value};
-use crate::check::verify;
+use crate::check::{Verification, verify};
 use crate::{ErrorKind, Result};
+use std::ops::ControlFlow;
 
 const MAX_MUTANTS: usize = 500;
 
@@ -23,6 +24,17 @@ pub struct Mutant {
     pub line: usize,
     pub description: String,
     pub fate: MutantFate,
+    /// Shortest common prefix followed by the first call whose outcomes differ.
+    pub witness: Option<Distinction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Distinction {
+    pub prefix: Vec<String>,
+    pub call: String,
+    /// None denotes a refusal, Some contains the state after acceptance.
+    pub original: Option<crate::State>,
+    pub mutated: Option<crate::State>,
 }
 
 #[derive(Debug, Clone)]
@@ -174,27 +186,24 @@ fn variants(expr: &Expr) -> Vec<(String, Expr)> {
     }
 }
 
-struct Candidate {
-    line: usize,
-    description: String,
-    spec: Spec,
-}
-
-fn candidates(spec: &Spec) -> Vec<Candidate> {
-    let mut all = Vec::new();
+fn visit_mutants(spec: &Spec, mut visit: impl FnMut(usize, String, &Spec)) -> ControlFlow<()> {
+    let mut candidate = spec.clone();
+    let mut tried = 0;
     for (index, action) in spec.actions.iter().enumerate() {
-        let mut push =
-            |line: usize, description: String, edit: &dyn Fn(&mut crate::ast::Action)| {
-                let mut mutated = spec.clone();
-                if let Some(action) = mutated.actions.get_mut(index) {
-                    edit(action);
-                }
-                all.push(Candidate {
-                    line,
-                    description: format!("action {}: {description}", action.name),
-                    spec: mutated,
-                });
-            };
+        let mut push = |line, description: String, edit: &dyn Fn(&mut crate::ast::Action)| {
+            if tried == MAX_MUTANTS {
+                return ControlFlow::Break(());
+            }
+            tried += 1;
+            candidate.actions[index].clone_from(action);
+            edit(&mut candidate.actions[index]);
+            visit(
+                line,
+                format!("action {}: {description}", action.name),
+                &candidate,
+            );
+            ControlFlow::Continue(())
+        };
         for (position, condition) in action.requires.iter().enumerate() {
             push(
                 condition.line,
@@ -202,7 +211,7 @@ fn candidates(spec: &Spec) -> Vec<Candidate> {
                 &|action| {
                     action.requires.remove(position);
                 },
-            );
+            )?;
             for (description, expr) in variants(&condition.expr) {
                 push(
                     condition.line,
@@ -212,7 +221,7 @@ fn candidates(spec: &Spec) -> Vec<Candidate> {
                             condition.expr = expr.clone();
                         }
                     },
-                );
+                )?;
             }
         }
         for (position, assignment) in action.assignments.iter().enumerate() {
@@ -222,7 +231,7 @@ fn candidates(spec: &Spec) -> Vec<Candidate> {
                 &|action| {
                     action.assignments.remove(position);
                 },
-            );
+            )?;
             for (description, expr) in variants(&assignment.value) {
                 push(
                     assignment.line,
@@ -232,48 +241,86 @@ fn candidates(spec: &Spec) -> Vec<Candidate> {
                             assignment.value = expr.clone();
                         }
                     },
-                );
+                )?;
+            }
+        }
+        candidate.actions[index].clone_from(action);
+    }
+    ControlFlow::Continue(())
+}
+
+// Parent links are BFS ordered. Before the first difference, a prefix reaches
+// the same concrete state in both machines, even if the numeric state IDs differ.
+fn distinguish(original: &Verification, mutated: &Verification) -> Option<Distinction> {
+    let left = &original.graph;
+    let right = &mutated.graph;
+    if left.first_edge == right.first_edge
+        && left.states == right.states
+        && left.edges == right.edges
+    {
+        return None;
+    }
+    for (id, state) in left.states.iter().enumerate() {
+        let Some(&other) = right.index.get(state) else {
+            continue;
+        };
+        let from = crate::model::index32(id);
+        let mut a = left.out(from).iter().peekable();
+        let mut b = right.out(other).iter().peekable();
+        while let Some(call) = [a.peek().map(|e| e.call), b.peek().map(|e| e.call)]
+            .into_iter()
+            .flatten()
+            .min()
+        {
+            let to = a.next_if(|e| e.call == call).map(|e| e.to);
+            let changed = b.next_if(|e| e.call == call).map(|e| e.to);
+            if to.map(|v| left.state(v)) != changed.map(|v| right.state(v)) {
+                return Some(Distinction {
+                    prefix: left
+                        .path_to(from)
+                        .iter()
+                        .map(|e| original.call_text(e.call))
+                        .collect(),
+                    call: original.call_text(call),
+                    original: to.map(|v| original.state(v)),
+                    mutated: changed.map(|v| mutated.state(v)),
+                });
             }
         }
     }
-    all
+    None
 }
 
-/// Mutation-tests the specification itself: each small change to an action
-/// should be noticed by some property, scenario, or declared range.
+/// Mutation-tests the specification itself and records a concrete witness for each survivor.
 pub fn audit(spec: &Spec) -> Result<Audit> {
     let original = verify(spec)?;
-    let mut candidates = candidates(spec);
-    let truncated = candidates.len() > MAX_MUTANTS;
-    candidates.truncate(MAX_MUTANTS);
-    let mutants = candidates
-        .into_iter()
-        .map(|candidate| {
-            let fate = match verify(&candidate.spec) {
-                Ok(mutated) => {
-                    if mutated.graph.states == original.graph.states
-                        && mutated.graph.edges == original.graph.edges
-                    {
-                        MutantFate::Equivalent
-                    } else {
-                        MutantFate::Survived
-                    }
+    let mut mutants = Vec::new();
+    let truncated = visit_mutants(spec, |line, description, candidate| {
+        let mut witness = None;
+        let fate = match verify(candidate) {
+            Ok(mutated) => {
+                witness = distinguish(&original, &mutated);
+                if witness.is_some() {
+                    MutantFate::Survived
+                } else {
+                    MutantFate::Equivalent
                 }
-                Err(error) => match error.kind {
-                    ErrorKind::Violation | ErrorKind::Model => {
-                        let first = error.message.lines().next().unwrap_or("").to_string();
-                        MutantFate::Caught(first)
-                    }
-                    ErrorKind::Limit => MutantFate::Inconclusive,
-                    ErrorKind::Spec | ErrorKind::Usage => MutantFate::Invalid,
-                },
-            };
-            Mutant {
-                line: candidate.line,
-                description: candidate.description,
-                fate,
             }
-        })
-        .collect();
+            Err(error) => match error.kind {
+                ErrorKind::Violation | ErrorKind::Model => {
+                    MutantFate::Caught(error.message.lines().next().unwrap_or("").to_owned())
+                }
+                ErrorKind::Limit => MutantFate::Inconclusive,
+                ErrorKind::Spec | ErrorKind::Usage => MutantFate::Invalid,
+            },
+        };
+        mutants.push(Mutant {
+            line,
+            description,
+            fate,
+            witness,
+        });
+    })
+    .is_break();
     Ok(Audit { mutants, truncated })
 }

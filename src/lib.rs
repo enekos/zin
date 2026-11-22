@@ -20,7 +20,7 @@ mod symmetry;
 mod trace;
 
 pub use ast::{Spec, Value};
-pub use audit::{Audit, Mutant, MutantFate, audit};
+pub use audit::{Audit, Distinction, Mutant, MutantFate, audit};
 pub use check::{
     Options, PropertyResult, ScenarioEvent, ScenarioRun, Verification, verify, verify_with,
 };
@@ -34,7 +34,7 @@ pub use plan::{Cover, Coverage, Plan, PlanOptions, PlanStep, PlanTest, TestKind}
 pub use report::render_markdown;
 pub use scaffold::{Framework, scaffold};
 pub use source::{SourceSpan, parse_file};
-pub use trace::{TraceReport, check_trace};
+pub use trace::{TraceReport, check_trace, check_trace_reader};
 
 use std::collections::BTreeMap;
 use std::fmt;
