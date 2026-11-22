@@ -16,7 +16,15 @@ fn verified(source: &str) -> Verification {
 
 fn plan(source: &str, cover: Cover, max_steps: usize) -> (Verification, Plan) {
     let verification = verified(source);
-    let plan = Plan::build(&verification, &PlanOptions { cover, max_steps }).unwrap();
+    let plan = Plan::build(
+        &verification,
+        &PlanOptions {
+            cover,
+            max_steps,
+            ..PlanOptions::default()
+        },
+    )
+    .unwrap();
     (verification, plan)
 }
 
