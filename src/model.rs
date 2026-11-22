@@ -119,6 +119,43 @@ pub(crate) enum Ir {
     },
 }
 
+impl Ir {
+    /// In an ordered existential/universal traversal a different witness can
+    /// hide an error. Integer arithmetic and integer map indexing are partial.
+    fn evaluation(&self) -> (bool, bool) {
+        let combine = |(a, b), (c, d)| (a || c, b || d);
+        match self {
+            Self::Const(_) | Self::Slot(_) | Self::Local(_) => (false, false),
+            Self::Index { keys, key, .. } => combine(
+                key.evaluation(),
+                (matches!(keys, Domain::Integer { .. }), false),
+            ),
+            Self::Not(x) => x.evaluation(),
+            Self::Negate(x) => combine(x.evaluation(), (true, false)),
+            Self::Binary(op, a, b) => {
+                let partial = matches!(
+                    op,
+                    BinaryOperator::Add
+                        | BinaryOperator::Subtract
+                        | BinaryOperator::Multiply
+                        | BinaryOperator::Divide
+                );
+                combine(combine(a.evaluation(), b.evaluation()), (partial, false))
+            }
+            Self::If(c, a, b) => combine(c.evaluation(), combine(a.evaluation(), b.evaluation())),
+            Self::Quantified {
+                quantifier, body, ..
+            } => {
+                let (partial, sensitive) = body.evaluation();
+                (
+                    partial,
+                    sensitive || (partial && *quantifier != Quantifier::Count),
+                )
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct CompiledCondition {
     pub ir: Ir,
@@ -206,6 +243,7 @@ pub struct Model {
     pub(crate) call_ids: HashMap<Call, u32>,
     pub(crate) locals: usize,
     pub(crate) symmetry: Option<Symmetry>,
+    pub(crate) interchangeable: Vec<Vec<i64>>,
 }
 
 pub(crate) fn index32(value: usize) -> u32 {
@@ -219,6 +257,20 @@ pub(crate) fn at(value: u32) -> usize {
 impl Model {
     pub fn compile(spec: &Spec) -> Result<Self> {
         Compiler::new(spec).compile()
+    }
+
+    pub(crate) fn order_sensitive_evaluation(&self) -> bool {
+        let sensitive = |ir: &Ir| ir.evaluation().1;
+        self.properties.iter().any(|p| {
+            sensitive(&p.condition.ir) || p.premise.as_ref().is_some_and(|c| sensitive(&c.ir))
+        }) || self.terminal.as_ref().is_some_and(|c| sensitive(&c.ir))
+            || self.actions.iter().any(|a| {
+                a.requires.iter().any(|c| sensitive(&c.ir))
+                    || a.assignments.iter().any(|w| {
+                        sensitive(&w.value)
+                            || matches!(&w.target, Target::Indexed { key, .. } if sensitive(key))
+                    })
+            })
     }
 
     #[must_use]
@@ -690,20 +742,12 @@ impl<'a> Compiler<'a> {
             call_ids,
             locals: self.locals.max(1),
             symmetry: None,
+            interchangeable: groups
+                .into_iter()
+                .map(|(_, ids, _)| ids.into_iter().map(i64::from).collect())
+                .collect(),
         };
-        if !groups.is_empty() {
-            let raws: Vec<Vec<i64>> = groups
-                .iter()
-                .map(|(_, ids, _)| ids.iter().map(|id| i64::from(*id)).collect())
-                .collect();
-            let symmetry = Symmetry::new(&model, &raws)?;
-            if symmetry.canonical(model.initial.clone()) != model.initial {
-                return Err(Error::new(
-                    "the initial state treats interchangeable values differently",
-                ));
-            }
-            model.symmetry = Some(symmetry);
-        }
+        crate::symmetry::validate(&model)?;
         let mut scenarios = Compiler {
             spec,
             symbols: model.symbols.clone(),

@@ -97,15 +97,25 @@ pub fn verify(spec: &Spec) -> Result<Verification> {
 ///
 /// As [`verify`].
 pub fn verify_with(spec: &Spec, options: Options) -> Result<Verification> {
-    let model = Model::compile(spec)?;
+    let mut model = Model::compile(spec)?;
     let mut notes = Vec::new();
-    let mut reduce = options.symmetry && model.symmetry.is_some();
+    let mut reduce = options.symmetry && !model.interchangeable.is_empty();
     if reduce && fair_liveness(&model) {
         reduce = false;
         notes.push(
             "symmetry reduction is off: liveness under fairness is checked on the full state space"
                 .to_string(),
         );
+    }
+    if reduce && model.order_sensitive_evaluation() {
+        reduce = false;
+        notes.push("symmetry reduction is off: a short-circuiting quantifier can encounter a model fault in a different order after renaming".into());
+    }
+    if reduce {
+        model.symmetry = Some(crate::symmetry::Symmetry::new(
+            &model,
+            &model.interchangeable,
+        )?);
     }
     let graph = explore(&model, reduce)?;
     let terminal_states = check_terminal(&model, &graph)?;

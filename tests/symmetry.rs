@@ -233,3 +233,31 @@ fn an_enumeration_holds_all_interchangeable_values_or_none() {
     .unwrap_err();
     assert!(error.message.contains("only an enumeration"), "{error}");
 }
+
+#[test]
+fn short_circuiting_quantifiers_with_partial_bodies_use_concrete_evaluation() {
+    for workers in ["ann, ben", "ben, ann"] {
+        for (expr, kind) in [
+            ("1 / (1 - load of w) > 0", "division by zero"),
+            ("9223372036854775807 + load of w > 0", "integer overflow"),
+            ("valid of (load of w) is true", "is not a key"),
+        ] {
+            let model = format!(
+                "system \"Workers\"\ntypes\n  interchangeable worker is one of {workers}\n  zero is an integer from 0 to 0\nstate\n  load is a map from worker to an integer from 0 to 1\n  valid is a map from zero to a boolean\ninitially\n  load of every worker is 0\n  valid of every zero is true\nalways some w in worker satisfies {expr}\naction start(w is a worker)\n  requires every v in worker satisfies load of v is 0\n  load of w becomes 1\n"
+            );
+            let error = reduced(&model).unwrap_err();
+            assert_eq!(error, full(&model).unwrap_err());
+            assert!(error.message.contains(kind), "{error}");
+            assert_eq!(error.trace.unwrap().steps.len(), 1);
+            let safe = model.replace("load of w becomes 1", "load of w becomes 0");
+            let verification = reduced(&safe).unwrap();
+            assert!(!verification.reduced);
+            assert!(
+                verification
+                    .notes
+                    .iter()
+                    .any(|note| note.contains("quantifier"))
+            );
+        }
+    }
+}

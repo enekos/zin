@@ -43,18 +43,73 @@ impl Relabeling {
     }
 }
 
+/// Adjacent transpositions generate the permutation group. Checking these
+/// generators validates the initial state without constructing a factorial table.
+pub(crate) fn validate(model: &Model) -> Result<()> {
+    let mut count = 1usize;
+    for group in &model.interchangeable {
+        for n in 2..=group.len() {
+            count = count.saturating_mul(n);
+            if count > MAX_RELABELINGS {
+                return Err(Error::new(format!(
+                    "interchangeable types allow at most {MAX_RELABELINGS} relabelings in total (8 values); use fewer values"
+                )));
+            }
+        }
+        for pair in group.windows(2) {
+            let swap = |raw: i64| {
+                if raw == pair[0] {
+                    pair[1]
+                } else if raw == pair[1] {
+                    pair[0]
+                } else {
+                    raw
+                }
+            };
+            for field in &model.fields {
+                let (keys, domain) = match &field.kind {
+                    FieldType::Scalar(d) => (None, d),
+                    FieldType::Map { keys, value, .. } => (Some(keys), value),
+                };
+                for index in 0..keys.map_or(1, Domain::size) {
+                    let target = match keys {
+                        Some(keys @ Domain::Enum(_)) => keys
+                            .raw_at(index)
+                            .and_then(|key| keys.position(swap(key)))
+                            .expect("validated interchangeable domain"),
+                        _ => index,
+                    };
+                    let raw = model.initial[field.offset + index];
+                    let image = if matches!(domain, Domain::Enum(_)) {
+                        swap(raw)
+                    } else {
+                        raw
+                    };
+                    if image != model.initial[field.offset + target] {
+                        return Err(Error::new(
+                            "the initial state treats interchangeable values differently",
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 impl Symmetry {
     /// Relabelings for `groups`, each a list of interchangeable raw values.
     pub(crate) fn new(model: &Model, groups: &[Vec<i64>]) -> Result<Self> {
+        let n = groups.iter().flat_map(|g| 2..=g.len()).product::<usize>();
+        let width = model.slots.len().saturating_add(model.symbols.len()).max(1);
+        if n.saturating_mul(width) > MAX_TABLE_CELLS {
+            return Err(Error::new(format!(
+                "symmetry reduction needs more than {MAX_TABLE_CELLS} relabeling table cells; use --symmetry off or fewer values"
+            )));
+        }
         let mut maps: Vec<Vec<i64>> = vec![(0..symbol_count(model)).collect()];
         for group in groups {
             let orders = permutations(group.len());
-            if maps.len().saturating_mul(orders.len()) > MAX_RELABELINGS {
-                return Err(Error::new(format!(
-                    "interchangeable types allow at most {MAX_RELABELINGS} relabelings in total \
-                     (8 values); use fewer values"
-                )));
-            }
             let mut extended = Vec::with_capacity(maps.len() * orders.len());
             for map in &maps {
                 for order in &orders {
@@ -71,12 +126,6 @@ impl Symmetry {
             maps = extended;
         }
         let slots = model.slots.len();
-        if maps.len().saturating_mul(slots.max(1)) > MAX_TABLE_CELLS {
-            return Err(Error::new(format!(
-                "symmetry reduction needs at most {MAX_TABLE_CELLS} relabeled slots \
-                 (relabelings times state values); use fewer interchangeable values"
-            )));
-        }
         let moved = |domain: &Domain| match domain {
             Domain::Enum(ids) => ids
                 .iter()
