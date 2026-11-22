@@ -44,8 +44,9 @@ scenarios, using the same idea as mutation testing of code.
 - `always` / `never` are checked as states are discovered and stop
   exploration at the first violation.
 - **Symmetry.** Values of an `interchangeable` type cannot be named, so
-  renaming them maps transitions to transitions and preserves every
-  property. Exploration stores only the lexicographically smallest renaming
+  the checker may identify states that differ only in their names. It uses
+  the full graph when a short-circuiting quantifier can hide an evaluation fault
+  or liveness relies on per-call fairness. On eligible models it stores only the lexicographically smallest renaming
   of each state, found by trying every renaming (at most 8! = 40,320).
   Safety, deadlock, `sometimes`, `always possible` and unfair liveness are
   all invariant under renaming, so the reduced graph decides them exactly.
@@ -75,13 +76,18 @@ scenarios, using the same idea as mutation testing of code.
 ## Tour generation
 
 The plan must cover a set of obligations: transitions to take and (state,
-call) refusals to try. Refusals are free once the tour is in the right state,
-since a refused call does not move the model. A tour greedily discharges
-everything available in the current state, then follows the shortest path to
-the nearest state with something left; when nothing is reachable, or the step
-cap is hit, a new tour starts from the initial state (a fresh
-implementation). This is a heuristic for the rural postman problem: not
-minimal, but linear-ish in practice and deterministic.
+call) refusals to try. Refusals can be tried without moving the model. A tour discharges
+obligations at its current state, then takes a shortest route to pending work.
+A fresh tour starts when work is unreachable or when restarting is cheap
+relative to the soft target. The shortest access depth of the current state
+is credited against that target, so deep chains can finish in one tour. A
+separate hard budget counts every emitted step.
+
+Adjacent-pair coverage uses a shortest setup and two concrete calls. The
+obligation is identified by the starting state and both call IDs. Rejected
+calls leave the state unchanged. Pairs exercised by a scenario, witness or setup
+are credited before generating another case. Bounded sampling prioritizes repeated
+calls and counts the actual pairs covered.
 
 ## Composition
 

@@ -1,9 +1,9 @@
 # Formats
 
-Everything a binding needs is in one JSON document, so a binding for a new
-language or framework is a few hundred lines with no parser and no model
-checker. The three shipped bindings are reference implementations
-(`bindings/python/zin/__init__.py` is the shortest).
+A plan contains the calls, expected outcomes and observable states needed
+for native replay. The checker owns model exploration and test generation.
+See the [runner contract](#what-a-binding-must-do) and the shared examples
+in [the observation fixtures](../tests/fixtures/observations.json).
 
 ## `plan/1`
 

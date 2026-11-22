@@ -249,7 +249,9 @@ The bindings ship a `Recorder` that writes this format.
 ```text
 zin check <spec>... [--format json] [--symmetry on|off]
                                       prove every property over every reachable state
-zin plan <spec> [--out FILE] [--cover transitions|states|actions|scenarios] [--max-steps N]
+zin plan <spec> [--out FILE] [--cover transitions|states|actions|scenarios|pairs]
+                [--max-steps N] [--step-budget N] [--pair-limit N] [--component NAME]
+zin refine <contract> <candidate> [--field A=B] [--action A=B] [--max-pairs N]
 zin trace <spec> <events.jsonl|->     check a recorded execution
 zin audit <spec>                      list specification changes nothing notices
 zin init <framework> <spec>           print a conformance test skeleton
@@ -266,14 +268,18 @@ input could not be used.
 cargo install --path . --locked          # the zin binary and checker from this checkout (Rust 1.88+)
 python -m pip install ./bindings/python  # pytest / unittest binding from this checkout
 npm install --save-dev ./bindings/js     # JS binding with Playwright and Vitest reporting from this checkout
+# In a consuming Go module, use the binding from this checkout:
+go mod edit -replace github.com/enekos/zin/bindings/go=/absolute/path/to/zin/bindings/go
 go get github.com/enekos/zin/bindings/go
 ```
 
 Prebuilt `zin` binaries for Linux and macOS (x86_64, arm64) are attached to
 each [GitHub release](https://github.com/enekos/zin/releases).
 
-The bindings have no dependencies. They call `zin plan` at test time, or read
-a committed `<spec>.plan.json` so test machines need no Rust toolchain.
+The Rust checker uses the standard library. Other runners can derive plans with
+the installed binary or replay a committed JSON plan offline. Each binding's
+guide lists its runtime and test framework dependencies. For the published
+0.2 release, use `cargo install zin-spec --version 0.2.0` or the GitHub binaries.
 
 ## Documentation
 
