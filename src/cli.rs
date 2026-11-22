@@ -21,7 +21,7 @@ zin - specifications you can prove, then run against your code
 usage:
   zin check <spec>... [--format json] [--symmetry on|off]
                                         prove every property over every reachable state
-  zin plan <spec> [--out FILE] [--cover transitions|states|actions|scenarios] [--max-steps N]
+  zin plan <spec> [--out FILE] [--cover transitions|states|actions|scenarios] [--max-steps N] [--step-budget N]
                                         derive the conformance test plan (JSON)
   zin trace <spec> <events.jsonl|->     check a recorded execution against the specification
   zin audit <spec>                      mutate the specification; list changes nothing notices
@@ -257,18 +257,25 @@ fn check(args: &[String]) -> Result<Output> {
 }
 
 fn plan(args: &[String]) -> Result<Output> {
-    let arguments = Arguments::parse(args, &["out", "cover", "max-steps"])?;
+    let arguments = Arguments::parse(args, &["out", "cover", "max-steps", "step-budget"])?;
     let mut options = PlanOptions::default();
     if let Some(cover) = arguments.option("cover") {
         options.cover = Cover::parse(cover)?;
     }
-    if let Some(steps) = arguments.option("max-steps") {
-        options.max_steps = steps
-            .parse()
-            .ok()
-            .filter(|steps| *steps > 0)
-            .ok_or_else(|| Error::usage("--max-steps needs a positive integer"))?;
-    }
+    let positive = |name: &str| -> Result<Option<usize>> {
+        arguments
+            .option(name)
+            .map(|value| {
+                value
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| Error::usage(format!("--{name} needs a positive integer")))
+            })
+            .transpose()
+    };
+    options.max_steps = positive("max-steps")?.unwrap_or(options.max_steps);
+    options.step_budget = positive("step-budget")?.unwrap_or(options.step_budget);
     let verification = load(arguments.one("specification file")?)?;
     let plan = Plan::build(&verification, &options)?;
     let mut text = plan.to_json(&verification).to_compact();

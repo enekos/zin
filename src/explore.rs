@@ -43,10 +43,11 @@ impl Graph {
 
     #[must_use]
     pub fn target(&self, state: u32, call: u32) -> Option<u32> {
-        self.out(state)
-            .iter()
-            .find(|edge| edge.call == call)
-            .map(|edge| edge.to)
+        let edges = self.out(state);
+        edges
+            .binary_search_by_key(&call, |edge| edge.call)
+            .ok()
+            .map(|index| edges[index].to)
     }
 
     pub(crate) fn state(&self, state: u32) -> &[i64] {

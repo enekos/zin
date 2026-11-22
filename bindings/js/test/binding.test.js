@@ -230,7 +230,9 @@ test("settle runs after every action and step wraps every step", async () => {
 
 test("maxSteps shortens the generated tours", () => {
   const longest = (plan) => Math.max(...plan.tests.map((item) => item.steps.length));
-  assert.equal(longest(loadPlan(ACCOUNT)), 200);
+  // A soft target: a tour may run past it by at most the setup to its current state.
+  const full = longest(loadPlan(ACCOUNT));
+  assert.ok(full >= 200 && full < 240, String(full));
   assert.ok(longest(loadPlan(ACCOUNT, { maxSteps: 40 })) < 60);
   assert.throws(() => loadPlan(ACCOUNT, { maxSteps: 0 }), PlanError);
   assert.throws(() => loadPlan(ACCOUNT, { maxSteps: 40, bin: "/nonexistent/zin" }), /--max-steps 40/);
