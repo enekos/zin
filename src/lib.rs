@@ -20,7 +20,7 @@ mod symmetry;
 mod trace;
 
 pub use ast::{Spec, Value};
-pub use audit::{Audit, Mutant, MutantFate, audit};
+pub use audit::{Audit, Distinction, Mutant, MutantFate, audit};
 pub use check::{
     Options, PropertyResult, ScenarioEvent, ScenarioRun, Verification, verify, verify_with,
 };

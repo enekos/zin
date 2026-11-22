@@ -419,6 +419,24 @@ fn run_audit(args: &[String]) -> Result<Output> {
             "{mark} line {}: {} ({detail})",
             mutant.line, mutant.description
         );
+        if let Some(witness) = &mutant.witness {
+            let outcome = |state: &Option<crate::State>| {
+                state.as_ref().map_or_else(
+                    || "rejected".to_string(),
+                    |state| format!("accepted, {}", crate::display_state(state)),
+                )
+            };
+            for call in &witness.prefix {
+                let _ = writeln!(stdout, "  {call}");
+            }
+            let _ = writeln!(
+                stdout,
+                "  {} → original {}, mutant {}",
+                witness.call,
+                outcome(&witness.original),
+                outcome(&witness.mutated)
+            );
+        }
     }
     if audit.truncated {
         let _ = writeln!(

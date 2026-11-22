@@ -323,7 +323,8 @@ applies small changes (drop a `requires`, drop an assignment, flip a
 comparison, shift a constant) and re-checks each mutant:
 
 - **caught**: a property or scenario fails. Good.
-- **SURVIVED**: the reachable behavior changed and nothing noticed. Add a
+- **SURVIVED**: the reachable behavior changed and nothing noticed. The report
+  shows a shortest distinguishing prefix, the call, and both outcomes. Add a
   property or a scenario (a `reject` line is often enough), or delete the
   redundant rule.
 - **same**: the reachable behavior is unchanged; the rule is implied by others.
