@@ -175,6 +175,25 @@ fn check_json(path: &str, result: &Result<Verification>) -> Json {
             ("ok", Json::Bool(true)),
             ("system", Json::str(verification.model.name.clone())),
             ("states", Json::count(verification.graph.state_count())),
+            ("calls", Json::count(verification.model.call_count())),
+            (
+                "attempted_calls",
+                Json::Int(
+                    i64::try_from(verification.graph.state_count()).expect("bounded state count")
+                        * i64::try_from(verification.model.call_count())
+                            .expect("bounded call count"),
+                ),
+            ),
+            (
+                "relabelings",
+                Json::count(
+                    verification
+                        .model
+                        .symmetry
+                        .as_ref()
+                        .map_or(0, |s| s.relabeling_count()),
+                ),
+            ),
             (
                 "transitions",
                 Json::count(verification.graph.transition_count()),

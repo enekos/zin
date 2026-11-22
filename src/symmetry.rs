@@ -98,6 +98,9 @@ pub(crate) fn validate(model: &Model) -> Result<()> {
 }
 
 impl Symmetry {
+    pub(crate) fn relabeling_count(&self) -> usize {
+        self.relabelings.len()
+    }
     /// Relabelings for `groups`, each a list of interchangeable raw values.
     pub(crate) fn new(model: &Model, groups: &[Vec<i64>]) -> Result<Self> {
         let n = groups.iter().flat_map(|g| 2..=g.len()).product::<usize>();
