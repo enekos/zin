@@ -1,0 +1,7 @@
+system "Acknowledgement"
+state
+  acknowledged is a boolean
+initially
+  acknowledged is true
+action ack
+  acknowledged becomes true

@@ -1,0 +1,21 @@
+name: Conformance pilots
+on: [push, pull_request]
+
+jobs:
+  pilots:
+    runs-on: ubuntu-latest
+    env:
+      ZIN_BIN: ${{ github.workspace }}/target/debug/zin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --locked
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - working-directory: examples/pilots
+        run: |
+          npm ci
+          npx playwright install --with-deps --only-shell chromium
+          npm test
+          npm run test:browser
