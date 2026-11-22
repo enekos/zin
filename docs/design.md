@@ -116,6 +116,9 @@ shared actions are the only coupling between components.
 
 ## Roadmap
 
+The [November 2026 development plan](next-steps.md) proposes an order for these
+items alongside checker fixes, conformance improvements and performance work.
+
 - Bindings: JUnit 5, xUnit/.NET, RSpec, PHPUnit. Each is a plan replayer.
 - A pytest plugin and a Vitest reporter that show model coverage.
 - Composition across files, and plans that test one component against the
