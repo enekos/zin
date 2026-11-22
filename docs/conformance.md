@@ -177,7 +177,10 @@ fn conforms() {
 ```
 
 The Rust binding is the `zin` crate itself (a dev-dependency); the plan is
-derived in-process, so there is nothing to install or commit.
+derived in-process, so there is nothing to install or commit. A specification
+that uses `include` needs its files, not just its text: call
+`assert_conforms_file(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/spec.zin"), ...)`
+(or `check_file`), which is what `zin init rust` generates.
 
 ### JUnit 5
 

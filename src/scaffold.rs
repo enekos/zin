@@ -263,7 +263,7 @@ fn go(model: &Model, spec_path: &str) -> String {
 
 fn rust(model: &Model, spec_path: &str) -> String {
     let mut out = String::from(
-        "use zin::conform::{Adapter, Args, Outcome, assert_conforms};\n\nstruct Harness {\n    // the implementation under test\n}\n\nimpl Adapter for Harness {\n    fn call(&mut self, action: &str, args: &Args) -> Outcome {\n        match action {\n",
+        "use zin::conform::{Adapter, Args, Outcome, assert_conforms_file};\n\nstruct Harness {\n    // the implementation under test\n}\n\nimpl Adapter for Harness {\n    fn call(&mut self, action: &str, args: &Args) -> Outcome {\n        match action {\n",
     );
     for action in &model.actions {
         let _ = writeln!(
@@ -274,7 +274,7 @@ fn rust(model: &Model, spec_path: &str) -> String {
     }
     let _ = writeln!(
         out,
-        "            other => panic!(\"unknown action {{other}}\"),\n        }}\n    }}\n\n    // Optionally expose any subset of the specification's state: {}\n    // fn observe(&self) -> Option<zin::State> {{ None }}\n}}\n\n#[test]\nfn conforms_to_specification() {{\n    assert_conforms(include_str!(\"{spec_path}\"), || Harness {{}});\n}}",
+        "            other => panic!(\"unknown action {{other}}\"),\n        }}\n    }}\n\n    // Optionally expose any subset of the specification's state: {}\n    // fn observe(&self) -> Option<zin::State> {{ None }}\n}}\n\n#[test]\nfn conforms_to_specification() {{\n    // The specification and any files it includes, beside this file in tests/.\n    assert_conforms_file(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/{spec_path}\"), || Harness {{}});\n}}",
         field_names(model)
     );
     out

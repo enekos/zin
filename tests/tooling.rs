@@ -1,5 +1,7 @@
 use std::collections::BTreeSet;
-use zin::conform::{Adapter, Args, Outcome, Refused, assert_conforms, check};
+use zin::conform::{
+    Adapter, Args, Outcome, Refused, assert_conforms, assert_conforms_file, check, check_file,
+};
 use zin::{
     Cover, ErrorKind, Framework, Json, MutantFate, Plan, PlanOptions, State, Value, Verification,
     audit, check_trace, parse, scaffold, verify,
@@ -593,4 +595,62 @@ fn trace_needs_only_the_proof_that_check_needs() {
     let full = cli(&["trace", spec, events, "--symmetry", "off"]);
     assert_eq!(full.code, 2, "{}", full.stderr);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_specification_with_includes_conforms_from_its_file() {
+    #[derive(Default)]
+    struct Doorbell {
+        open: bool,
+        rang: bool,
+    }
+    impl Adapter for Doorbell {
+        fn call(&mut self, action: &str, _: &Args) -> Outcome {
+            match action {
+                "push" if !self.open => {
+                    self.open = true;
+                    self.rang = true;
+                    Outcome::Accepted
+                }
+                "pull" if self.open => {
+                    self.open = false;
+                    Outcome::Accepted
+                }
+                "push" | "pull" => Outcome::Rejected,
+                other => panic!("unknown action {other}"),
+            }
+        }
+        fn observe(&self) -> Option<State> {
+            Some(State::from([
+                ("open".to_string(), Value::Boolean(self.open)),
+                ("rang".to_string(), Value::Boolean(self.rang)),
+            ]))
+        }
+    }
+    let spec = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/bindings/fixtures/contract/composed/main.zin"
+    );
+    let source = std::fs::read_to_string(spec).unwrap();
+    let error = check(&source, &PlanOptions::default(), Doorbell::default)
+        .expect_err("source text cannot resolve an include");
+    assert!(error.message.contains("parse_file"), "{error}");
+    let conformance = assert_conforms_file(spec, Doorbell::default);
+    assert!(conformance.tests > 0);
+    let error = check_file(spec, &PlanOptions::default(), || Doorbell {
+        rang: true,
+        ..Doorbell::default()
+    })
+    .expect_err("a wrong initial observation must be found");
+    assert!(error.message.contains("rang is true"), "{error}");
+
+    let scaffold = cli(&["init", "rust", spec]);
+    assert_eq!(scaffold.code, 0, "{}", scaffold.stderr);
+    assert!(
+        scaffold.stdout.contains(
+            "assert_conforms_file(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/main.zin\")"
+        ),
+        "{}",
+        scaffold.stdout
+    );
 }

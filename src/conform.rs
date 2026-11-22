@@ -5,9 +5,10 @@ use crate::ast::Value;
 use crate::check::{Verification, verify};
 use crate::model::named_values;
 use crate::plan::{Plan, PlanOptions, PlanStep};
-use crate::{Error, ErrorKind, Result, State, parse};
+use crate::{Error, ErrorKind, Result, State, parse, parse_file};
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::Path;
 
 pub type Args = BTreeMap<String, Value>;
 
@@ -227,6 +228,16 @@ pub fn check<A: Adapter>(
     replay(&verify(&parse(spec_source)?)?, options, factory)
 }
 
+/// Like [`check`], but reads the specification from `path` and the files it
+/// includes, so a multi-file specification can be tested.
+pub fn check_file<A: Adapter>(
+    path: impl AsRef<Path>,
+    options: &PlanOptions,
+    factory: impl FnMut() -> A,
+) -> Result<Conformance> {
+    replay(&verify(&parse_file(path)?)?, options, factory)
+}
+
 fn replay<A: Adapter>(
     verification: &Verification,
     options: &PlanOptions,
@@ -295,6 +306,24 @@ fn replay<A: Adapter>(
 /// implementation diverges from it.
 pub fn assert_conforms<A: Adapter>(spec_source: &str, factory: impl FnMut() -> A) -> Conformance {
     match check(spec_source, &PlanOptions::default(), factory) {
+        Ok(conformance) => conformance,
+        Err(error) => panic!("{error}"),
+    }
+}
+
+/// Like [`assert_conforms`], but reads the specification from `path` and the
+/// files it includes. Use `concat!(env!("CARGO_MANIFEST_DIR"), "/tests/spec.zin")`
+/// for a path that does not depend on the working directory.
+///
+/// # Panics
+///
+/// Panics when a file cannot be read, the specification is invalid or fails
+/// its own checks, or the implementation diverges from it.
+pub fn assert_conforms_file<A: Adapter>(
+    path: impl AsRef<Path>,
+    factory: impl FnMut() -> A,
+) -> Conformance {
+    match check_file(path, &PlanOptions::default(), factory) {
         Ok(conformance) => conformance,
         Err(error) => panic!("{error}"),
     }
