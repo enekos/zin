@@ -264,6 +264,12 @@ fn parse_top_level(spec: &mut Spec, line: &Line, seen: &mut Seen) -> Result<Sect
         seen.system = true;
         return Ok(Section::None);
     }
+    if after_keyword(content, "include").is_some() {
+        return Err(Error::at(
+            line.number,
+            "include needs a file: load the specification with parse_file or the zin command",
+        ));
+    }
     if !seen.system {
         return Err(Error::at(
             line.number,
@@ -495,7 +501,7 @@ fn split_at_word<'a>(source: &'a str, word: &str) -> Option<(&'a str, &'a str)> 
     None
 }
 
-fn after_keyword<'a>(source: &'a str, keyword: &str) -> Option<&'a str> {
+pub(crate) fn after_keyword<'a>(source: &'a str, keyword: &str) -> Option<&'a str> {
     let rest = source.strip_prefix(keyword)?;
     if rest.is_empty() {
         return Some("");

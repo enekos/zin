@@ -193,6 +193,8 @@ pub(crate) struct Fault {
 pub struct Model {
     pub name: String,
     pub fingerprint: String,
+    /// Included files and their fingerprints; see [`Spec::sources`].
+    pub sources: BTreeMap<String, String>,
     pub state_limit: usize,
     pub fields: Vec<FieldInfo>,
     pub actions: Vec<ActionInfo>,
@@ -669,6 +671,7 @@ impl<'a> Compiler<'a> {
         let mut model = Model {
             name: spec.name.clone(),
             fingerprint: spec.fingerprint.clone(),
+            sources: spec.sources.clone(),
             state_limit: spec.state_limit,
             fields: self.fields,
             actions,

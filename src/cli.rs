@@ -8,11 +8,11 @@ use crate::plan::{Cover, Plan, PlanOptions, state_json};
 use crate::report::render_markdown;
 use crate::scaffold::{Framework, scaffold};
 use crate::trace::check_trace;
-use crate::{Error, ErrorKind, Result, SourceSpan, Spec, parse};
+use crate::{Error, ErrorKind, Result, SourceSpan, Spec, parse, parse_file};
 use std::fmt::Write as _;
 use std::io::Read as _;
 
-const MAX_SPEC_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_SPEC_BYTES: u64 = crate::source::MAX_SPEC_BYTES as u64;
 const MAX_TRACE_BYTES: u64 = 1024 * 1024 * 1024;
 
 pub const USAGE: &str = "\
@@ -106,11 +106,16 @@ fn read(path: &str, limit: u64) -> Result<String> {
 }
 
 fn load(path: &str) -> Result<Verification> {
-    verify(&parse(&read(path, MAX_SPEC_BYTES)?)?)
+    verify(&load_spec(path)?)
 }
 
+/// A file with its includes, or a self-contained specification on standard input.
 fn load_spec(path: &str) -> Result<Spec> {
-    parse(&read(path, MAX_SPEC_BYTES)?)
+    if path == "-" {
+        parse(&read(path, MAX_SPEC_BYTES)?)
+    } else {
+        parse_file(path)
+    }
 }
 
 fn span_json(span: &SourceSpan) -> Json {
@@ -360,7 +365,7 @@ fn trace(args: &[String]) -> Result<Output> {
 fn run_audit(args: &[String]) -> Result<Output> {
     let arguments = Arguments::parse(args, &[])?;
     let path = arguments.one("specification file")?;
-    let audit = audit(&parse(&read(path, MAX_SPEC_BYTES)?)?)?;
+    let audit = audit(&load_spec(path)?)?;
     let mut stdout = String::new();
     let survivors = audit.survivors();
     for mutant in &audit.mutants {

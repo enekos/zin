@@ -314,6 +314,65 @@ always waiting implies job is not 0
 
 Plans, traces and tests treat a composition as one system under test.
 
+## Source files
+
+A file may begin with `include` directives, then continue with complete
+`system` blocks. An entry file may hold only includes.
+
+```zin
+include "parts/client.zin"
+include "parts/server.zin"
+
+system "Request and reply"
+always pending is at most 1
+```
+
+Inclusion is textual, and these are deliberate choices:
+
+- **Included text comes first.** Each file's included files, in directive
+  order, precede its own blocks. The combined text is checked exactly as if it
+  were written in one file, so a composition behaves the same split or whole.
+- **Each file is read once.** A file included from several places, under any
+  spelling of the same relative path, contributes its blocks once.
+- **One flat namespace.** Included files share types, fields and actions by
+  name, with the composition rules above. There are no imports, qualified
+  names or private declarations. Two blocks that declare the same field, or a
+  type or shared parameter differently, are an error that reports both
+  declarations.
+- **Paths are relative** to the including file, use `/` separators and stay
+  within the entry file's directory. A cycle is an error at the include that
+  closes it. At most 1,024 files nested 64 levels deep, 4 MiB in total.
+
+`zin` commands read files this way; standard input (`-`) holds one
+self-contained specification. In Rust, `parse_file(path)` loads a file with its
+includes and `parse(text)` parses self-contained text, where `include` is an
+error. A plan records each included file's fingerprint under `sources`, and
+its `fingerprint` covers every file, so editing any of them makes a saved plan
+stale.
+
+## Diagnostics
+
+Every error names the file, line and column it refers to:
+
+```console
+$ zin check entry.zin
+spec: parts/client.zin:7:21: unknown name pendng; declare it or use a quoted enum value
+```
+
+The parser records where each name, condition, assignment and declaration
+starts and ends, so a diagnostic points at the offending token, not merely its
+line, even when the same name appears elsewhere on that line. An error that
+concerns a whole statement covers the statement. A conflict between two
+declarations also gives the first one.
+
+`zin check --format json` adds a stable `code` (such as `name.unknown`,
+`type.mismatch` or `component.field_conflict`), a `span` and a `related` span;
+see [wire formats](plan-format.md#check1). In Rust, `Error::code`,
+`Error::source_span` and `Error::related_span` return the same information.
+Once an error leaves `parse`, `parse_file`, `Model::compile` or `verify`, its
+`line` is a line of the file in `source_span`. AST nodes carry `Span`s in the
+parser's coordinates; `Spec::source_span` resolves one to its file.
+
 ## Limits
 
 Exploration stops with an error, never a partial answer, at the declared state

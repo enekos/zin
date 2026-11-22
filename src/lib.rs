@@ -30,7 +30,7 @@ pub use parser::parse;
 pub use plan::{Cover, Coverage, Plan, PlanOptions, PlanStep, PlanTest, TestKind};
 pub use report::render_markdown;
 pub use scaffold::{Framework, scaffold};
-pub use source::SourceSpan;
+pub use source::{SourceSpan, parse_file};
 pub use trace::{TraceReport, check_trace};
 
 use std::collections::BTreeMap;
@@ -160,6 +160,19 @@ impl Error {
         } else {
             self.spanned(span)
         }
+    }
+
+    /// Locate an error found outside the parser directly in its file.
+    pub(crate) fn located_at(mut self, span: Option<SourceSpan>) -> Self {
+        let located = self
+            .detail
+            .as_ref()
+            .is_some_and(|detail| detail.source.is_some());
+        if let Some(span) = span.filter(|_| !located) {
+            self.line = Some(span.line);
+            self.details().source = Some(span);
+        }
+        self
     }
 
     pub(crate) fn related(mut self, span: ast::Span) -> Self {

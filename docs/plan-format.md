@@ -14,6 +14,7 @@ Written by `zin plan`. Compact JSON, one line.
   "zin": "plan/1",
   "system": "Delivery",
   "fingerprint": "aa144eb30ea314b8",
+  "sources": {},
   "cover": "transitions",
   "max_steps": 200,
   "step_budget": 2000000,
@@ -39,7 +40,8 @@ Written by `zin plan`. Compact JSON, one line.
 
 | Key | Meaning |
 | --- | --- |
-| `fingerprint` | FNV-1a 64 of the specification file's bytes, 16 lowercase hex digits. A binding compares it with the specification on disk to detect a stale plan. |
+| `fingerprint` | FNV-1a 64 of the specification file's bytes, 16 lowercase hex digits. A binding compares it with the specification on disk to detect a stale plan. For a specification with `include` directives it covers every file: FNV-1a 64 of the entry file's fingerprint and a newline, followed by `path`, a tab, the file's fingerprint and a newline for each entry of `sources` in order. |
+| `sources` | included files, transitively, by path relative to the entry file's directory with `/` separators, each with the FNV-1a 64 of its bytes. Empty for a single file; may be absent in plans from older versions. |
 | `cover` | the coverage goal the plan was derived for: `transitions`, `states`, `actions`, `scenarios` or `pairs` |
 | `max_steps`, `step_budget`, `pair_limit` | the soft tour target, the hard total step ceiling and the pair sample size (null unless a sampled `pairs` plan) the plan was derived with. Absent from plans written before 0.3. |
 | `summary` | full-model `states`, `transitions` and `refusals`, plus the emitted `tests`, `accepted_steps` and `rejected_steps`. `eligible_pairs` and `covered_pairs` are numbers for `pairs` plans and null otherwise. |
