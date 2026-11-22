@@ -34,7 +34,7 @@ pub use plan::{Cover, Coverage, Plan, PlanOptions, PlanStep, PlanTest, TestKind}
 pub use report::render_markdown;
 pub use scaffold::{Framework, scaffold};
 pub use source::{SourceSpan, parse_file};
-pub use trace::{TraceReport, check_trace};
+pub use trace::{TraceReport, check_trace, check_trace_reader};
 
 use std::collections::BTreeMap;
 use std::fmt;
