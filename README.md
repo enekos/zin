@@ -5,9 +5,9 @@
 **Zin** is Basque for a solemn promise. A Zin specification reads like a
 behavioral contract, and the `zin` tool does three things with it:
 
-1. **Proves it.** Every reachable state is explored. Safety, liveness and
-   deadlock properties either hold for all of them or you get the shortest
-   counterexample.
+1. **Checks the model.** Zin explores reachable states, using symmetry when
+   the model permits it. Safety violations have a shortest counterexample.
+   A liveness failure shows a finite stop or a concrete repeating loop.
 2. **Turns it into tests.** From the proven model, Zin derives a test plan that
    exercises every transition and every refusal, and runs it inside the test
    framework you already use: pytest, unittest, Jest, Vitest, `node:test`,

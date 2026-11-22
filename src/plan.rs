@@ -517,6 +517,15 @@ impl Plan {
                 "max_steps must be positive and step_budget must be in 1..={MAX_PLAN_STEPS}"
             )));
         }
+        if options.max_steps as u64 > MAX_SAFE_INTEGER as u64
+            || options
+                .pair_limit
+                .is_some_and(|n| n as u64 > MAX_SAFE_INTEGER as u64)
+        {
+            return Err(Error::usage(
+                "plan options must fit in a JavaScript safe integer",
+            ));
+        }
         if options.pair_limit.is_some()
             && (options.cover != Cover::Pairs || options.pair_limit == Some(0))
         {

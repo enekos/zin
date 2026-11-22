@@ -162,3 +162,25 @@ fn audit_gives_a_shortest_distinguishing_example_for_every_survivor() {
     assert_eq!(w.call, "start");
     assert!(w.original.is_none() && w.mutated.is_some());
 }
+
+#[test]
+#[cfg(target_pointer_width = "64")]
+fn cache_options_round_trip_as_portable_json_integers() {
+    let v = verify(&parse(SWITCH).unwrap()).unwrap();
+    for options in [
+        PlanOptions {
+            max_steps: usize::MAX,
+            ..Default::default()
+        },
+        PlanOptions {
+            cover: Cover::Pairs,
+            pair_limit: Some(usize::MAX),
+            ..Default::default()
+        },
+    ] {
+        assert_eq!(
+            Plan::build(&v, &options).unwrap_err().kind,
+            ErrorKind::Usage
+        );
+    }
+}
