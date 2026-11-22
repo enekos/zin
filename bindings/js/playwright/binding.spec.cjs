@@ -18,7 +18,7 @@ const divergence = (factory) =>
 test("an answer applied to the wrong draft is caught, with the steps that lead to it", async ({ page }) => {
   const message = await divergence(() => adapter("stale")({ page }));
   expect(message).toMatch(/after server_ok, saved is 2, but the specification says 1 \(waited 300 ms\)/);
-  expect(message).toMatch(/steps taken:\n  1\. increase\n  2\. save\n  3\. increase\n  4\. server_ok$/);
+  expect(message).toMatch(/steps taken:\n  1\. increase\n  2\. save\n  3\. increase\n  4\. server_ok\nspec fingerprint: [0-9a-f]{16}\nscenario "Replay divergence"\n/);
 });
 
 test("a second save while one is in flight is caught", async ({ page }) => {

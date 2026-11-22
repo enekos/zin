@@ -181,10 +181,15 @@ derived in-process, so there is nothing to install or commit.
 The Python, JavaScript and Go bindings look, in order, for:
 
 1. a plan file you pass explicitly (`plan=`, `{ plan }`, `zin.WithPlan`);
-2. `<spec>.plan.json` next to the specification, if its fingerprint and
-   coverage match;
+2. `<spec>.plan.json` next to the specification;
 3. the `zin` binary (`ZIN_BIN`, then `PATH`), which they run as
-   `zin plan <spec>`.
+   `zin plan <spec>` with the planning options you passed.
+
+A plan file is used only if it is fresh for the specification and every file
+it includes, and was derived with each planning option you passed (`cover`,
+`max_steps`, `step_budget`, `pair_limit`, `component`); options you leave out
+are not compared. All runners follow the same
+[contract](plan-format.md#what-a-binding-must-do) and run the same cases.
 
 So you choose per project:
 

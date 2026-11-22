@@ -46,6 +46,14 @@
         "types": "./recorder.d.cts",
         "default": "./recorder.cjs"
       }
+    },
+    "./vitest": {
+      "types": "./vitest.d.ts",
+      "import": "./vitest.js"
+    },
+    "./vitest-reporter": {
+      "types": "./vitest-reporter.d.ts",
+      "import": "./vitest-reporter.js"
     }
   },
   "files": [
@@ -61,7 +69,11 @@
     "recorder.cjs",
     "recorder.d.ts",
     "recorder.d.cts",
-    "LICENSE"
+    "LICENSE",
+    "vitest.js",
+    "vitest.d.ts",
+    "vitest-reporter.js",
+    "vitest-reporter.d.ts"
   ],
   "scripts": {
     "test": "npm run test:node && npm run test:jest && npm run test:jest:esm && npm run test:vitest && npm run test:mocha && npm run test:playwright",
@@ -87,10 +99,14 @@
     "vitest": "^5.1.1"
   },
   "peerDependencies": {
-    "@playwright/test": ">=1.40"
+    "@playwright/test": ">=1.40",
+    "vitest": ">=3"
   },
   "peerDependenciesMeta": {
     "@playwright/test": {
+      "optional": true
+    },
+    "vitest": {
       "optional": true
     }
   }

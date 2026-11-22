@@ -112,3 +112,34 @@ To run this binding's own checks, set `ZIN_BIN` to your built `zin` executable,
 then run `npm ci && npm test`. CI runs both Jest module formats and `node:test`,
 including a deliberately broken implementation whose failing Jest exit status
 and per-case diagnostics are checked.
+
+## Planning options and committed plans
+
+`verify`, `check` and `loadPlan` take `cover`, `maxSteps`, `stepBudget`,
+`pairLimit` and `component`, the options of `zin plan`. A committed sibling
+`account.plan.json` (or an explicit `plan`) is used when it is fresh for the
+specification and every included file, and was derived with each option you
+pass; options you leave out are not compared. A path to a `.json` plan replays
+that plan, after checking it against `account.zin` beside it. See
+[the runner contract](../../docs/plan-format.md#what-a-binding-must-do).
+
+A `Divergence` carries `fingerprint` and `scenario`: paste the scenario into
+the specification to keep the failing prefix as a worked example.
+
+## Vitest model coverage
+
+Register the suite with `import { verify } from "zin-verify/vitest"` and add
+the reporter (Vitest 3 or later, an optional peer dependency):
+
+```js
+import { defineConfig } from "vitest/config";
+import ZinReporter from "zin-verify/vitest-reporter";
+
+export default defineConfig({ test: { reporters: ["default", new ZinReporter()] } });
+```
+
+The report counts the unique (model state, call) operations attempted out of
+those planned and eligible, the operations that failed, and the fields
+actually compared. Name filters, failures and workers are accounted for;
+replays that shorten a failure are not counted. With `cover: "pairs"` it also
+counts adjacent calls.

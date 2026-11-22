@@ -18,7 +18,7 @@ export type Factory = () => Awaitable<Adapter>;
 
 export interface PlanTest {
   name: string;
-  kind: "scenario" | "tour";
+  kind: "scenario" | "witness" | "tour";
   /** `[call, to]`; `to` is -1 when the call must be rejected. */
   steps: [number, number][];
 }
@@ -27,26 +27,52 @@ export interface Plan {
   zin: "plan/1";
   system: string;
   fingerprint: string;
+  /** Included files by path relative to the specification, each with its FNV-1a 64 hash. Absent before 0.3. */
+  sources?: Record<string, string>;
+  /** The composition block tested in isolation, or null for the whole system. Absent before 0.3. */
+  component?: string | null;
   cover: Cover;
+  max_steps?: number;
+  step_budget?: number;
+  pair_limit?: number | null;
   fields: { name: string; type: unknown }[];
   actions: { name: string; params: { name: string; type: unknown }[] }[];
   states: Record<string, unknown>[];
   parents: ([number, number] | null)[];
   calls: { action: string; args: Scalar[]; text: string }[];
   tests: PlanTest[];
-  summary: { states: number; transitions: number; tests: number; accepted_steps: number; rejected_steps: number };
+  summary: {
+    states: number;
+    transitions: number;
+    refusals?: number;
+    eligible_pairs?: number | null;
+    covered_pairs?: number | null;
+    tests: number;
+    accepted_steps: number;
+    rejected_steps: number;
+  };
 }
 
-export type Cover = "transitions" | "states" | "actions" | "scenarios";
+export type Cover = "transitions" | "states" | "actions" | "scenarios" | "pairs";
 
+/**
+ * Planning options. Only the options passed are compared with a committed
+ * plan's recorded ones; any that differ mean the plan must be derived again.
+ */
 export interface PlanOptions {
   cover?: Cover;
   /** A pre-derived plan file to use instead of running `zin plan`. */
   plan?: string | URL;
   /** Path of the `zin` binary; defaults to `$ZIN_BIN`, then `zin` on PATH. */
   bin?: string;
-  /** Soft target for generated tour length, passed to `zin plan --max-steps`. A committed plan keeps the limit it was derived with. */
+  /** Soft target for generated tour length (`zin plan --max-steps`). */
   maxSteps?: number;
+  /** Hard limit on all emitted replay steps (`zin plan --step-budget`). */
+  stepBudget?: number;
+  /** With `cover: "pairs"`, how many adjacent-call pairs to sample (`zin plan --pair-limit`). */
+  pairLimit?: number;
+  /** Test one block of a composition in isolation (`zin plan --component`). */
+  component?: string;
 }
 
 export interface RunOptions {
@@ -76,7 +102,12 @@ export interface VerifyOptions extends PlanOptions, RunOptions {
 
 export const PLAN_FORMAT: "plan/1";
 export class Rejected extends Error {}
-export class Divergence extends Error {}
+export class Divergence extends Error {
+  /** The fingerprint of the specification the plan was derived from. */
+  fingerprint: string;
+  /** The original failing steps as a Zin scenario, ready to paste. */
+  scenario: string;
+}
 export class PlanError extends Error {}
 export function fingerprint(bytes: Uint8Array): string;
 export function loadPlan(spec: string | URL, options?: PlanOptions): Plan;

@@ -210,7 +210,7 @@ def test_committed_plan_is_used_without_the_binary(tmp_path, monkeypatch):
     assert zin.load_plan(spec)["system"] == "Bank account"
 
     spec.write_text(spec.read_text() + "\n# edited\n")
-    with pytest.raises(zin.PlanError, match="out of date"):
+    with pytest.raises(zin.PlanError, match="different version.*the zin binary was not found"):
         zin.load_plan(spec)
     with pytest.raises(zin.PlanError, match="different version"):
         zin.load_plan(spec, plan=tmp_path / "account.plan.json")
@@ -243,3 +243,41 @@ def test_recorder_output_is_accepted_by_zin_trace(tmp_path):
     done = subprocess.run([ZIN, "trace", str(ACCOUNT), str(log)], capture_output=True, text=True)
     assert done.returncode == 1
     assert "balance" in done.stderr
+
+
+def test_pytest_reporter_tracks_filtered_and_failed_tests(tmp_path):
+    import sys
+
+    plan = EXAMPLES.parent / "tests/fixtures/v0.2/switch.plan.json"
+    test = tmp_path / "test_switch.py"
+    test.write_text(
+        f"""import zin
+@zin.verify({str(plan)!r})
+class Switch:
+    def setup(self): self.active = False
+    def observe(self): return {{"active": self.active}}
+    def start(self): self.active = True
+    def stop(self): self.active = False
+"""
+    )
+    env = dict(os.environ, PYTEST_DISABLE_PLUGIN_AUTOLOAD="1", PYTHONPATH=str(EXAMPLES.parent / "bindings/python"))
+    command = [sys.executable, "-m", "pytest", "-q", "-p", "zin.pytest_plugin", "--zin-coverage", str(test), "-k"]
+    for selector, code, row in [
+        ("start_only", 0, "operations 1/3 planned, 0 failed"),
+        ("cycle", 1, "operations 2/3 planned, 1 failed"),
+    ]:
+        done = subprocess.run([*command, selector], text=True, capture_output=True, env=env)
+        assert done.returncode == code and row in done.stdout, done.stdout + done.stderr
+        assert "observed: active" in done.stdout
+
+
+@pytest.mark.skipif(not ZIN, reason="needs the zin binary")
+def test_a_component_plan_is_cached_under_its_own_scope(tmp_path):
+    path = tmp_path / "protocol.zin"
+    shutil.copy(EXAMPLES / "request-reply.zin", path)
+    component = zin.load_plan(path, component="Client")
+    assert component["component"] == "Client"
+    path.with_suffix(".plan.json").write_text(json.dumps(component))
+    assert zin.load_plan(path, component="Client", bin="/no/zin") == component
+    with pytest.raises(zin.PlanError, match="different planning options"):
+        zin.load_plan(path, bin="/no/zin")

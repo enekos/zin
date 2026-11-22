@@ -220,7 +220,7 @@ func TestCommittedPlanIsUsedWithoutTheBinary(t *testing.T) {
 	if err := os.WriteFile(spec, append(source, []byte("\n# edited\n")...), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := zin.LoadPlan(spec, missing); err == nil || !strings.Contains(err.Error(), "out of date") {
+	if _, err := zin.LoadPlan(spec, missing); err == nil || !strings.Contains(err.Error(), "the zin binary was not found") {
 		t.Fatalf("expected a stale-plan error, got %v", err)
 	}
 	if _, err := zin.LoadPlan(spec, zin.WithPlan(planPath)); err == nil || !strings.Contains(err.Error(), "different version") {

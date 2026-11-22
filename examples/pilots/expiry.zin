@@ -1,0 +1,9 @@
+system "One cache key with a one-tick lifetime"
+state
+  present is a boolean
+initially
+  present is false
+action put
+  present becomes true
+action tick
+  present becomes false

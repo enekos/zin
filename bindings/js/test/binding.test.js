@@ -114,7 +114,7 @@ test("a committed plan is used without the binary", () => {
   assert.equal(loadPlan(spec, { bin: "/nonexistent/zin" }).system, "Bank account");
 
   appendFileSync(spec, "\n# edited\n");
-  assert.throws(() => loadPlan(spec, { bin: "/nonexistent/zin" }), /out of date/);
+  assert.throws(() => loadPlan(spec, { bin: "/nonexistent/zin" }), /different version[\s\S]*the zin binary was not found/);
   assert.throws(() => loadPlan(spec, { plan: join(directory, "account.plan.json") }), /different version/);
 });
 

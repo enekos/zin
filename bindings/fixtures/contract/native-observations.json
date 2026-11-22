@@ -1,0 +1,9 @@
+[
+  {"name":"enum member","expected":{"status":"open"},"observed":{"status":{"$enum":"open"}},"matches":true},
+  {"name":"different enum member","expected":{"status":"open"},"observed":{"status":{"$enum":"closed"}},"matches":false},
+  {"name":"boolean map keys","expected":{"flags":{"false":0,"true":1}},"observed":{"flags":{"$map":[[true,1]]}},"matches":true},
+  {"name":"integer map keys","expected":{"slots":{"1":true,"2":false}},"observed":{"slots":{"$map":[[2,false]]}},"matches":true},
+  {"name":"enum map keys and values","expected":{"at":{"ann":"idle","ben":"busy"}},"observed":{"at":{"$map":[[{"$enum":"ben"},{"$enum":"busy"}]]}},"matches":true},
+  {"name":"wrong value behind a native key","expected":{"at":{"ann":"idle"}},"observed":{"at":{"$map":[[{"$enum":"ann"},{"$enum":"busy"}]]}},"matches":false},
+  {"name":"a boolean is not an integer","expected":{"count":1},"observed":{"count":true},"matches":false}
+]

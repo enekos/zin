@@ -1,0 +1,320 @@
+{
+  "adapter": {
+    "initial": {
+      "locked": false
+    },
+    "observe": true,
+    "rules": {
+      "lock": {
+        "requires": {
+          "locked": false
+        },
+        "set": {
+          "locked": true
+        }
+      },
+      "unlock": {
+        "requires": {
+          "locked": true
+        },
+        "set": {
+          "locked": false
+        }
+      }
+    }
+  },
+  "load": [
+    {
+      "name": "a fresh sibling plan is used without the binary",
+      "spec": "latch.zin",
+      "expect": {
+        "fingerprint": "2153b57d1322ba83",
+        "cover": "transitions"
+      }
+    },
+    {
+      "name": "options that match the recorded ones keep the sibling",
+      "spec": "latch.zin",
+      "options": {
+        "cover": "transitions",
+        "max_steps": 200,
+        "step_budget": 2000000
+      },
+      "expect": {
+        "fingerprint": "2153b57d1322ba83",
+        "cover": "transitions"
+      }
+    },
+    {
+      "name": "an option that differs from the sibling needs a new plan",
+      "spec": "latch.zin",
+      "options": {
+        "cover": "states"
+      },
+      "expect": {
+        "errors": [
+          "latch.plan.json was derived with different planning options",
+          "the zin binary was not found"
+        ]
+      }
+    },
+    {
+      "name": "a component the sibling was not derived for needs a new plan",
+      "spec": "latch.zin",
+      "options": {
+        "component": "Latch"
+      },
+      "expect": {
+        "errors": [
+          "was derived with different planning options",
+          "the zin binary was not found"
+        ]
+      }
+    },
+    {
+      "name": "an explicit plan keeps its own options when none are passed",
+      "spec": "latch.zin",
+      "plan": "states.plan.json",
+      "expect": {
+        "fingerprint": "2153b57d1322ba83",
+        "cover": "states"
+      }
+    },
+    {
+      "name": "an explicit plan with different options is an error",
+      "spec": "latch.zin",
+      "plan": "states.plan.json",
+      "options": {
+        "cover": "transitions"
+      },
+      "expect": {
+        "errors": [
+          "states.plan.json was derived with different planning options"
+        ]
+      }
+    },
+    {
+      "name": "an explicit stale plan is an error",
+      "spec": "latch.zin",
+      "plan": "stale.plan.json",
+      "expect": {
+        "errors": [
+          "stale.plan.json was derived from a different version of latch.zin"
+        ]
+      }
+    },
+    {
+      "name": "a plan path is read directly",
+      "spec": "latch.plan.json",
+      "expect": {
+        "fingerprint": "2153b57d1322ba83",
+        "cover": "transitions"
+      }
+    },
+    {
+      "name": "planning options need a specification",
+      "spec": "latch.plan.json",
+      "options": {
+        "cover": "states"
+      },
+      "expect": {
+        "errors": [
+          "planning options need a .zin specification"
+        ]
+      }
+    },
+    {
+      "name": "included files are part of the fingerprint",
+      "spec": "composed/main.zin",
+      "expect": {
+        "fingerprint": "1268dc1620c2d682",
+        "cover": "transitions"
+      }
+    },
+    {
+      "name": "an edited included file makes the sibling stale",
+      "spec": "drifted/main.zin",
+      "expect": {
+        "errors": [
+          "main.plan.json was derived from a different version of main.zin",
+          "the zin binary was not found"
+        ]
+      }
+    },
+    {
+      "name": "a plan path next to its edited specification is stale",
+      "spec": "drifted/main.plan.json",
+      "expect": {
+        "errors": [
+          "main.plan.json was derived from a different version of main.zin"
+        ]
+      }
+    },
+    {
+      "name": "a plan from before 0.3 is read",
+      "spec": "v02/switch.zin",
+      "expect": {
+        "fingerprint": "0fd132c61d49a16d",
+        "cover": "scenarios"
+      }
+    },
+    {
+      "name": "a plan from before 0.3 does not record step options",
+      "spec": "v02/switch.zin",
+      "options": {
+        "max_steps": 200
+      },
+      "expect": {
+        "errors": [
+          "was derived with different planning options",
+          "the zin binary was not found"
+        ]
+      }
+    },
+    {
+      "name": "a call whose arguments do not fit its action is malformed",
+      "spec": "arity.plan.json",
+      "expect": {
+        "errors": [
+          "the plan is malformed: call 0 (lock) has 1 arguments, but lock takes 0"
+        ]
+      }
+    }
+  ],
+  "replay": [
+    {
+      "name": "a conforming implementation passes",
+      "plan": "latch.plan.json",
+      "tests": [
+        0,
+        1
+      ],
+      "adapter": {},
+      "expect": {
+        "passes": true
+      }
+    },
+    {
+      "name": "a reproducible mismatch gets the shortest reproduction",
+      "plan": "latch.plan.json",
+      "tests": [
+        0
+      ],
+      "adapter": {
+        "overrides": [
+          {
+            "action": "unlock",
+            "outcome": "reject"
+          }
+        ]
+      },
+      "expect": {
+        "report": "Latch: implementation diverges from the specification in test \"scenario: Lock twice\" at step 3\nthe implementation rejected unlock, but the specification allows it\nsteps taken:\n  1. lock\n  2. reject lock\n  3. unlock\nspec fingerprint: 2153b57d1322ba83\nscenario \"Replay divergence\"\n  lock\n  reject lock\n  unlock\nshortest reproduction:\n  1. lock\n  2. unlock",
+        "factories": 2
+      }
+    },
+    {
+      "name": "a history-dependent mismatch keeps the original",
+      "plan": "latch.plan.json",
+      "tests": [
+        0
+      ],
+      "adapter": {
+        "overrides": [
+          {
+            "instance": 1,
+            "call": 3,
+            "outcome": "reject"
+          }
+        ]
+      },
+      "expect": {
+        "report": "Latch: implementation diverges from the specification in test \"scenario: Lock twice\" at step 3\nthe implementation rejected unlock, but the specification allows it\nsteps taken:\n  1. lock\n  2. reject lock\n  3. unlock\nspec fingerprint: 2153b57d1322ba83\nscenario \"Replay divergence\"\n  lock\n  reject lock\n  unlock\nthe shortest path to the same specification state does not reproduce the original mismatch",
+        "factories": 2
+      }
+    },
+    {
+      "name": "a shorter replay that raises is reported, not swallowed",
+      "plan": "latch.plan.json",
+      "tests": [
+        0
+      ],
+      "adapter": {
+        "overrides": [
+          {
+            "instance": 1,
+            "call": 3,
+            "outcome": "reject"
+          },
+          {
+            "instance": 2,
+            "call": 1,
+            "outcome": "raise",
+            "message": "adapter crashed"
+          }
+        ]
+      },
+      "expect": {
+        "report": "Latch: implementation diverges from the specification in test \"scenario: Lock twice\" at step 3\nthe implementation rejected unlock, but the specification allows it\nsteps taken:\n  1. lock\n  2. reject lock\n  3. unlock\nspec fingerprint: 2153b57d1322ba83\nscenario \"Replay divergence\"\n  lock\n  reject lock\n  unlock\nthe shorter replay raised: adapter crashed",
+        "factories": 2
+      }
+    },
+    {
+      "name": "an initial-state mismatch pastes as expect true",
+      "plan": "latch.plan.json",
+      "tests": [
+        0
+      ],
+      "adapter": {
+        "initial": {
+          "locked": true
+        }
+      },
+      "expect": {
+        "report": "Latch: implementation diverges from the specification in test \"scenario: Lock twice\" at step 0\nbefore any action, locked is true, but the specification says false\nsteps taken:\n\nspec fingerprint: 2153b57d1322ba83\nscenario \"Replay divergence\"\n  expect true",
+        "factories": 1
+      }
+    },
+    {
+      "name": "an accepted refusal is reported without a shorter path",
+      "plan": "latch.plan.json",
+      "tests": [
+        1
+      ],
+      "adapter": {
+        "observe": false,
+        "overrides": [
+          {
+            "action": "unlock",
+            "outcome": "accept"
+          }
+        ]
+      },
+      "expect": {
+        "report": "Latch: implementation diverges from the specification in test \"tour 1\" at step 1\nthe implementation accepted unlock, but the specification rejects it\nsteps taken:\n  1. reject unlock\nspec fingerprint: 2153b57d1322ba83\nscenario \"Replay divergence\"\n  reject unlock",
+        "factories": 1
+      }
+    },
+    {
+      "name": "an error the implementation raises fails the test with that error",
+      "plan": "latch.plan.json",
+      "tests": [
+        0
+      ],
+      "adapter": {
+        "overrides": [
+          {
+            "instance": 1,
+            "call": 2,
+            "outcome": "raise",
+            "message": "boom"
+          }
+        ]
+      },
+      "expect": {
+        "raises": "boom",
+        "factories": 1
+      }
+    }
+  ]
+}

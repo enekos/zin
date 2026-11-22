@@ -58,7 +58,12 @@ class Rejected(Exception):
 
 
 class Divergence(AssertionError):
-    """The implementation does not behave as the specification says."""
+    """A conformance failure with its original, pasteable Zin scenario."""
+
+    def __init__(self, message: str, fingerprint: str = "", scenario: str = ""):
+        super().__init__(message)
+        self.fingerprint = fingerprint
+        self.scenario = scenario
 
 
 class PlanError(RuntimeError):
@@ -73,78 +78,165 @@ def fingerprint(source: bytes) -> str:
     return f"{value:016x}"
 
 
+# The planning options a caller may pass, with their `zin plan` flags.
+OPTIONS = {
+    "cover": "--cover",
+    "max_steps": "--max-steps",
+    "step_budget": "--step-budget",
+    "pair_limit": "--pair-limit",
+    "component": "--component",
+}
+
+
+def _current_fingerprint(spec: Path, sources: dict) -> Optional[str]:
+    """The fingerprint `zin plan` would record now, or None if a file is unreadable.
+
+    With included files, the entry file's hash and each source's current hash,
+    sorted by path, are hashed together (see docs/plan-format.md).
+    """
+    try:
+        entry = fingerprint(spec.read_bytes())
+        if not sources:
+            return entry
+        text = entry + "\n" + "".join(
+            f"{path}\t{fingerprint((spec.parent / path).read_bytes())}\n" for path in sorted(sources)
+        )
+    except OSError:
+        return None
+    return fingerprint(text.encode("utf-8"))
+
+
+def _fresh(plan: dict, spec: Path) -> bool:
+    return _current_fingerprint(spec, plan.get("sources") or {}) == plan.get("fingerprint")
+
+
+def _compatible(plan: dict, options: dict) -> bool:
+    """Only options the caller passed are compared; the component is identity."""
+    if plan.get("component") != options.get("component"):
+        return False
+    return all(key in plan and plan[key] == value for key, value in options.items() if key != "component")
+
+
+def _validate(plan: Any, origin: Any) -> dict:
+    if not isinstance(plan, dict) or plan.get("zin") != PLAN_FORMAT:
+        raise PlanError(f"{origin} is not a {PLAN_FORMAT} file")
+    try:
+        params = {action["name"]: len(action["params"]) for action in plan["actions"]}
+        for index, call in enumerate(plan["calls"]):
+            if call["action"] not in params:
+                raise PlanError(
+                    f"the plan is malformed: call {index} ({call['text']}) uses the unknown action {call['action']}"
+                )
+            if len(call["args"]) != params[call["action"]]:
+                raise PlanError(
+                    f"the plan is malformed: call {index} ({call['text']}) has {len(call['args'])} arguments, "
+                    f"but {call['action']} takes {params[call['action']]}"
+                )
+        states = len(plan["states"])
+        if states == 0 or len(plan["parents"]) != states:
+            raise PlanError("the plan is malformed: states and parents do not line up")
+        for test in plan["tests"]:
+            for call, to in test["steps"]:
+                if not (0 <= call < len(plan["calls"]) and -1 <= to < states):
+                    raise PlanError(f"the plan is malformed: step {[call, to]} is out of range")
+    except (KeyError, TypeError, ValueError) as error:
+        raise PlanError(f"the plan is malformed: {origin}: {error!r}") from error
+    return plan
+
+
 def _read_plan(path: Path) -> dict:
     try:
         plan = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise PlanError(f"cannot read plan {path}: {error}") from error
-    if not isinstance(plan, dict) or plan.get("zin") != PLAN_FORMAT:
-        raise PlanError(f"{path} is not a {PLAN_FORMAT} file")
-    return plan
+    return _validate(plan, path)
 
 
 def load_plan(
     spec: PathLike,
     *,
-    cover: str = "transitions",
+    cover: Optional[str] = None,
     plan: Optional[PathLike] = None,
     bin: Optional[str] = None,
+    max_steps: Optional[int] = None,
+    step_budget: Optional[int] = None,
+    pair_limit: Optional[int] = None,
+    component: Optional[str] = None,
 ) -> dict:
-    """The plan for `spec`.
+    """The plan for `spec`, following the runner contract in docs/plan-format.md.
 
-    Uses `plan` when given, else a sibling ``<name>.plan.json`` that matches
-    the specification, else runs ``zin plan`` (``$ZIN_BIN`` or ``zin`` on PATH).
-    `spec` may itself be a plan file.
+    Uses `plan` when given, else a sibling ``<name>.plan.json``, as long as it
+    is fresh and was derived with every option passed here; otherwise runs
+    ``zin plan`` (`bin`, ``$ZIN_BIN`` or ``zin`` on PATH). Options left out are
+    not compared. `spec` may itself be a plan file.
     """
     spec = Path(spec)
+    options = {
+        key: value
+        for key, value in (
+            ("cover", cover),
+            ("max_steps", max_steps),
+            ("step_budget", step_budget),
+            ("pair_limit", pair_limit),
+            ("component", component),
+        )
+        if value is not None
+    }
+    for key in ("max_steps", "step_budget", "pair_limit"):
+        value = options.get(key)
+        if value is not None and (type(value) is not int or value < 1):
+            raise PlanError(f"{key} must be a positive integer")
     if spec.suffix == ".json":
-        return _read_plan(spec)
-    try:
-        wanted = fingerprint(spec.read_bytes())
-    except OSError as error:
-        raise PlanError(f"cannot read specification {spec}: {error}") from error
-
-    def usable(candidate: dict) -> bool:
-        return candidate.get("fingerprint") == wanted and candidate.get("cover") == cover
-
-    if plan is not None:
-        loaded = _read_plan(Path(plan))
-        if loaded.get("fingerprint") != wanted:
+        if options or plan is not None:
+            raise PlanError("planning options need a .zin specification, not a plan file")
+        loaded = _read_plan(spec)
+        source = spec.with_name(spec.name[: -len(".plan.json")] + ".zin") if spec.name.endswith(".plan.json") else None
+        if source is not None and source.exists() and not _fresh(loaded, source):
             raise PlanError(
-                f"{plan} was derived from a different version of {spec.name}; "
-                f"regenerate it with: zin plan {spec} --out {plan}"
+                f"{spec} was derived from a different version of {source.name}; "
+                f"regenerate it with: zin plan {source} --out {spec}"
             )
         return loaded
+    if not spec.is_file():
+        raise PlanError(f"cannot read specification {spec}")
+    args = ["plan", str(spec)]
+    for key, value in options.items():
+        args += [OPTIONS[key], str(value)]
     sibling = spec.with_suffix(".plan.json")
-    stale = False
-    if sibling.exists():
-        loaded = _read_plan(sibling)
-        if usable(loaded):
+    cached = Path(plan) if plan is not None else sibling
+    regenerate = "zin " + " ".join([*args, "--out", str(cached)])
+    reason = ""
+    if plan is not None or cached.exists():
+        loaded = _read_plan(cached)
+        if not _fresh(loaded, spec):
+            reason = f"{cached} was derived from a different version of {spec.name}"
+        elif not _compatible(loaded, options):
+            reason = f"{cached} was derived with different planning options"
+        else:
             return loaded
-        stale = True
+        if plan is not None:
+            raise PlanError(f"{reason}; regenerate it with: {regenerate}")
     binary = bin or os.environ.get("ZIN_BIN") or shutil.which("zin")
+    prefix = f"{reason}; " if reason else ""
+    missing = (
+        f"{prefix}the zin binary was not found. Install zin-spec, set ZIN_BIN, "
+        f"or regenerate the plan: {regenerate}"
+    )
     if not binary:
-        hint = f"{sibling.name} is out of date and " if stale else ""
-        raise PlanError(
-            f"{hint}the zin binary was not found. Install it (cargo install zin-spec), set ZIN_BIN, "
-            f"or commit a plan: zin plan {spec} --out {sibling}"
-        )
+        raise PlanError(missing)
     try:
-        done = subprocess.run(
-            [binary, "plan", str(spec), "--cover", cover],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
-        )
+        done = subprocess.run([binary, *args], capture_output=True, text=True, encoding="utf-8", check=False)
+    except FileNotFoundError as error:
+        raise PlanError(missing) from error
     except OSError as error:
-        raise PlanError(f"cannot run {binary}: {error}") from error
+        raise PlanError(f"{prefix}cannot run {binary}: {error}") from error
     if done.returncode != 0:
         raise PlanError(f"zin plan {spec} failed:\n{done.stderr.strip()}")
-    derived = json.loads(done.stdout)
-    if derived.get("zin") != PLAN_FORMAT:
-        raise PlanError(f"{binary} produced {derived.get('zin')!r}, but this package reads {PLAN_FORMAT}")
-    return derived
+    try:
+        derived = json.loads(done.stdout)
+    except ValueError as error:
+        raise PlanError(f"{binary} did not print a plan: {error}") from error
+    return _validate(derived, binary)
 
 
 def _plain(value: Any) -> Any:
@@ -195,7 +287,7 @@ class _Runner:
         call = self.plan["calls"][step[0]]["text"]
         return call if step[1] >= 0 else f"reject {call}"
 
-    def compare(self, adapter: Any, state: int, after: str) -> Optional[str]:
+    def compare(self, adapter: Any, state: int, after: str, progress: Optional[dict] = None) -> Optional[str]:
         observe = getattr(adapter, "observe", None)
         if observe is None:
             return None
@@ -208,6 +300,8 @@ class _Runner:
         for field, actual in observed.items():
             if field not in expected:
                 return f"observe() returned {field!r}, which is not a state field of the specification"
+            if progress is not None:
+                progress["fields"].add(field)
             actual = _plain(actual)
             if not _same(expected[field], actual):
                 return (
@@ -231,14 +325,19 @@ class _Runner:
         except rejects:
             return False
 
-    def run(self, adapter: Any, steps: list) -> Optional[tuple]:
-        """The (step number, message) of the first divergence, if any."""
-        message = self.compare(adapter, 0, "before any action")
+    def run(self, adapter: Any, steps: list, progress: Optional[dict] = None) -> Optional[tuple]:
+        """The (step number, message) of the first divergence, if any.
+
+        `progress` counts the steps attempted and matched, and the fields observed.
+        """
+        message = self.compare(adapter, 0, "before any action", progress)
         if message:
             return 0, message
         state = 0
         for number, (call_id, to) in enumerate(steps, start=1):
             call = self.plan["calls"][call_id]
+            if progress is not None:
+                progress["attempted"] = number
             try:
                 accepted = self.perform(adapter, call)
             except Exception as error:
@@ -249,9 +348,9 @@ class _Runner:
                 raise
             if to >= 0 and accepted:
                 state = to
-                message = self.compare(adapter, state, f"after {call['text']}")
+                message = self.compare(adapter, state, f"after {call['text']}", progress)
             elif to < 0 and not accepted:
-                message = self.compare(adapter, state, f"after rejecting {call['text']}")
+                message = self.compare(adapter, state, f"after rejecting {call['text']}", progress)
             elif accepted:
                 message = (
                     f"the implementation accepted {call['text']}, but the specification rejects it"
@@ -262,6 +361,8 @@ class _Runner:
                 )
             if message:
                 return number, message
+            if progress is not None:
+                progress["matched"] = number
         return None
 
     def listing(self, steps: list) -> str:
@@ -286,29 +387,48 @@ class _Runner:
         path.reverse()
         return path + [steps[failed - 1]]
 
-    def check(self, test: dict, factory: Callable[[], Any]) -> None:
+    def replay(self, factory: Callable[[], Any], steps: list, progress: Optional[dict] = None) -> Optional[tuple]:
+        """Runs `steps` on a fresh adapter, then tears it down."""
+        adapter = factory()
+        try:
+            return self.run(adapter, steps, progress)
+        finally:
+            teardown = getattr(adapter, "teardown", None)
+            if teardown is not None:
+                teardown()
+
+    def check(self, test: dict, factory: Callable[[], Any], progress: Optional[dict] = None) -> None:
         steps = test["steps"]
-        found = self.run(factory(), steps)
+        found = self.replay(factory, steps, progress)
         if found is None:
             return
         failed, message = found
         taken = steps[:failed]
+        digest = self.plan.get("fingerprint", "")
+        scenario = 'scenario "Replay divergence"\n' + (
+            "\n".join("  " + self.text(step) for step in taken) or "  expect true"
+        )
         report = (
             f"{self.plan['system']}: implementation diverges from the specification "
             f"in test \"{test['name']}\" at step {failed}\n{message}\nsteps taken:\n{self.listing(taken)}"
+            f"\nspec fingerprint: {digest}\n{scenario}"
         )
         if failed > 0:
             short = self.shortest(steps, failed)
             if len(short) < len(taken):
-                again = self.run(factory(), short)
-                if again:
-                    report += "\nshortest reproduction:\n" + self.listing(short[: again[0]])
+                try:
+                    again = self.replay(factory, short)
+                except Exception as error:  # noqa: BLE001 - the original mismatch is the report
+                    report += f"\nthe shorter replay raised: {error}"
                 else:
-                    report += (
-                        "\nthe shortest path to the same specification state does not reproduce "
-                        "this: the implementation keeps state the specification does not model"
-                    )
-        raise Divergence(report)
+                    if again == (len(short), message):
+                        report += "\nshortest reproduction:\n" + self.listing(short)
+                    else:
+                        report += (
+                            "\nthe shortest path to the same specification state does not reproduce "
+                            "the original mismatch"
+                        )
+        raise Divergence(report, digest, scenario)
 
 
 def run_test(plan: dict, test: dict, factory: Callable[[], Any]) -> None:
@@ -326,16 +446,16 @@ def check(
     spec: PathLike,
     factory: Callable[[], Any],
     *,
-    cover: str = "transitions",
     plan: Optional[PathLike] = None,
+    **options: Any,
 ) -> dict:
     """Runs every plan test; raises `Divergence` on the first failure.
 
-    Relative paths are resolved against the calling file. Returns the plan's
-    summary.
+    `options` are the planning options of `load_plan`. Relative paths are
+    resolved against the calling file. Returns the plan's summary.
     """
     base = _caller_directory(2)
-    loaded = load_plan(base / spec, cover=cover, plan=None if plan is None else base / plan)
+    loaded = load_plan(base / spec, plan=None if plan is None else base / plan, **options)
     runner = _Runner(loaded)
     for test in loaded["tests"]:
         runner.check(test, factory)
@@ -350,14 +470,15 @@ def _method_name(index: int, name: str, width: int) -> str:
 def verify(
     spec: PathLike,
     *,
-    cover: str = "transitions",
     plan: Optional[PathLike] = None,
+    **options: Any,
 ) -> Callable[[type], type]:
     """Class decorator: turn an adapter class into a `unittest.TestCase`.
 
     The adapter class has one method per action (arguments are passed by
     parameter name), and may define `setup()`, `teardown()`, `observe()` and
-    `rejects`. Relative paths are resolved against the file defining the class.
+    `rejects`. `options` are the planning options of `load_plan`. Relative
+    paths are resolved against the file defining the class.
     """
 
     def decorate(adapter_class: type) -> type:
@@ -365,7 +486,7 @@ def verify(
             base = Path(inspect.getfile(adapter_class)).resolve().parent
         except (TypeError, OSError):
             base = Path.cwd()
-        loaded = load_plan(base / spec, cover=cover, plan=None if plan is None else base / plan)
+        loaded = load_plan(base / spec, plan=None if plan is None else base / plan, **options)
         runner = _Runner(loaded)
         namespace: dict = {
             "__module__": adapter_class.__module__,
@@ -378,24 +499,17 @@ def verify(
 
         def make(test: dict) -> Callable[[unittest.TestCase], None]:
             def method(self: unittest.TestCase) -> None:
-                made = []
-
                 def factory() -> Any:
                     adapter = adapter_class()
-                    made.append(adapter)
                     setup = getattr(adapter, "setup", None)
                     if setup is not None:
                         setup()
                     return adapter
 
-                try:
-                    runner.check(test, factory)
-                finally:
-                    for adapter in made:
-                        teardown = getattr(adapter, "teardown", None)
-                        if teardown is not None:
-                            teardown()
+                # The pytest plugin sets this to record replay progress.
+                runner.check(test, factory, getattr(self, "_zin_progress", None))
 
+            method._zin_plan_test = test
             method.__doc__ = f"{loaded['system']}: {test['name']}"
             return method
 
