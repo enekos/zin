@@ -45,7 +45,7 @@ export interface PlanOptions {
   plan?: string | URL;
   /** Path of the `zin` binary; defaults to `$ZIN_BIN`, then `zin` on PATH. */
   bin?: string;
-  /** Step limit for generated tours, passed to `zin plan --max-steps`. A committed plan keeps the limit it was derived with. */
+  /** Soft target for generated tour length, passed to `zin plan --max-steps`. A committed plan keeps the limit it was derived with. */
   maxSteps?: number;
 }
 

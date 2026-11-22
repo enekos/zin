@@ -15,6 +15,8 @@ Written by `zin plan`. Compact JSON, one line.
   "system": "Delivery",
   "fingerprint": "aa144eb30ea314b8",
   "cover": "transitions",
+  "max_steps": 200,
+  "step_budget": 2000000,
   "fields": [
     {"name": "paid", "type": {"kind": "boolean"}},
     {"name": "stage", "type": {"kind": "enum", "values": ["received", "packed"]}}
@@ -30,7 +32,7 @@ Written by `zin plan`. Compact JSON, one line.
     {"name": "scenario: A paid order leaves the building", "kind": "scenario", "steps": [[0, 1]]},
     {"name": "tour 1", "kind": "tour", "steps": [[0, 1], [0, -1]]}
   ],
-  "summary": {"states": 6, "transitions": 6, "tests": 6, "accepted_steps": 13, "rejected_steps": 18}
+  "summary": {"states": 6, "transitions": 6, "refusals": 6, "tests": 6, "accepted_steps": 13, "rejected_steps": 18}
 }
 ```
 
@@ -38,6 +40,8 @@ Written by `zin plan`. Compact JSON, one line.
 | --- | --- |
 | `fingerprint` | FNV-1a 64 of the specification file's bytes, 16 lowercase hex digits. A binding compares it with the specification on disk to detect a stale plan. |
 | `cover` | the coverage goal the plan was derived for |
+| `max_steps`, `step_budget` | the soft tour target and the hard total step ceiling the plan was derived with. Absent from plans written before 0.3. |
+| `summary` | full-model `states`, `transitions` and `refusals`, plus the emitted `tests`, `accepted_steps` and `rejected_steps` |
 | `fields` | the state variables. Types: `integer` (`min`, `max`), `boolean`, `enum` (`values`), `map` (`keys` as strings, `value` type) |
 | `actions` | actions and their parameters, in declaration order |
 | `states` | the model states the plan refers to, as objects. Integers are JSON numbers, booleans JSON booleans, enum values strings, maps objects keyed by the key's text. State `0` is the initial state. Only states the plan uses are listed. |

@@ -204,12 +204,21 @@ So you choose per project:
 | Cover | The plan contains |
 | --- | --- |
 | `transitions` (default) | every transition, and every rejected call in every state |
-| `states` | a visit to every state, and every rejected call in every state |
+| `states` | a visit to every reachable state |
 | `actions` | every action accepted once and, where possible, rejected once |
 | `scenarios` | only the scenarios you wrote |
 
-Tours are capped at `--max-steps` steps (default 200) so a failure never
-leaves you with a 10,000-step test; more, shorter tours cost more setup.
+`--max-steps` (default 200) is a soft target for tour length. It does not
+count the shortest setup to the state a tour has reached, so a deep model is
+covered in one long tour instead of restarting from the initial state for
+every few calls. A tour ends early only when restarting is cheaper than
+walking on.
+
+`--step-budget` is a hard ceiling on every emitted step: authored scenarios,
+`sometimes` witnesses, routes between obligations and refusals (default and
+maximum 2,000,000). A plan that cannot fit exits with a limit error instead
+of silently covering less. `scenarios` cover runs only authored scenarios, so
+it skips generated witnesses too.
 
 The number of steps is roughly `states × calls`. When that is too many for a
 slow implementation (a database, a browser), shrink the model's ranges for

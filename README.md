@@ -236,7 +236,7 @@ The bindings ship a `Recorder` that writes this format.
 ```text
 zin check <spec>... [--format json] [--symmetry on|off]
                                       prove every property over every reachable state
-zin plan <spec> [--out FILE] [--cover transitions|states|actions|scenarios] [--max-steps N]
+zin plan <spec> [--out FILE] [--cover transitions|states|actions|scenarios] [--max-steps N] [--step-budget N]
 zin trace <spec> <events.jsonl|->     check a recorded execution
 zin audit <spec>                      list specification changes nothing notices
 zin init <framework> <spec>           print a conformance test skeleton
