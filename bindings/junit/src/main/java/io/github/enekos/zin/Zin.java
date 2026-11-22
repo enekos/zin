@@ -15,6 +15,7 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -38,11 +39,24 @@ public final class Zin {
     }
 
     public static Plan plan(Path spec, String cover) throws IOException, InterruptedException {
+        return plan(spec, cover, Map.of());
+    }
+
+    /** Additional options use CLI spellings, such as "pair-limit" or "component". */
+    public static Plan plan(Path spec, String cover, Map<String, String> options) throws IOException, InterruptedException {
+        var command = new ArrayList<>(List.of(System.getenv().getOrDefault("ZIN_BIN", "zin"),
+                "plan", spec.toString(), "--cover", cover));
+        var supported = Set.of("max-steps", "step-budget", "pair-limit", "component");
+        for (var option : options.entrySet()) {
+            if (!supported.contains(option.getKey())) throw new IllegalArgumentException("unknown plan option " + option.getKey());
+            command.add("--" + option.getKey());
+            command.add(option.getValue());
+        }
         Path output = Files.createTempFile("zin-junit-", ".json");
         try {
-            Process process = new ProcessBuilder(System.getenv().getOrDefault("ZIN_BIN", "zin"),
-                    "plan", spec.toString(), "--cover", cover, "--out", output.toString())
-                    .redirectErrorStream(true).start();
+            command.add("--out");
+            command.add(output.toString());
+            Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
             try {
                 String diagnostic = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
                 if (process.waitFor() != 0) throw new IOException("zin plan failed:\n" + diagnostic);

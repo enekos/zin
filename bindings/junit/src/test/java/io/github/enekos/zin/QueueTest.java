@@ -122,6 +122,9 @@ class QueueTest {
 
     @Test @EnabledIfEnvironmentVariable(named = "ZIN_BIN", matches = ".+")
     void derivesAndRunsCurrentPlan() throws Throwable {
-        for (var test : Zin.plan(SPEC).tests(() -> new Queue(2)).toList()) test.getExecutable().execute();
+        var plan = Zin.plan(SPEC, "pairs", Map.of("pair-limit", "3"));
+        var selected = plan.tests(() -> new Queue(2)).toList();
+        assertFalse(selected.isEmpty());
+        for (var test : selected) test.getExecutable().execute();
     }
 }
