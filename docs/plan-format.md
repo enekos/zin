@@ -14,6 +14,8 @@ Written by `zin plan`. Compact JSON, one line.
   "zin": "plan/1",
   "system": "Delivery",
   "fingerprint": "aa144eb30ea314b8",
+  "sources": {},
+  "component": null,
   "cover": "transitions",
   "max_steps": 200,
   "step_budget": 2000000,
@@ -39,7 +41,9 @@ Written by `zin plan`. Compact JSON, one line.
 
 | Key | Meaning |
 | --- | --- |
-| `fingerprint` | FNV-1a 64 of the specification file's bytes, 16 lowercase hex digits. A binding compares it with the specification on disk to detect a stale plan. |
+| `fingerprint` | FNV-1a 64 of the specification file's bytes, 16 lowercase hex digits. A binding compares it with the specification on disk to detect a stale plan. For a specification with `include` directives it covers every file: FNV-1a 64 of the entry file's fingerprint and a newline, followed by `path`, a tab, the file's fingerprint and a newline for each entry of `sources` in order. |
+| `sources` | included files, transitively, by path relative to the entry file's directory with `/` separators, each with the FNV-1a 64 of its bytes. Empty for a single file; may be absent in plans from older versions. |
+| `component` | the composition block the plan tests in isolation (`zin plan --component`), or `null` for the whole system. May be absent in plans from older versions. |
 | `cover` | the coverage goal the plan was derived for: `transitions`, `states`, `actions`, `scenarios` or `pairs` |
 | `max_steps`, `step_budget`, `pair_limit` | the soft tour target, the hard total step ceiling and the pair sample size (null unless a sampled `pairs` plan) the plan was derived with. Absent from plans written before 0.3. |
 | `summary` | full-model `states`, `transitions` and `refusals`, plus the emitted `tests`, `accepted_steps` and `rejected_steps`. `eligible_pairs` and `covered_pairs` are numbers for `pairs` plans and null otherwise. |
@@ -74,10 +78,13 @@ Written by `zin check --format json`.
 ```json
 {"zin": "check/1", "results": [
   {"file": "job.zin", "ok": true, "system": "Background job", "states": 10, "transitions": 9,
-   "up_to_symmetry": false, "terminal_states": 4, "properties": [{"property": "eventually ...", "line": 22}],
+   "up_to_symmetry": false, "terminal_states": 4, "properties": [{"property": "eventually ...", "line": 22,
+     "span": {"file": "job.zin", "line": 22, "column": 1, "end_column": 41}}],
    "scenarios": ["Third time lucky"], "notes": []},
   {"file": "stuck.zin", "ok": false, "error": {
-     "kind": "violation", "line": 13, "message": "...",
+     "kind": "violation", "code": "violation", "line": 13,
+     "span": {"file": "stuck.zin", "line": 13, "column": 1, "end_column": 30}, "related": null,
+     "message": "...",
      "trace": {"initial": {"status": "queued"},
                "steps": [{"call": "start", "state": {"status": "running"}}],
                "loop_from": 0}}}
@@ -90,6 +97,19 @@ declared range or divides by zero), `violation`, `limit` or `usage`.
 that index on repeat forever. `up_to_symmetry` is `true` when `states` and
 `transitions` count representatives of interchangeable values (an added
 field; readers of `check/1` should ignore fields they do not know).
+
+`code` is a stable identifier for the diagnostic: `name.unknown`,
+`type.mismatch`, `component.field_conflict`, `component.type_conflict`,
+`component.parameter_conflict`, `component.duplicate_action` and
+`component.foreign_field`, or the `kind` itself (`model.fault` for a model
+fault) when no finer code applies. New codes may be added. `span` is the token
+the parser recorded for the problem, or the whole statement when no token
+applies; `related` is a second location, such as the first of two conflicting
+declarations. Both are `null` when the error has no location. A span's `file`
+is the file that holds the text (empty for standard input); `line` is a line of
+that file, and so is the top-level `line`. Columns count Unicode scalar values
+from one and `end_column` is exclusive. Property `line` and `span` follow the
+same rules.
 
 ## Trace events
 

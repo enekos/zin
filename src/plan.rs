@@ -721,6 +721,23 @@ impl Plan {
             ("zin", Json::str(PLAN_FORMAT)),
             ("system", Json::str(model.name.clone())),
             ("fingerprint", Json::str(model.fingerprint.clone())),
+            (
+                "sources",
+                Json::Object(
+                    model
+                        .sources
+                        .iter()
+                        .map(|(path, hash)| (path.clone(), Json::str(hash.clone())))
+                        .collect(),
+                ),
+            ),
+            (
+                "component",
+                model
+                    .component
+                    .as_ref()
+                    .map_or(Json::Null, |name| Json::str(name.clone())),
+            ),
             ("cover", Json::str(self.cover.name())),
             ("max_steps", Json::count(self.max_steps)),
             ("step_budget", Json::count(self.step_budget)),

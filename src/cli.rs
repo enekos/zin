@@ -8,11 +8,11 @@ use crate::plan::{Cover, Plan, PlanOptions, state_json};
 use crate::report::render_markdown;
 use crate::scaffold::{Framework, scaffold};
 use crate::trace::check_trace;
-use crate::{Error, ErrorKind, Result, parse};
+use crate::{Error, ErrorKind, Result, SourceSpan, Spec, parse, parse_file};
 use std::fmt::Write as _;
 use std::io::Read as _;
 
-const MAX_SPEC_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_SPEC_BYTES: u64 = crate::source::MAX_SPEC_BYTES as u64;
 const MAX_TRACE_BYTES: u64 = 1024 * 1024 * 1024;
 
 pub const USAGE: &str = "\
@@ -22,7 +22,9 @@ usage:
   zin check <spec>... [--format json] [--symmetry on|off]
                                         prove every property over every reachable state
   zin plan <spec> [--out FILE] [--cover transitions|states|actions|scenarios|pairs] [--max-steps N] [--step-budget N] [--pair-limit N]
-                                        derive the conformance test plan (JSON)
+           [--component NAME]
+                                        derive the conformance test plan (JSON);
+                                        --component NAME tests one block of a composition
   zin trace <spec> <events.jsonl|->     check a recorded execution against the specification
   zin audit <spec>                      mutate the specification; list changes nothing notices
   zin init <framework> <spec>           print a conformance test skeleton
@@ -106,11 +108,25 @@ fn read(path: &str, limit: u64) -> Result<String> {
 }
 
 fn load(path: &str) -> Result<Verification> {
-    verify(&parse(&read(path, MAX_SPEC_BYTES)?)?)
+    verify(&load_spec(path)?)
 }
 
-fn load_with(path: &str, options: Options) -> Result<Verification> {
-    verify_with(&parse(&read(path, MAX_SPEC_BYTES)?)?, options)
+/// A file with its includes, or a self-contained specification on standard input.
+fn load_spec(path: &str) -> Result<Spec> {
+    if path == "-" {
+        parse(&read(path, MAX_SPEC_BYTES)?)
+    } else {
+        parse_file(path)
+    }
+}
+
+fn span_json(span: &SourceSpan) -> Json {
+    Json::object([
+        ("file", Json::str(&span.file)),
+        ("line", Json::count(span.line)),
+        ("column", Json::count(span.column)),
+        ("end_column", Json::count(span.end_column)),
+    ])
 }
 
 fn error_json(error: &Error) -> Json {
@@ -137,13 +153,19 @@ fn error_json(error: &Error) -> Json {
     });
     Json::object([
         ("kind", Json::str(error.kind.label())),
+        ("code", Json::str(error.code())),
         ("line", error.line.map_or(Json::Null, Json::count)),
+        ("span", error.source_span().map_or(Json::Null, span_json)),
+        (
+            "related",
+            error.related_span().map_or(Json::Null, span_json),
+        ),
         ("message", Json::str(error.message.clone())),
         ("trace", trace),
     ])
 }
 
-fn check_json(path: &str, result: &Result<Verification>) -> Json {
+fn check_json(path: &str, spec: Option<&Spec>, result: &Result<Verification>) -> Json {
     match result {
         Ok(verification) => Json::object([
             ("file", Json::str(path)),
@@ -163,9 +185,14 @@ fn check_json(path: &str, result: &Result<Verification>) -> Json {
                         .properties
                         .iter()
                         .map(|property| {
+                            let span = spec.and_then(|spec| spec.statement_span(property.line));
                             Json::object([
                                 ("property", Json::str(property.text.clone())),
-                                ("line", Json::count(property.line)),
+                                (
+                                    "line",
+                                    Json::count(span.as_ref().map_or(property.line, |s| s.line)),
+                                ),
+                                ("span", span.as_ref().map_or(Json::Null, span_json)),
                             ])
                         })
                         .collect(),
@@ -222,12 +249,16 @@ fn check(args: &[String]) -> Result<Output> {
     };
     let mut results = Vec::new();
     for path in &arguments.positional {
-        let result = load_with(path, options);
+        let spec = load_spec(path);
+        let result = spec
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|spec| verify_with(spec, options));
         if let Err(error) = &result {
             output.code = output.code.max(error.kind.exit_code());
         }
         if json {
-            results.push(check_json(path, &result));
+            results.push(check_json(path, spec.as_ref().ok(), &result));
             continue;
         }
         match result {
@@ -236,6 +267,13 @@ fn check(args: &[String]) -> Result<Output> {
                 for note in &verification.notes {
                     let _ = writeln!(output.stdout, "  note: {note}");
                 }
+            }
+            Err(error)
+                if error
+                    .source_span()
+                    .is_some_and(|span| !span.file.is_empty()) =>
+            {
+                let _ = writeln!(output.stderr, "{}: {error}", error.kind.label());
             }
             Err(error) => {
                 let _ = writeln!(output.stderr, "{path}: {}: {error}", error.kind.label());
@@ -259,7 +297,14 @@ fn check(args: &[String]) -> Result<Output> {
 fn plan(args: &[String]) -> Result<Output> {
     let arguments = Arguments::parse(
         args,
-        &["out", "cover", "max-steps", "step-budget", "pair-limit"],
+        &[
+            "out",
+            "cover",
+            "max-steps",
+            "step-budget",
+            "pair-limit",
+            "component",
+        ],
     )?;
     let mut options = PlanOptions::default();
     if let Some(cover) = arguments.option("cover") {
@@ -285,7 +330,11 @@ fn plan(args: &[String]) -> Result<Output> {
         };
         options.cover = Cover::Pairs { limit: Some(limit) };
     }
-    let verification = load(arguments.one("specification file")?)?;
+    let spec = load_spec(arguments.one("specification file")?)?;
+    let verification = match arguments.option("component") {
+        Some(name) => crate::verify_component(&spec, name)?,
+        None => verify(&spec)?,
+    };
     let plan = Plan::build(&verification, &options)?;
     let mut text = plan.to_json(&verification).to_compact();
     text.push('\n');
@@ -329,7 +378,7 @@ fn trace(args: &[String]) -> Result<Output> {
 fn run_audit(args: &[String]) -> Result<Output> {
     let arguments = Arguments::parse(args, &[])?;
     let path = arguments.one("specification file")?;
-    let audit = audit(&parse(&read(path, MAX_SPEC_BYTES)?)?)?;
+    let audit = audit(&load_spec(path)?)?;
     let mut stdout = String::new();
     let survivors = audit.survivors();
     for mutant in &audit.mutants {

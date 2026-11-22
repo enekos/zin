@@ -100,10 +100,11 @@ fn variants(expr: &Expr) -> Vec<(String, Expr)> {
                 )
             })
             .collect(),
-        Expr::Literal(_) | Expr::Name(_) => Vec::new(),
-        Expr::Index { map, key } => boxed(variants(key), |key| Expr::Index {
+        Expr::Literal(_) | Expr::Name { .. } => Vec::new(),
+        Expr::Index { map, key, span } => boxed(variants(key), |key| Expr::Index {
             map: map.clone(),
             key,
+            span: *span,
         }),
         Expr::Unary { operator, value } => boxed(variants(value), |value| Expr::Unary {
             operator: *operator,

@@ -129,6 +129,19 @@ Expressions are statically typed. Integers, booleans and each enum are
 distinct: `balance is open` is an error, reported before anything runs, even
 in actions that can never be enabled.
 
+Evaluation is left to right and short-circuits: `and`, `or` and `implies`
+skip their right side once the left decides the result, `if` evaluates one
+branch, `some` stops at its first witness and `every` at its first
+counterexample, in the type's declared order. A division by zero, an
+arithmetic overflow or a key outside a map's key type in a part that is
+evaluated is a model fault; in a part that is skipped it is not. So
+`load of w is 0 or 2 / load of w is 1` is safe where `2 / load of w is 1`
+alone faults.
+
+[Language cases](language-cases.md) pairs each of these rules with a passing
+specification and a one-line change that breaks it; the test suite checks
+both versions.
+
 ## Actions
 
 ```zin
@@ -312,7 +325,88 @@ always waiting implies job is not 0
 - Types with the same name must be declared the same way in every block that
   declares them. The largest `explore at most` wins.
 
-Plans, traces and tests treat a composition as one system under test.
+Plans, traces and tests treat a composition as one system under test, unless
+you test one component in isolation.
+
+### Testing one component
+
+```sh
+zin plan examples/request-reply.zin --component Client --out client.plan.json
+```
+
+Zin checks the whole composition first, then builds a plan for the named
+block alone. Its adapter implements only that block's actions and observes
+only its fields. The other blocks become a controllable environment that may
+offer a shared action whenever the component's own `requires` allow it, so the
+plan can exercise local behavior that a particular implementation of the
+other components never requests: for the client, the server-only `work`
+disappears and a `reply` can follow a `request` at once.
+
+Whole-system scenarios seed the plan. Each keeps the component's calls and its
+own refusals; a call only the environment takes or refuses never reaches the
+adapter. Properties and `terminal when` describe the whole and are checked
+there, not on the component. The plan's `component` field names the block
+(`null` for a whole system). In Rust, pass `verify_component(&spec, "Client")`
+to `Plan::build`.
+
+## Source files
+
+A file may begin with `include` directives, then continue with complete
+`system` blocks. An entry file may hold only includes.
+
+```zin
+include "parts/client.zin"
+include "parts/server.zin"
+
+system "Request and reply"
+always pending is at most 1
+```
+
+Inclusion is textual, and these are deliberate choices:
+
+- **Included text comes first.** Each file's included files, in directive
+  order, precede its own blocks. The combined text is checked exactly as if it
+  were written in one file, so a composition behaves the same split or whole.
+- **Each file is read once.** A file included from several places, under any
+  spelling of the same relative path, contributes its blocks once.
+- **One flat namespace.** Included files share types, fields and actions by
+  name, with the composition rules above. There are no imports, qualified
+  names or private declarations. Two blocks that declare the same field, or a
+  type or shared parameter differently, are an error that reports both
+  declarations.
+- **Paths are relative** to the including file, use `/` separators and stay
+  within the entry file's directory. A cycle is an error at the include that
+  closes it. At most 1,024 files nested 64 levels deep, 4 MiB in total.
+
+`zin` commands read files this way; standard input (`-`) holds one
+self-contained specification. In Rust, `parse_file(path)` loads a file with its
+includes and `parse(text)` parses self-contained text, where `include` is an
+error. A plan records each included file's fingerprint under `sources`, and
+its `fingerprint` covers every file, so editing any of them makes a saved plan
+stale.
+
+## Diagnostics
+
+Every error names the file, line and column it refers to:
+
+```console
+$ zin check entry.zin
+spec: parts/client.zin:7:21: unknown name pendng; declare it or use a quoted enum value
+```
+
+The parser records where each name, condition, assignment and declaration
+starts and ends, so a diagnostic points at the offending token, not merely its
+line, even when the same name appears elsewhere on that line. An error that
+concerns a whole statement covers the statement. A conflict between two
+declarations also gives the first one.
+
+`zin check --format json` adds a stable `code` (such as `name.unknown`,
+`type.mismatch` or `component.field_conflict`), a `span` and a `related` span;
+see [wire formats](plan-format.md#check1). In Rust, `Error::code`,
+`Error::source_span` and `Error::related_span` return the same information.
+Once an error leaves `parse`, `parse_file`, `Model::compile` or `verify`, its
+`line` is a line of the file in `source_span`. AST nodes carry `Span`s in the
+parser's coordinates; `Spec::source_span` resolves one to its file.
 
 ## Limits
 
