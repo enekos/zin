@@ -1,0 +1,14 @@
+name = "Zin"
+grammar = "zin"
+path_suffixes = ["zin"]
+line_comments = ["# "]
+tab_size = 2
+hard_tabs = false
+code_fence_block_name = "zin"
+autoclose_before = ",)]"
+increase_indent_pattern = "^(?:types|state|initially|always|never|sometimes|eventually|action\\b.*|fair\\s+action\\b.*|strongly\\s+fair\\s+action\\b.*|scenario\\b.*)\\s*(?:#.*)?$"
+brackets = [
+  { start = "(", end = ")", close = true, newline = false },
+  { start = "[", end = "]", close = true, newline = false },
+  { start = "\"", end = "\"", close = true, newline = false, not_in = ["comment", "string"] },
+]

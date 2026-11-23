@@ -3,6 +3,28 @@ on:
   push:
   pull_request:
 jobs:
+  zed-extension:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: editors/zed/tree-sitter
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: editors/zed/tree-sitter/package-lock.json
+      - run: npm ci
+      - run: npm run generate
+      - run: git diff --exit-code -- src
+      - run: npm test
+      - run: npm run test:examples
+      - name: Validate Zed queries
+        run: |
+          npx tree-sitter query ../languages/zin/highlights.scm ../../../examples/account.zin > /dev/null
+          npx tree-sitter query ../languages/zin/brackets.scm ../../../examples/account.zin > /dev/null
+          npx tree-sitter query ../languages/zin/outline.scm ../../../examples/account.zin > /dev/null
   minimum-rust:
     runs-on: ubuntu-latest
     steps:

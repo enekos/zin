@@ -272,6 +272,7 @@ a committed `<spec>.plan.json` so test machines need no Rust toolchain.
 - [Checking a web interface](docs/browser.md): Playwright, clicks, held requests
 - [Plan format](docs/plan-format.md): the JSON contract for writing a binding
 - [Design](docs/design.md): what is proven, what is not, and why it is built this way
+- [Zed extension](editors/zed/README.md): Tree-sitter syntax highlighting for `.zin` files
 
 ## License
 
