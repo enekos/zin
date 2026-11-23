@@ -1,0 +1,12 @@
+id = "zin"
+name = "Zin"
+version = "0.1.0"
+schema_version = 1
+authors = ["Eneko Sarasola"]
+description = "Syntax highlighting and language support for Zin specifications"
+repository = "https://github.com/enekos/zin"
+
+[grammars.zin]
+repository = "https://github.com/enekos/zin"
+rev = "44d4142da4621b2177bec4eca02c01feefad7108"
+path = "editors/zed/tree-sitter"

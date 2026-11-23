@@ -1,0 +1,87 @@
+================================================================================
+System and declarations
+================================================================================
+
+include "parts/account.zin"
+system "Bank account"
+explore at most 1000 states
+
+types
+  interchangeable worker is one of alice, bob or carol
+  phase is one of idle, waiting, critical
+
+state
+  balance is an integer from 0 to 20
+  open is a boolean
+  draft is a quantity
+  at is a map from worker to phase
+
+initially
+  balance is 0
+  at of every worker is idle
+  at of alice is waiting
+
+---
+
+(source_file
+  (include_declaration
+    (string
+      (string_content)))
+  (system_declaration
+    (string
+      (string_content)))
+  (explore_declaration
+    (number))
+  (section)
+  (declaration
+    (identifier)
+    (enum_type
+      (enum_value
+        (identifier))
+      (enum_value
+        (identifier))
+      (enum_value
+        (identifier))))
+  (declaration
+    (identifier)
+    (enum_type
+      (enum_value
+        (identifier))
+      (enum_value
+        (identifier))
+      (enum_value
+        (identifier))))
+  (section)
+  (declaration
+    (identifier)
+    (integer_type
+      (number)
+      (number)))
+  (declaration
+    (identifier)
+    (boolean_type))
+  (declaration
+    (identifier)
+    (prefixed_named_type
+      (identifier)))
+  (declaration
+    (identifier)
+    (map_type
+      (named_type
+        (identifier))
+      (named_type
+        (identifier))))
+  (section)
+  (declaration
+    (identifier)
+    (number))
+  (declaration
+    (map_access
+      (identifier)
+      (identifier))
+    (identifier))
+  (declaration
+    (map_access
+      (identifier)
+      (identifier))
+    (identifier)))
