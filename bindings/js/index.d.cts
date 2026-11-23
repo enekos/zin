@@ -18,7 +18,7 @@ export type Factory = () => Awaitable<Adapter>;
 
 export interface PlanTest {
   name: string;
-  kind: "scenario" | "witness" | "tour";
+  kind: "scenario" | "witness" | "tour" | "identify";
   /** `[call, to]`; `to` is -1 when the call must be rejected. */
   steps: [number, number][];
 }

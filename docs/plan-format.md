@@ -46,13 +46,14 @@ Written by `zin plan`. Compact JSON, one line.
 | `component` | the composition block the plan tests in isolation (`zin plan --component`), or `null` for the whole system. May be absent in plans from older versions. |
 | `cover` | the coverage goal the plan was derived for: `transitions`, `states`, `actions`, `scenarios` or `pairs` |
 | `max_steps`, `step_budget`, `pair_limit` | the soft tour target, the hard total step ceiling and the pair sample size (null unless a sampled `pairs` plan) the plan was derived with. Absent from plans written before 0.3. |
+| `observe` | only in plans from `zin plan --observe`: the fields the adapter's `observe` is taken to return, in declaration order (empty for an adapter without `observe`). The plan's `identify` tests rule out states that look alike under these fields. |
 | `summary` | full-model `states`, `transitions` and `refusals`, plus the emitted `tests`, `accepted_steps` and `rejected_steps`. `eligible_pairs` and `covered_pairs` are numbers for `pairs` plans and null otherwise. |
 | `fields` | the state variables. Types: `integer` (`min`, `max`), `boolean`, `enum` (`values`), `map` (`keys` as strings, `value` type) |
 | `actions` | actions and their parameters, in declaration order |
 | `states` | the model states the plan refers to, as objects. Integers are JSON numbers, booleans JSON booleans, enum values strings, maps objects keyed by the key's text. State `0` is the initial state. Only states the plan uses are listed. |
 | `parents` | for each state, `[parent state, call]` on a shortest path from the initial state; `null` for state 0. Used to build the shortest reproduction. |
 | `calls` | every call the plan uses: action name, positional `args` (same order as the action's `params`), and display `text` |
-| `tests` | each test starts from a fresh implementation in the initial state. A step is `[call, to]`: perform `calls[call]`; if `to >= 0` it must be accepted and the model moves to `states[to]`; if `to` is `-1` it must be rejected and the model state is unchanged. |
+| `tests` | each test starts from a fresh implementation in the initial state. A step is `[call, to]`: perform `calls[call]`; if `to >= 0` it must be accepted and the model moves to `states[to]`; if `to` is `-1` it must be rejected and the model state is unchanged. `kind` is `scenario`, `witness`, `tour` or `identify` and does not change how a test is run. |
 
 All integers fit in a JavaScript safe integer; `zin plan` refuses a
 specification whose values do not.

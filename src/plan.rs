@@ -3,9 +3,11 @@ use crate::check::{ScenarioEvent, Verification};
 use crate::explore::Graph;
 use crate::json::Json;
 use crate::model::{Domain, FieldType, Model, at, index32};
+use crate::observe::Classes;
 use crate::{Error, ErrorKind, Result};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 
+mod identify;
 mod pairs;
 
 pub const PLAN_FORMAT: &str = "plan/1";
@@ -111,6 +113,8 @@ pub enum TestKind {
     Scenario,
     Witness,
     Tour,
+    /// Confirms which state a transition reached; see [`Plan::build_observing`].
+    Identify,
 }
 
 impl TestKind {
@@ -120,6 +124,7 @@ impl TestKind {
             Self::Scenario => "scenario",
             Self::Witness => "witness",
             Self::Tour => "tour",
+            Self::Identify => "identify",
         }
     }
 }
@@ -150,6 +155,23 @@ pub enum Coverage {
     },
 }
 
+/// What a plan built by [`Plan::build_observing`] assumed and added.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Identification {
+    /// The fields the adapter's `observe` is taken to return, in declaration order.
+    pub fields: Vec<String>,
+    /// Distinct transitions the cover's tests take.
+    pub transitions: usize,
+    /// Of those, the ones the cover's tests could not tell from a transition
+    /// into another state with the same observation.
+    pub unconfirmed: usize,
+    /// Tests added to confirm them and the initial state.
+    pub tests: usize,
+    /// States no test can tell from another; see [`crate::adequacy`].
+    pub blind_states: usize,
+}
+
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Plan {
@@ -160,6 +182,8 @@ pub struct Plan {
     pub tests: Vec<PlanTest>,
     pub accepted_steps: usize,
     pub rejected_steps: usize,
+    /// Present when the plan identifies states under a stated observation.
+    pub identification: Option<Identification>,
 }
 
 struct Pending {
@@ -481,6 +505,30 @@ fn tours(
 
 impl Plan {
     pub fn build(verification: &Verification, options: &PlanOptions) -> Result<Self> {
+        Self::assemble(verification, options, None)
+    }
+
+    /// Like [`Plan::build`], then adds `identify` tests so that every
+    /// transition the plan takes is confirmed to reach the specified state
+    /// by a runner whose adapter observes exactly `fields` (any subset of
+    /// the state fields; none means only accepted and rejected calls are
+    /// seen). After each such transition some test continues with steps that
+    /// every state with the same observation but different behavior would
+    /// answer differently.
+    pub fn build_observing(
+        verification: &Verification,
+        options: &PlanOptions,
+        fields: &[String],
+    ) -> Result<Self> {
+        let classes = Classes::analyse(verification, fields)?;
+        Self::assemble(verification, options, Some(&classes))
+    }
+
+    fn assemble(
+        verification: &Verification,
+        options: &PlanOptions,
+        observing: Option<&Classes>,
+    ) -> Result<Self> {
         let model = &verification.model;
         let graph = &verification.graph;
         if graph.reduced() {
@@ -612,6 +660,20 @@ impl Plan {
                 steps: Vec::new(),
             });
         }
+        let identification = match observing {
+            Some(classes) => {
+                let before = tests.len();
+                let identified = identify::identify(graph, classes, &mut tests, &mut budget)?;
+                Some(Identification {
+                    fields: classes.fields.clone(),
+                    transitions: identified.transitions,
+                    unconfirmed: identified.unconfirmed,
+                    tests: tests.len() - before,
+                    blind_states: classes.blind_states(),
+                })
+            }
+            None => None,
+        };
         let accepted_steps = tests
             .iter()
             .flat_map(|test| &test.steps)
@@ -626,6 +688,7 @@ impl Plan {
             tests,
             accepted_steps,
             rejected_steps: total - accepted_steps,
+            identification,
         })
     }
 
@@ -635,8 +698,21 @@ impl Plan {
             Coverage::Pairs { eligible, covered } => format!(", {covered} of {eligible} pairs"),
             Coverage::Obligations => String::new(),
         };
+        let observing = self.identification.as_ref().map_or_else(String::new, |id| {
+            let fields = if id.fields.is_empty() {
+                "no fields".to_string()
+            } else {
+                id.fields.join(", ")
+            };
+            format!(
+                "; observing {fields}: {} for {} of {} transitions",
+                crate::counted(id.tests, "identify test", "identify tests"),
+                id.unconfirmed,
+                id.transitions
+            )
+        });
         format!(
-            "{} tests, {} accepted steps, {} rejected steps (cover: {}{pairs})",
+            "{} tests, {} accepted steps, {} rejected steps (cover: {}{pairs}{observing})",
             self.tests.len(),
             self.accepted_steps,
             self.rejected_steps,
@@ -722,7 +798,7 @@ impl Plan {
                 ])
             })
             .collect();
-        Json::object([
+        let mut plan = Json::object([
             ("zin", Json::str(PLAN_FORMAT)),
             ("system", Json::str(model.name.clone())),
             ("fingerprint", Json::str(model.fingerprint.clone())),
@@ -837,7 +913,14 @@ impl Plan {
                     ("rejected_steps", Json::count(self.rejected_steps)),
                 ]),
             ),
-        ])
+        ]);
+        // Only plans that identify states carry the key, so plans built
+        // without an observation are byte-identical to earlier ones.
+        if let (Json::Object(entries), Some(identification)) = (&mut plan, &self.identification) {
+            let fields = identification.fields.iter().map(Json::str).collect();
+            entries.push(("observe".to_string(), Json::Array(fields)));
+        }
+        plan
     }
 }
 

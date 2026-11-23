@@ -18,6 +18,11 @@
     "max_steps": { "type": "integer", "minimum": 1 },
     "step_budget": { "type": "integer", "minimum": 1 },
     "pair_limit": { "type": ["integer", "null"], "minimum": 1 },
+    "observe": {
+      "description": "Present only in plans from zin plan --observe: the state fields the adapter's observe is taken to return, in declaration order. The identify tests rule out states that look alike under exactly these fields.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
     "defaults": {
       "description": "The planning options zin plan uses when none are given. Absent from plans written before 0.3.1.",
       "type": "object",
@@ -94,7 +99,7 @@
         "required": ["name", "kind", "steps"],
         "properties": {
           "name": { "type": "string" },
-          "kind": { "enum": ["scenario", "witness", "tour"] },
+          "kind": { "enum": ["scenario", "witness", "tour", "identify"] },
           "steps": {
             "type": "array",
             "items": {

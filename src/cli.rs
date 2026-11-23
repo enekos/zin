@@ -4,7 +4,8 @@ use crate::audit::{MutantFate, audit};
 use crate::check::{Options, Verification, verify, verify_with};
 use crate::json::Json;
 use crate::mermaid::{sequence_diagram, state_diagram};
-use crate::plan::{Cover, Plan, PlanOptions, state_json};
+use crate::observe::adequacy;
+use crate::plan::{Cover, Plan, PlanOptions, TestKind, state_json};
 use crate::report::render_markdown;
 use crate::scaffold::{Framework, scaffold};
 use crate::trace::check_trace_reader;
@@ -22,9 +23,14 @@ usage:
   zin check <spec>... [--format json] [--symmetry on|off]
                                         prove every property over every reachable state
   zin plan <spec> [--out FILE] [--cover transitions|states|actions|scenarios|pairs] [--max-steps N] [--step-budget N] [--pair-limit N]
-           [--component NAME]
+           [--component NAME] [--observe FIELDS]
                                         derive the conformance test plan (JSON);
-                                        --component NAME tests one block of a composition
+                                        --component NAME tests one block of a composition;
+                                        --observe a,b adds tests that confirm each state
+                                        reached when observe() returns only those fields
+  zin observe <spec> [--fields a,b] [--component NAME]
+                                        which states a test run can tell apart when observe()
+                                        returns those fields (none: accepted/rejected only)
   zin trace <spec> <events.jsonl|-> [--symmetry on|off]
                                         check a recorded execution against the specification
   zin audit <spec>                      mutate the specification; list changes nothing notices
@@ -320,6 +326,7 @@ fn plan(args: &[String]) -> Result<Output> {
             "step-budget",
             "pair-limit",
             "component",
+            "observe",
         ],
     )?;
     let mut options = PlanOptions::default();
@@ -351,21 +358,162 @@ fn plan(args: &[String]) -> Result<Output> {
         Some(name) => crate::verify_component(&spec, name)?,
         None => verify(&spec)?,
     };
-    let plan = Plan::build(&verification, &options)?;
+    let plan = match arguments.option("observe") {
+        Some(fields) => Plan::build_observing(&verification, &options, &field_list(fields))?,
+        None => Plan::build(&verification, &options)?,
+    };
+    let blind = plan
+        .identification
+        .as_ref()
+        .map_or(0, |identification| identification.blind_states);
+    let stderr = if blind > 0 {
+        format!(
+            "warning: {} cannot be told from another under this observation; run zin observe\n",
+            crate::counted(blind, "state", "states")
+        )
+    } else {
+        String::new()
+    };
     let mut text = plan.to_json(&verification).to_compact();
     text.push('\n');
     match arguments.option("out") {
         Some(path) => {
             std::fs::write(path, text)
                 .map_err(|error| Error::usage(format!("cannot write {path}: {error}")))?;
-            Ok(ok(format!(
-                "ok {}\nplan: {} -> {path}\n",
-                verification.summary(),
-                plan.summary()
-            )))
+            Ok(Output {
+                code: 0,
+                stdout: format!(
+                    "ok {}\nplan: {} -> {path}\n",
+                    verification.summary(),
+                    plan.summary()
+                ),
+                stderr,
+            })
         }
-        None => Ok(ok(text)),
+        None => Ok(Output {
+            code: 0,
+            stdout: text,
+            stderr,
+        }),
     }
+}
+
+/// The names in a comma-separated option value; an empty value names none.
+fn field_list(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn observe(args: &[String]) -> Result<Output> {
+    let arguments = Arguments::parse(args, &["fields", "component"])?;
+    let fields = field_list(arguments.option("fields").unwrap_or(""));
+    let spec = load_spec(arguments.one("specification file")?)?;
+    let verification = match arguments.option("component") {
+        Some(name) => crate::verify_component(&spec, name)?,
+        None => verify(&spec)?,
+    };
+    let adequacy = adequacy(&verification, &fields)?;
+    let mut stdout = String::new();
+    let _ = writeln!(stdout, "ok {}", verification.summary());
+    let observing = if adequacy.fields.is_empty() {
+        "no fields (accepted and rejected calls only)".to_string()
+    } else {
+        adequacy.fields.join(", ")
+    };
+    let _ = writeln!(
+        stdout,
+        "observing {observing}: {} show {}",
+        crate::counted(adequacy.states, "state", "states"),
+        crate::counted(
+            adequacy.observations,
+            "distinct observation",
+            "distinct observations"
+        )
+    );
+    if let Some(hardest) = &adequacy.hardest {
+        let _ = writeln!(
+            stdout,
+            "states that look alike are told apart by at most {}, for example",
+            crate::counted(adequacy.depth, "further call", "further calls")
+        );
+        let _ = writeln!(stdout, "  {}", crate::display_state(&hardest.first));
+        let _ = writeln!(stdout, "  {}", crate::display_state(&hardest.second));
+        let _ = writeln!(stdout, "  by: {}", hardest.calls.join(", "));
+    }
+    for group in &adequacy.blind {
+        let _ = writeln!(
+            stdout,
+            "BLIND {} that no sequence of calls tells apart, for example",
+            crate::counted(group.states, "state", "states")
+        );
+        for state in &group.examples {
+            let _ = writeln!(stdout, "  {}", crate::display_state(state));
+        }
+        let it = if group.differ.len() == 1 {
+            "it"
+        } else {
+            "them"
+        };
+        let _ = writeln!(
+            stdout,
+            "  they differ in {}: observe {it}, or the specification does not need {it}",
+            group.differ.join(", ")
+        );
+    }
+    if adequacy.blind_groups > adequacy.blind.len() {
+        let _ = writeln!(
+            stdout,
+            "... and {} more blind groups",
+            adequacy.blind_groups - adequacy.blind.len()
+        );
+    }
+    let flag = if adequacy.fields.is_empty() {
+        "--observe ''".to_string()
+    } else {
+        format!("--observe {}", adequacy.fields.join(","))
+    };
+    match Plan::build_observing(&verification, &PlanOptions::default(), &fields) {
+        Ok(plan) => {
+            if let Some(identification) = &plan.identification {
+                let steps: usize = plan
+                    .tests
+                    .iter()
+                    .filter(|test| test.kind == TestKind::Identify)
+                    .map(|test| test.steps.len())
+                    .sum();
+                let _ = writeln!(
+                    stdout,
+                    "default plan: {} of {} transitions could reach a look-alike state unnoticed; zin plan {flag} adds {} ({steps} steps)",
+                    identification.unconfirmed,
+                    identification.transitions,
+                    crate::counted(identification.tests, "test", "tests"),
+                );
+            }
+        }
+        Err(error) if error.kind == ErrorKind::Limit => {
+            let _ = writeln!(stdout, "note: zin plan {flag} is not feasible: {error}");
+        }
+        Err(error) => return Err(error),
+    }
+    if adequacy.adequate() {
+        let _ = writeln!(stdout, "every state can be told apart");
+    } else {
+        let _ = writeln!(
+            stdout,
+            "{} in {} cannot be told apart",
+            crate::counted(adequacy.blind_states, "state", "states"),
+            crate::counted(adequacy.blind_groups, "blind group", "blind groups")
+        );
+    }
+    Ok(Output {
+        code: u8::from(!adequacy.adequate()),
+        stdout,
+        stderr: String::new(),
+    })
 }
 
 fn ok(stdout: String) -> Output {
@@ -508,6 +656,7 @@ fn dispatch(args: &[String]) -> Result<Output> {
         "plan" => plan(rest),
         "trace" => trace(rest),
         "audit" => run_audit(rest),
+        "observe" => observe(rest),
         "init" => init(rest),
         "report" => {
             let arguments = Arguments::parse(rest, &[])?;
