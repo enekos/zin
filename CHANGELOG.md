@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- `zin observe <spec> [--fields a,b]` reports what an adapter observing those
+  fields (none: accepted and rejected calls only) lets a test run tell apart:
+  states no sequence of calls separates (exit 1, with the fields to observe),
+  the longest sequence two look-alike states need, and how many transitions
+  of the default plan could land in a look-alike state unnoticed.
+- `zin plan --observe a,b` adds `identify` tests so that every transition the
+  plan takes is confirmed to reach the specified state under that
+  observation. Such plans carry an `observe` key and tests of kind
+  `identify`; plans built without the option are unchanged. Rust:
+  `Plan::build_observing`, `adequacy`.
+
 ## 0.4.0 — 2026-11-22
 
 - Composition: each component's clauses of a shared action resolve names

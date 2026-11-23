@@ -190,6 +190,15 @@ fn every_example_plan_matches_the_schema_for_every_coverage() {
             );
             checked += 1;
         }
+        for observed in [Vec::new(), vec![verification.model.fields[0].name.clone()]] {
+            let plan =
+                Plan::build_observing(&verification, &PlanOptions::default(), &observed).unwrap();
+            assert_valid(
+                &plan.to_json(&verification),
+                &format!("{} --observe {observed:?}", spec.display()),
+            );
+            checked += 1;
+        }
         for component in &parsed.components {
             // A block without state of its own has nothing to test in isolation.
             let Ok(isolated) = verify_component(&parsed, component) else {

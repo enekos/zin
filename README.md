@@ -219,6 +219,12 @@ SURVIVED line 27: action ship: drop 'requires stage is packed' (no property or s
 Each survivor is a rule you can delete without anything failing: either it is
 redundant or a property is missing.
 
+`zin observe` asks the same of the adapter: given the fields `observe`
+returns, which states can a test run never tell apart, and which transitions
+could land in a look-alike state without the plan noticing?
+`zin plan --observe a,b` adds the tests that close the second gap. See
+[conformance](docs/conformance.md#what-observe-can-tell-apart).
+
 ## Checking real executions
 
 Have a service, a staging run, or a flaky integration test? Log one JSON line
@@ -237,6 +243,8 @@ The bindings ship a `Recorder` that writes this format.
 zin check <spec>... [--format json] [--symmetry on|off]
                                       prove every property over every reachable state
 zin plan <spec> [--out FILE] [--cover transitions|states|actions|scenarios|pairs] [--max-steps N] [--step-budget N] [--pair-limit N]
+         [--observe a,b]              also confirm each state reached under that observation
+zin observe <spec> [--fields a,b]     which states a test run can tell apart
 zin trace <spec> <events.jsonl|->     check a recorded execution
 zin audit <spec>                      list specification changes nothing notices
 zin init <framework> <spec>           print a conformance test skeleton

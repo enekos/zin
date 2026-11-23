@@ -50,6 +50,8 @@ the specification's fields; only the returned fields are compared. Maps are
 dictionaries / objects / Go maps keyed by the specification's key names, and
 may also be partial. Without `observe`, wrong state is still detected once it
 changes which calls are accepted, only later and with a less direct message.
+How much later, and whether at all, is what [`zin observe`](#what-observe-can-tell-apart)
+answers.
 
 Mapping is the adapter's job. If the implementation stores cents and the
 specification counts whole units, or uses its own enum type, convert in
@@ -287,6 +289,48 @@ it skips generated witnesses too.
 The number of steps is roughly `states × calls`. When that is too many for a
 slow implementation (a database, a browser), shrink the model's ranges for
 testing, use `states`, or run `transitions` nightly.
+
+## What observe can tell apart
+
+A runner sees whether each call is accepted and the fields `observe` returns.
+Two states with the same observation are told apart only by a later call that
+one accepts and the other rejects, or that leads them to different
+observations. `zin observe` computes this for a given set of fields:
+
+```console
+$ zin observe examples/editor.zin --fields draft,status
+ok Quantity editor: 36 states, 96 transitions, 5 properties, 4 scenarios
+observing draft, status: 36 states show 9 distinct observations
+states that look alike are told apart by at most 3 further calls, for example
+  draft=0, saved=0, sent=1, status=saving
+  draft=0, saved=0, sent=2, status=saving
+  by: increase, server_ok, reject save
+default plan: 53 of 96 transitions could reach a look-alike state unnoticed; zin plan --observe draft,status adds 48 tests (427 steps)
+every state can be told apart
+```
+
+Without `--fields` it answers for an adapter with no `observe` at all.
+
+- **Blind states.** When no sequence of calls separates two states, no test
+  can notice the implementation being in one instead of the other. The
+  command lists them with the fields they differ in and exits `1`: observe
+  one of those fields, or the specification carries state nothing depends on.
+- **Look-alike states.** The default plan takes every transition once, but
+  what follows it in the tour may not separate the state reached from one
+  that looks the same. An implementation whose `save` stores the wrong `sent`
+  then passes. `zin plan --observe draft,status` adds `identify` tests: the
+  shortest setup, the transition, then the shortest calls that every
+  look-alike state would answer differently. `--observe ''` plans for an
+  adapter without `observe`.
+
+The identify tests assume the adapter returns exactly the named fields.
+Commit the plan next to the specification (`--out`) to have every runner use
+it; a runner does not yet check that the adapter observes those fields. The
+guarantee is the one of state identification in finite-state testing: a
+single transition that lands in another *specified* state is caught. An
+implementation with states the specification does not have is outside it.
+The extra tests count against `--step-budget`; a model with too many
+look-alike states exits with a limit error that says to observe more fields.
 
 ## What it does and does not show
 
