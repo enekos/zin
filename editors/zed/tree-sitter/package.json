@@ -1,0 +1,14 @@
+{
+  "name": "tree-sitter-zin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tree-sitter grammar for the Zin specification language",
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test",
+    "test:examples": "git -C ../../.. ls-files '*.zin' | sed 's#^#../../../#' | xargs tree-sitter parse --quiet --stat"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "0.27.2"
+  }
+}

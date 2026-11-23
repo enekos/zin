@@ -1,0 +1,104 @@
+================================================================================
+Actions and scenarios
+================================================================================
+
+action deposit(amount is an integer from 1 to 5)
+  requires status is open
+  requires balance + amount is at most 20
+  balance becomes balance + amount
+
+fair action work(worker is a worker)
+  at of worker becomes if ready then running else waiting
+
+strongly fair action finish(worker is a worker)
+  at[worker] becomes done
+
+scenario "Deposit, withdraw, and close"
+  deposit with amount = 5
+  deposit(3)
+  reject reopen
+  expect balance is 8 and status is open
+
+---
+
+(source_file
+  (action_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (integer_type
+          (number)
+          (number)))))
+  (requires
+    (binary_expression
+      (identifier)
+      (operator)
+      (identifier)))
+  (requires
+    (binary_expression
+      (binary_expression
+        (identifier)
+        (operator)
+        (identifier))
+      (operator)
+      (number)))
+  (assignment
+    (identifier)
+    (binary_expression
+      (identifier)
+      (operator)
+      (identifier)))
+  (action_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (named_type
+          (identifier)))))
+  (assignment
+    (map_access
+      (identifier)
+      (identifier))
+    (conditional_expression
+      (identifier)
+      (identifier)
+      (identifier)))
+  (action_declaration
+    (identifier)
+    (parameter_list
+      (parameter
+        (identifier)
+        (named_type
+          (identifier)))))
+  (assignment
+    (map_access
+      (identifier)
+      (identifier))
+    (identifier))
+  (scenario_declaration
+    (string
+      (string_content)))
+  (scenario_call
+    (identifier)
+    (named_argument
+      (identifier)
+      (number)))
+  (scenario_call
+    (identifier)
+    (argument_list
+      (number)))
+  (scenario_reject
+    (scenario_call
+      (identifier)))
+  (scenario_expect
+    (binary_expression
+      (binary_expression
+        (binary_expression
+          (identifier)
+          (operator)
+          (number))
+        (operator)
+        (identifier))
+      (operator)
+      (identifier))))

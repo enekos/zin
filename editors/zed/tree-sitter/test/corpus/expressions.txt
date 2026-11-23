@@ -1,0 +1,95 @@
+================================================================================
+Properties and expressions
+================================================================================
+
+always
+  balance is at least 0 and balance <= 20
+  status is closed implies balance is 0
+  counter is number of w in worker where at of w is done
+never some worker in workers satisfies at of worker is critical
+sometimes every worker in workers satisfies at[worker] is waiting
+eventually status is succeeded or status is failed
+whenever status is running eventually status is not running
+always possible not done
+terminal when done
+
+---
+
+(source_file
+  (property)
+  (expression_statement
+    (binary_expression
+      (binary_expression
+        (binary_expression
+          (identifier)
+          (operator)
+          (number))
+        (operator)
+        (identifier))
+      (operator)
+      (number)))
+  (declaration
+    (identifier)
+    (binary_expression
+      (binary_expression
+        (identifier)
+        (operator)
+        (identifier))
+      (operator)
+      (number)))
+  (declaration
+    (identifier)
+    (count_expression
+      (identifier)
+      (identifier)
+      (binary_expression
+        (map_access
+          (identifier)
+          (identifier))
+        (operator)
+        (identifier))))
+  (property
+    (quantified_expression
+      (identifier)
+      (identifier)
+      (binary_expression
+        (map_access
+          (identifier)
+          (identifier))
+        (operator)
+        (identifier))))
+  (property
+    (quantified_expression
+      (identifier)
+      (identifier)
+      (binary_expression
+        (map_access
+          (identifier)
+          (identifier))
+        (operator)
+        (identifier))))
+  (property
+    (binary_expression
+      (binary_expression
+        (binary_expression
+          (identifier)
+          (operator)
+          (identifier))
+        (operator)
+        (identifier))
+      (operator)
+      (identifier)))
+  (whenever_property
+    (binary_expression
+      (identifier)
+      (operator)
+      (identifier))
+    (binary_expression
+      (identifier)
+      (operator)
+      (identifier)))
+  (property
+    (unary_expression
+      (identifier)))
+  (terminal_property
+    (identifier)))
