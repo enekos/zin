@@ -2,9 +2,12 @@ export type Scalar = number | boolean | string;
 export type Observed = Record<string, Scalar | Record<string, Scalar> | Map<Scalar, Scalar>>;
 export type Awaitable<T> = T | Promise<T>;
 
+// A specification can narrow the parameter names and domains of each action.
+type Action = { invoke(args: Record<string, Scalar>): Awaitable<unknown> }["invoke"];
+
 export interface Adapter {
   /** One function per action; arguments arrive as an object keyed by parameter name. Return `false` or throw a rejection to refuse. */
-  actions: Record<string, (args: Record<string, Scalar>) => Awaitable<unknown>>;
+  actions: Record<string, Action>;
   /** Return true only when all these actions would refuse without side effects. Otherwise replay them individually. */
   refusals?: (calls: Plan["calls"]) => Awaitable<boolean>;
   /** Which thrown errors mean "the implementation refused this action". */
