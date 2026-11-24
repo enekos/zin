@@ -21,6 +21,7 @@
 const { basename, dirname, resolve } = require("node:path");
 const { fileURLToPath } = require("node:url");
 const { coverageModel, coverageRecord } = require("./coverage.cjs");
+const { dialogs, permissions, visibility, messages } = require("./events.cjs");
 const { monitor } = require("./monitor.cjs");
 const { hermetic } = require("./hermetic.cjs");
 const { Channel, socketFrames, eventStream, clock, navigation, connectivity, actors } = require("./channels.cjs");
@@ -219,4 +220,4 @@ async function gate(target, url, options) {
 }
 
 const bind = binding({ gate, click });
-module.exports = { Channel, socketFrames, eventStream, clock, navigation, connectivity, actors, bind, button, response, role, oneOf, text, testId, Rejected, Gate, verify, actionable, click, fill, gate };
+module.exports = { dialogs, permissions, visibility, messages, Channel, socketFrames, eventStream, clock, navigation, connectivity, actors, bind, button, response, role, oneOf, text, testId, Rejected, Gate, verify, actionable, click, fill, gate };

@@ -71,6 +71,7 @@
     "index.d.cts",
     "bind.cjs",
     "channels.cjs",
+    "events.cjs",
     "playwright.js",
     "playwright.cjs",
     "playwright.d.ts",
