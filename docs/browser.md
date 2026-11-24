@@ -259,3 +259,20 @@ your routes in the adapter factory. Use `coverage: true` and configure
 attempted model operations, failures and observed fields. On shards use the
 blob reporter, collect the blobs and run
 `npx playwright merge-reports --reporter=zin-verify/playwright-reporter ./all-blob-reports`.
+
+## Environment actions
+
+| Source | Browser binding |
+| --- | --- |
+| HTTP | `gate(page, url)` holds requests for `fulfill`, `abort` or `continue`. |
+| WebSocket | Install `await socketFrames(page, url)` before connecting. Incoming frames wait for `release(predicate?)`. Supply a synchronous reply function to use a mock server. The route lives for the page's lifetime. |
+| SSE | Point an EventSource at `(await eventStream()).url`. After it opens, `hold(data, event?)` queues a native SSE event for current subscribers and `release(predicate?)` sends it. Dispose the stream in teardown. |
+| Time | Install `await clock(page)` before application timers are created. Bind model actions to `advance(milliseconds)`. |
+| History | `navigation(page)` offers `back`, `forward` and `reload`. Back and forward check the browser Navigation API and refuse at history boundaries. |
+| Network | `connectivity(page).offline()` and `.online()` switch the browser context's connectivity. Redundant changes refuse. |
+| Actors | `await actors(browser, values)` isolates each actor in a context. Pass a context to model tabs sharing storage. Use `page(value)` and `dispose()`. |
+
+`Channel<T>` provides the common queue. `hold(value)` adds a delivery and
+`take(predicate?)` refuses when no matching item is waiting.
+The debounce, tabs and frames pilots replay the same scenarios against correct
+and deliberately faulty implementations in Chromium.

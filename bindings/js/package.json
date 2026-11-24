@@ -66,6 +66,7 @@
     "index.d.ts",
     "index.d.cts",
     "bind.cjs",
+    "channels.cjs",
     "playwright.js",
     "playwright.cjs",
     "playwright.d.ts",

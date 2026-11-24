@@ -1,0 +1,29 @@
+system "Debounced autosave"
+
+state
+  draft is an integer from 0 to 2
+  saved is an integer from 0 to 2
+  remaining is an integer from 0 to 2
+
+initially
+  draft is 0
+  saved is 0
+  remaining is 0
+
+action edit
+  requires draft is less than 2
+  draft becomes draft + 1
+  remaining becomes 2
+
+action tick
+  remaining becomes if remaining is 0 then 0 else remaining - 1
+  saved becomes if remaining is 1 then draft else saved
+
+scenario "Editing resets the debounce"
+  edit
+  tick
+  edit
+  tick
+  expect saved is 0
+  tick
+  expect saved is 2

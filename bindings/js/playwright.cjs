@@ -22,6 +22,7 @@ const { basename, dirname, resolve } = require("node:path");
 const { fileURLToPath } = require("node:url");
 const { coverageModel, coverageRecord } = require("./coverage.cjs");
 const { hermetic } = require("./hermetic.cjs");
+const { Channel, socketFrames, eventStream, clock, navigation, connectivity, actors } = require("./channels.cjs");
 const { binding, button, response, role, oneOf, testId } = require("./bind.cjs");
 const { PlanError, Rejected, loadPlan, runTest } = require("./index.cjs");
 
@@ -128,24 +129,19 @@ async function fill(locator, value, options) {
  * Holds every request to a URL until the test decides its outcome, which
  * turns "the server answers" into an action the plan can order like any other.
  */
-class Gate {
+class Gate extends Channel {
   constructor(target, url, options = {}) {
+    super(`request to ${url}`);
     this.target = target;
     this.url = url;
     this.timeout = options.timeout ?? REQUEST_TIMEOUT_MS;
-    this.held = [];
     this.arrived = 0;
     this.waiting = [];
     this.handler = (route) => {
-      this.held.push(route);
+      this.hold(route);
       this.arrived += 1;
       for (const wake of this.waiting.splice(0)) wake();
     };
-  }
-
-  /** How many requests are held. */
-  get pending() {
-    return this.held.length;
   }
 
   /** The held requests, oldest first. */
@@ -169,7 +165,10 @@ class Gate {
       let timer;
       await new Promise((resolve) => {
         this.waiting.push(resolve);
-        timer = setTimeout(resolve, left);
+        timer = setTimeout(() => {
+          this.waiting = this.waiting.filter(wake => wake !== resolve);
+          resolve();
+        }, left);
       });
       clearTimeout(timer);
     }
@@ -177,9 +176,7 @@ class Gate {
   }
 
   take(match) {
-    const index = match ? this.held.findIndex((route) => match(route.request())) : 0;
-    if (index < 0 || index >= this.held.length) throw new Rejected(`no request to ${this.url} is waiting`);
-    return this.held.splice(index, 1)[0];
+    return super.take(match && (route => match(route.request())));
   }
 
   /**
@@ -217,4 +214,4 @@ async function gate(target, url, options) {
 }
 
 const bind = binding({ gate, click });
-module.exports = { bind, button, response, role, oneOf, testId, Rejected, Gate, verify, actionable, click, fill, gate };
+module.exports = { Channel, socketFrames, eventStream, clock, navigation, connectivity, actors, bind, button, response, role, oneOf, testId, Rejected, Gate, verify, actionable, click, fill, gate };

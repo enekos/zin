@@ -1,0 +1,29 @@
+system "Reordered socket replies"
+
+types
+  id is one of first, second
+
+state
+  pending is a map from id to boolean
+  received is one of none, first, second
+
+initially
+  pending of every id is false
+  received is none
+
+action request(n is an id)
+  requires not pending of n
+  pending of n becomes true
+
+action deliver(n is an id)
+  requires pending of n
+  pending of n becomes false
+  received becomes n
+
+scenario "Second reply overtakes first"
+  request(first)
+  request(second)
+  deliver(second)
+  expect received is second
+  deliver(first)
+  reject deliver(first)
