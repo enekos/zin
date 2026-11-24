@@ -83,7 +83,8 @@
     "playwright-reporter.cjs",
     "playwright-reporter.d.ts",
     "coverage.cjs",
-    "hermetic.cjs"
+    "hermetic.cjs",
+    "monitor.cjs"
   ],
   "scripts": {
     "test": "npm run test:node && npm run test:jest && npm run test:jest:esm && npm run test:vitest && npm run test:mocha && npm run test:playwright",

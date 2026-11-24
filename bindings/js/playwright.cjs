@@ -21,6 +21,7 @@
 const { basename, dirname, resolve } = require("node:path");
 const { fileURLToPath } = require("node:url");
 const { coverageModel, coverageRecord } = require("./coverage.cjs");
+const { monitor } = require("./monitor.cjs");
 const { hermetic } = require("./hermetic.cjs");
 const { Channel, socketFrames, eventStream, clock, navigation, connectivity, actors } = require("./channels.cjs");
 const { binding, button, response, role, oneOf, testId } = require("./bind.cjs");
@@ -91,7 +92,11 @@ function verify(spec, factory, options = {}) {
           const progress = model ? { attempted: 0, matched: 0, fields: new Set() } : undefined;
           const guard = options.hermetic && await hermetic(fixtures.page, options.hermetic);
           try {
-            await runTest(plan, planTest, () => factory(fixtures, testInfo), { ...run, progress });
+            await runTest(plan, planTest, () => factory(fixtures, testInfo), {
+              ...run, progress,
+              onState: options.onState && ((state, id) => options.onState(state, fixtures.page, { id, testInfo })),
+              monitor: options.monitor && (() => monitor(fixtures.page, options.monitor)),
+            });
           } finally {
             if (model) await testInfo.attach("zin-coverage", {
               contentType: "application/json",
