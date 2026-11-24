@@ -22,6 +22,10 @@ export interface VerifyOptions<Fixtures> extends PlanOptions {
   test?: TestType<any, any>;
   /** Fixtures the factory receives; default `["page"]`. */
   fixtures?: (keyof Fixtures & string)[];
+  /** Attach operation coverage for zin-verify/playwright-reporter or a merged blob report. */
+  coverage?: boolean;
+  /** Block ungated fetch/XHR/event streams and seed randomness on each page load. The suite blocks service workers. */
+  hermetic?: boolean | { seed?: number };
   /** The suite name. */
   name?: string;
   /** How long an observation may take to match the specification, in milliseconds (default 5000). */

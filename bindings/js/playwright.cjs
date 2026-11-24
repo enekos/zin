@@ -20,6 +20,8 @@
 
 const { basename, dirname, resolve } = require("node:path");
 const { fileURLToPath } = require("node:url");
+const { coverageModel, coverageRecord } = require("./coverage.cjs");
+const { hermetic } = require("./hermetic.cjs");
 const { binding, button, response, role, oneOf, testId } = require("./bind.cjs");
 const { PlanError, Rejected, loadPlan, runTest } = require("./index.cjs");
 
@@ -77,13 +79,26 @@ function verify(spec, factory, options = {}) {
     },
     step: (text, body, location) => test.step(text, body, { location }),
   };
-  test.describe(options.name ?? `${plan.system} conforms to ${basename(path)}`, () => {
+  const suite = options.name ?? `${plan.system} conforms to ${basename(path)}`;
+  const model = options.coverage && coverageModel(plan, suite);
+  test.describe(suite, () => {
+    if (options.hermetic) test.use({ serviceWorkers: "block" });
     for (const planTest of plan.tests) {
       test(
         planTest.name,
-        testBody(options.fixtures ?? ["page"], (fixtures, testInfo) =>
-          runTest(plan, planTest, () => factory(fixtures, testInfo), run),
-        ),
+        testBody(options.fixtures ?? ["page"], async (fixtures, testInfo) => {
+          const progress = model ? { attempted: 0, matched: 0, fields: new Set() } : undefined;
+          const guard = options.hermetic && await hermetic(fixtures.page, options.hermetic);
+          try {
+            await runTest(plan, planTest, () => factory(fixtures, testInfo), { ...run, progress });
+          } finally {
+            if (model) await testInfo.attach("zin-coverage", {
+              contentType: "application/json",
+              body: Buffer.from(JSON.stringify(coverageRecord(model, planTest, progress))),
+            });
+            if (guard) await guard.dispose();
+          }
+        }),
       );
     }
   });

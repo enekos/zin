@@ -9,4 +9,4 @@ verify(new URL("../../editor.zin", import.meta.url), bind({
     server_ok: response(204), server_fails: response(500),
   },
   fields: { draft: testId("draft", Number), saved: testId("saved", Number), status: role("status", oneOf("idle", "saving", "failed")) },
-} satisfies Binding<Actions, State>), { test });
+} satisfies Binding<Actions, State>), { test, coverage: true, hermetic: true });
