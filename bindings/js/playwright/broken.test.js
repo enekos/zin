@@ -19,6 +19,7 @@ test("Playwright reports individual generated failures and exits unsuccessfully"
   const outcomes = suite.specs.filter((spec) => !spec.ok).map((spec) => spec.tests[0].results[0]);
   const [outcome] = outcomes;
   assert.match(outcome.error.message, /after server_ok, saved is 2, but the specification says 1/);
+  assert.match(outcome.error.message, /editor\.zin:48:1/);
   assert.ok(outcomes.some((failure) => /shortest reproduction:/.test(failure.error.message)));
   assert.ok(outcome.steps.some((step) => step.title === "server_ok"));
   assert.ok(outcomes.some((failure) => failure.steps.some((step) => step.title.startsWith("reject "))));

@@ -18,7 +18,7 @@
 //
 // `verify` registers one Playwright test per plan test; every step is a `test.step`.
 
-const { basename } = require("node:path");
+const { basename, dirname, resolve } = require("node:path");
 const { fileURLToPath } = require("node:url");
 const { PlanError, Rejected, loadPlan, runTest } = require("./index.cjs");
 
@@ -61,12 +61,16 @@ function playwrightTest(options) {
 function verify(spec, factory, options = {}) {
   const test = playwrightTest(options);
   const plan = loadPlan(spec, options);
+  const path = spec instanceof URL || String(spec).startsWith("file:") ? fileURLToPath(spec) : String(spec);
   const run = {
     observeTimeout: options.observeTimeout ?? OBSERVE_TIMEOUT_MS,
     observeInterval: options.observeInterval,
-    step: (text, body) => test.step(text, body),
+    location(action) {
+      const at = plan.action_locations?.[action];
+      return at && { ...at, file: resolve(dirname(path), at.file) };
+    },
+    step: (text, body, location) => test.step(text, body, { location }),
   };
-  const path = spec instanceof URL ? fileURLToPath(spec) : String(spec);
   test.describe(options.name ?? `${plan.system} conforms to ${basename(path)}`, () => {
     for (const planTest of plan.tests) {
       test(

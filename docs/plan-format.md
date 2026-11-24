@@ -184,3 +184,5 @@ same rules.
 ## Trace events
 
 Read by `zin trace`; see [conformance testing](conformance.md#checking-recorded-executions).
+
+CLI plans may include `action_locations`, keyed by action name. Each entry gives the declaration file relative to the source specification directory and its one-based line and column. Playwright uses these locations for steps and divergence reports.
