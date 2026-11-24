@@ -247,7 +247,7 @@ fn the_schema_rejects_malformed_plans() {
     for (from, to, wanted) in [
         ("\"tests\":", "\"checks\":", "missing tests"),
         ("[0,1]", "[0,1,2]", "maxItems 2"),
-        ("\"plan/1\"", "\"plan/2\"", "is not allowed"),
+        ("\"plan/1\"", "\"plan/3\"", "is not allowed"),
         (
             "\"kind\":\"scenario\"",
             "\"kind\":\"random\"",

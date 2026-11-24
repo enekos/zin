@@ -23,7 +23,7 @@ usage:
   zin check <spec>... [--format json] [--symmetry on|off]
                                         prove every property over every reachable state
   zin plan <spec> [--out FILE] [--cover transitions|states|actions|scenarios|pairs] [--max-steps N] [--step-budget N] [--pair-limit N]
-           [--component NAME] [--observe FIELDS]
+           [--component NAME] [--observe FIELDS] [--restore]
                                         derive the conformance test plan (JSON);
                                         --component NAME tests one block of a composition;
                                         --observe a,b adds tests that confirm each state
@@ -57,6 +57,10 @@ struct Arguments {
 
 impl Arguments {
     fn parse(args: &[String], valued: &[&str]) -> Result<Self> {
+        Self::with_flags(args, valued, &[])
+    }
+
+    fn with_flags(args: &[String], valued: &[&str], flags: &[&str]) -> Result<Self> {
         let mut parsed = Self {
             positional: Vec::new(),
             options: Vec::new(),
@@ -64,6 +68,10 @@ impl Arguments {
         let mut rest = args.iter();
         while let Some(argument) = rest.next() {
             if let Some(name) = argument.strip_prefix("--") {
+                if flags.contains(&name) {
+                    parsed.options.push((name.to_string(), String::new()));
+                    continue;
+                }
                 if !valued.contains(&name) {
                     return Err(Error::usage(format!("unknown option --{name}")));
                 }
@@ -318,7 +326,7 @@ fn check(args: &[String]) -> Result<Output> {
 }
 
 fn plan(args: &[String]) -> Result<Output> {
-    let arguments = Arguments::parse(
+    let arguments = Arguments::with_flags(
         args,
         &[
             "out",
@@ -329,8 +337,12 @@ fn plan(args: &[String]) -> Result<Output> {
             "component",
             "observe",
         ],
+        &["restore"],
     )?;
-    let mut options = PlanOptions::default();
+    let mut options = PlanOptions {
+        restore: arguments.option("restore").is_some(),
+        ..PlanOptions::default()
+    };
     if let Some(cover) = arguments.option("cover") {
         options.cover = Cover::parse(cover)?;
     }

@@ -9,6 +9,7 @@ export interface Adapter {
   /** One function per action; arguments arrive as an object keyed by parameter name. Return `false` or throw a rejection to refuse. */
   actions: Record<string, Action>;
   /** Return true only when all these actions would refuse without side effects. Otherwise replay them individually. */
+  restore?: (state: Observed) => Awaitable<void>;
   refusals?: (calls: Plan["calls"]) => Awaitable<boolean>;
   /** Which thrown errors mean "the implementation refused this action". */
   rejects?: (error: unknown) => boolean;
@@ -23,13 +24,14 @@ export type Factory = () => Awaitable<Adapter>;
 
 export interface PlanTest {
   name: string;
+  from?: number;
   kind: "scenario" | "witness" | "tour" | "identify";
   /** `[call, to]`; `to` is -1 when the call must be rejected. */
   steps: [number, number][];
 }
 
 export interface Plan {
-  zin: "plan/1";
+  zin: "plan/1" | "plan/2";
   system: string;
   fingerprint: string;
   /** Included files by path relative to the specification, each with its FNV-1a 64 hash. Absent before 0.3. */
@@ -49,7 +51,8 @@ export interface Plan {
   summary: {
     states: number;
     transitions: number;
-    refusals?: number;
+    restore?: (state: Observed) => Awaitable<void>;
+  refusals?: number;
     eligible_pairs?: number | null;
     covered_pairs?: number | null;
     tests: number;
@@ -67,6 +70,7 @@ export type Cover = "transitions" | "states" | "actions" | "scenarios" | "pairs"
 export interface PlanOptions {
   cover?: Cover;
   observe?: string[];
+  restore?: boolean;
   /** A pre-derived plan file to use instead of running `zin plan`. */
   plan?: string | URL;
   /** Path of the `zin` binary; defaults to `$ZIN_BIN`, then `zin` on PATH. */

@@ -186,3 +186,11 @@ same rules.
 Read by `zin trace`; see [conformance testing](conformance.md#checking-recorded-executions).
 
 CLI plans may include `action_locations`, keyed by action name. Each entry gives the declaration file relative to the source specification directory and its one-based line and column. Playwright uses these locations for steps and divergence reports.
+
+With `zin plan --restore`, the file declares `plan/2` so older runners reject
+it before replay. A test's optional `from` indexes the canonical state to seed
+(default zero, the ordinary initial state). The JS runner calls
+`adapter.restore(state)` before the first observation of a nonzero start.
+Scenarios, witnesses and pair tours retain their normal setup. Other tours may
+start at any outstanding obligation. With `--observe` the planner also checks
+the restored start against behaviorally distinguishable look-alikes.

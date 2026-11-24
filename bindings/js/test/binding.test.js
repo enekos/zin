@@ -237,3 +237,15 @@ test("maxSteps shortens the generated tours", () => {
   assert.throws(() => loadPlan(ACCOUNT, { maxSteps: 0 }), PlanError);
   assert.throws(() => loadPlan(ACCOUNT, { maxSteps: 40, bin: "/nonexistent/zin" }), /--max-steps 40/);
 });
+
+test("restore seeds the requested model state and compares it before any action", async () => {
+  const plan = loadPlan(ACCOUNT, { restore: true, maxSteps: 2 });
+  const item = plan.tests.find(test => test.from > 0);
+  assert.ok(item);
+  await assert.rejects(runTest(plan, item, adapter()), /needs adapter.restore/);
+  let restored;
+  await assert.rejects(runTest(plan, item, () => ({
+    actions: {}, restore(state) { restored = state; }, observe: () => ({ balance: -100 }),
+  })), /after restoring state, balance/);
+  assert.deepEqual(restored, plan.states[item.from]);
+});

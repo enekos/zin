@@ -58,6 +58,8 @@ impl Cover {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct PlanOptions {
+    /// Start generated tours directly at pending obligations. Requires adapter restoration.
+    pub restore: bool,
     pub cover: Cover,
     /// Soft target for tour length, excluding the shortest setup to the current state.
     pub max_steps: usize,
@@ -68,6 +70,7 @@ pub struct PlanOptions {
 impl Default for PlanOptions {
     fn default() -> Self {
         Self {
+            restore: false,
             cover: Cover::Transitions,
             max_steps: DEFAULT_MAX_STEPS,
             step_budget: MAX_PLAN_STEPS,
@@ -137,6 +140,7 @@ pub struct PlanStep {
 
 #[derive(Debug, Clone)]
 pub struct PlanTest {
+    pub from: u32,
     pub name: String,
     pub kind: TestKind,
     pub steps: Vec<PlanStep>,
@@ -175,6 +179,7 @@ pub struct Identification {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Plan {
+    pub restore: bool,
     pub cover: Cover,
     pub coverage: Coverage,
     pub max_steps: usize,
@@ -437,14 +442,21 @@ fn access_depths(graph: &Graph) -> Vec<usize> {
 fn tours(
     graph: &Graph,
     pending: &mut Pending,
-    max_steps: usize,
+    options: &PlanOptions,
     depths: &[usize],
     budget: &mut Budget,
-) -> Result<Vec<Vec<PlanStep>>> {
+) -> Result<Vec<(u32, Vec<PlanStep>)>> {
+    let max_steps = options.max_steps;
     let mut tours = Vec::new();
+    let mut from = 0;
     while pending.total > 0 {
         let mut steps = Vec::new();
-        let mut state = 0;
+        if options.restore {
+            while !pending.waiting(from) {
+                from += 1;
+            }
+        }
+        let mut state = from;
         let initial_pending = pending.total;
         loop {
             let refused = pending.take_refusals(state);
@@ -464,6 +476,8 @@ fn tours(
                     to: Some(edge.to),
                 });
                 state = edge.to;
+            } else if options.restore {
+                break;
             } else if pending.total > 0 {
                 let route = route_to_pending(graph, |state| pending.waiting(state), state);
                 let Some((_, last)) = route.last() else { break };
@@ -488,7 +502,11 @@ fn tours(
             }
             if pending.total == 0
                 || (pending.total < initial_pending
-                    && steps.len().saturating_sub(depths[at(state)]) >= max_steps)
+                    && steps.len().saturating_sub(if options.restore {
+                        0
+                    } else {
+                        depths[at(state)]
+                    }) >= max_steps)
             {
                 break;
             }
@@ -498,7 +516,7 @@ fn tours(
                 "planner could not reach its remaining coverage obligations",
             ));
         }
-        tours.push(steps);
+        tours.push((from, steps));
     }
     Ok(tours)
 }
@@ -560,6 +578,7 @@ impl Plan {
                 .collect();
             budget.charge(steps.len())?;
             tests.push(PlanTest {
+                from: 0,
                 name: format!("scenario: {}", scenario.name),
                 kind: TestKind::Scenario,
                 steps,
@@ -584,6 +603,7 @@ impl Plan {
             budget.charge(steps.len())?;
             if !steps.is_empty() {
                 tests.push(PlanTest {
+                    from: 0,
                     name: format!("reaches: {}", property.text),
                     kind: TestKind::Witness,
                     steps,
@@ -638,15 +658,19 @@ impl Plan {
                     eligible,
                     covered: selected.covered.len(),
                 };
-                (tours, coverage)
+                (
+                    tours.into_iter().map(|steps| (0, steps)).collect(),
+                    coverage,
+                )
             }
             _ => (
-                tours(graph, &mut pending, options.max_steps, &depths, &mut budget)?,
+                tours(graph, &mut pending, options, &depths, &mut budget)?,
                 Coverage::Obligations,
             ),
         };
-        for (index, steps) in generated.into_iter().enumerate() {
+        for (index, (from, steps)) in generated.into_iter().enumerate() {
             tests.push(PlanTest {
+                from,
                 name: format!("tour {}", index + 1),
                 kind: TestKind::Tour,
                 steps,
@@ -655,6 +679,7 @@ impl Plan {
         // An empty plan still checks the initial observation.
         if tests.is_empty() && options.cover != Cover::Scenarios {
             tests.push(PlanTest {
+                from: 0,
                 name: "initial state".into(),
                 kind: TestKind::Tour,
                 steps: Vec::new(),
@@ -681,6 +706,7 @@ impl Plan {
             .count();
         let total: usize = tests.iter().map(|test| test.steps.len()).sum();
         Ok(Self {
+            restore: options.restore,
             cover: options.cover,
             coverage,
             max_steps: options.max_steps,
@@ -725,8 +751,10 @@ impl Plan {
         let model = &verification.model;
         let graph = &verification.graph;
         let mut used: BTreeSet<u32> = BTreeSet::from([0]);
-        for step in self.tests.iter().flat_map(|test| &test.steps) {
-            let mut current = step.to;
+        for start in self.tests.iter().flat_map(|test| {
+            std::iter::once(test.from).chain(test.steps.iter().filter_map(|step| step.to))
+        }) {
+            let mut current = Some(start);
             while let Some(state) = current {
                 if !used.insert(state) {
                     break;
@@ -778,7 +806,7 @@ impl Plan {
             .tests
             .iter()
             .map(|test| {
-                Json::object([
+                let mut json = Json::object([
                     ("name", Json::str(test.name.clone())),
                     ("kind", Json::str(test.kind.name())),
                     (
@@ -795,11 +823,20 @@ impl Plan {
                                 .collect(),
                         ),
                     ),
-                ])
+                ]);
+                if test.from != 0
+                    && let Json::Object(entries) = &mut json
+                {
+                    entries.push(("from".into(), renumber(test.from)));
+                }
+                json
             })
             .collect();
         let mut plan = Json::object([
-            ("zin", Json::str(PLAN_FORMAT)),
+            (
+                "zin",
+                Json::str(if self.restore { "plan/2" } else { PLAN_FORMAT }),
+            ),
             ("system", Json::str(model.name.clone())),
             ("fingerprint", Json::str(model.fingerprint.clone())),
             (
