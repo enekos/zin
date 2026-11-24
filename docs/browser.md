@@ -290,3 +290,10 @@ the pre-state or post-state may match. Between actions the current state must
 match. The reader runs in the document and must return at least one field.
 Monitoring is scoped to that document. Changes coalesced into one observer
 delivery produce one sample.
+
+`text(css, parse?)` reads text content from one matching element in the main
+document. A binding samples its CSS fields together in one browser command.
+Use `role`, `testId` or a function for Playwright locators. The replay-cost
+pilot runs both adapters against the same editor and projected plan, counting
+outgoing Playwright frame commands, including individual locator reads.
+Run `npm run test:cost` in `examples/pilots` with the built CLI on PATH.

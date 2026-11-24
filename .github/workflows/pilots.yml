@@ -19,6 +19,7 @@ jobs:
           npx playwright install --with-deps --only-shell chromium
           npm test
           npm run test:browser
+          npm run test:cost
 
   junit:
     runs-on: ubuntu-latest
