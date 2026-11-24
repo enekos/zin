@@ -297,3 +297,16 @@ Use `role`, `testId` or a function for Playwright locators. The replay-cost
 pilot runs both adapters against the same editor and projected plan, counting
 outgoing Playwright frame commands, including individual locator reads.
 Run `npm run test:cost` in `examples/pilots` with the built CLI on PATH.
+
+## Discover and check a binding
+
+From a project with `zin-verify`, `@playwright/test` and Chromium installed,
+run `zin init playwright editor.zin --url http://localhost:4173` to print a
+binding. It looks for exact accessible button names and visible state readers.
+Parameterized and unmatched actions get stubs. Review the mapping.
+
+Default-export a factory from a binding module, then run
+`zin doctor editor.zin --binding ./editor-binding.mjs`. Doctor replays the model
+in fresh Chromium pages and reports missing action implementations, controls that
+never matched in visited states, constant observations and divergences. Use the
+test application's absolute URL in that factory.

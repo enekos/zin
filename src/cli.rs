@@ -35,7 +35,8 @@ usage:
                                         check a recorded execution against the specification
   zin audit <spec>                      mutate the specification; list changes nothing notices
   zin types <spec>                      emit TypeScript declarations for an adapter
-  zin init <framework> <spec>           print a conformance test skeleton
+  zin doctor <spec> --binding FILE      diagnose a Playwright adapter exported by FILE
+  zin init <framework> <spec> [--url URL] print a test skeleton; Playwright can inspect a page
                                         (pytest, unittest, jest, vitest, node, playwright,
                                         testing-library, go, rust, junit)
   zin report <spec>                     Markdown report with Mermaid diagrams
@@ -643,8 +644,32 @@ fn run_audit(args: &[String]) -> Result<Output> {
     })
 }
 
+fn browser_tool(command: &str, spec: &str, argument: &str) -> Result<Output> {
+    let script = "require('zin-verify/browser-tools').main(process.argv.slice(1)).catch(e => { console.error(e.message); process.exitCode = 2 })";
+    let mut node = std::process::Command::new("node");
+    if std::env::var_os("ZIN_BIN").is_none() {
+        node.env(
+            "ZIN_BIN",
+            std::env::current_exe().map_err(|e| Error::usage(e.to_string()))?,
+        );
+    }
+    let result = node
+        .args(["-e", script, "--", command, spec, argument])
+        .output()
+        .map_err(|e| Error::usage(format!("the browser tools require Node.js: {e}")))?;
+    Ok(Output {
+        code: result
+            .status
+            .code()
+            .and_then(|n| u8::try_from(n).ok())
+            .unwrap_or(2),
+        stdout: String::from_utf8_lossy(&result.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&result.stderr).into_owned(),
+    })
+}
+
 fn init(args: &[String]) -> Result<Output> {
-    let arguments = Arguments::parse(args, &[])?;
+    let arguments = Arguments::parse(args, &["url"])?;
     let [framework, spec] = arguments.positional.as_slice() else {
         return Err(Error::usage(format!(
             "init needs a framework ({}) and a specification file",
@@ -652,6 +677,12 @@ fn init(args: &[String]) -> Result<Output> {
         )));
     };
     let framework = Framework::parse(framework)?;
+    if let Some(url) = arguments.option("url") {
+        if framework != Framework::Playwright {
+            return Err(Error::usage("--url needs the playwright framework"));
+        }
+        return browser_tool("init", spec, url);
+    }
     let verification = load(spec)?;
     let file = std::path::Path::new(spec)
         .file_name()
@@ -700,6 +731,13 @@ fn dispatch(args: &[String]) -> Result<Output> {
             Ok(ok(crate::typescript::declarations(&model)))
         }
         "init" => init(rest),
+        "doctor" => {
+            let args = Arguments::parse(rest, &["binding"])?;
+            let binding = args
+                .option("binding")
+                .ok_or_else(|| Error::usage("doctor needs --binding FILE"))?;
+            browser_tool("doctor", args.one("specification file")?, binding)
+        }
         "report" => {
             let arguments = Arguments::parse(rest, &[])?;
             Ok(ok(render_markdown(&load(

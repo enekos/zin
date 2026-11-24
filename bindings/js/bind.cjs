@@ -97,6 +97,8 @@ function binding({ gate, click }) {
       }
     };
     factory.fields = Object.keys(fields);
+    factory.buttons = Object.fromEntries(Object.entries(actions)
+      .filter(([, action]) => action.kind === "button").map(([key, action]) => [key, action.name]));
     return factory;
   };
 }
