@@ -20,6 +20,7 @@
 
 const { basename, dirname, resolve } = require("node:path");
 const { fileURLToPath } = require("node:url");
+const { binding, button, response, role, oneOf, testId } = require("./bind.cjs");
 const { PlanError, Rejected, loadPlan, runTest } = require("./index.cjs");
 
 // How long an observation may take to match the specification: Playwright's own default for `expect`.
@@ -60,7 +61,12 @@ function playwrightTest(options) {
  */
 function verify(spec, factory, options = {}) {
   const test = playwrightTest(options);
-  const plan = loadPlan(spec, options);
+  const planFile = String(spec).endsWith(".json");
+  const plan = loadPlan(spec, factory.fields && !planFile ? { ...options, observe: factory.fields } : options);
+  if (factory.fields && planFile && (!Array.isArray(plan.observe) || plan.observe.length !== factory.fields.length ||
+      !factory.fields.every(field => plan.observe.includes(field)))) {
+    throw new PlanError("the plan's observation must match the binding fields");
+  }
   const path = spec instanceof URL || String(spec).startsWith("file:") ? fileURLToPath(spec) : String(spec);
   const run = {
     observeTimeout: options.observeTimeout ?? OBSERVE_TIMEOUT_MS,
@@ -195,4 +201,5 @@ async function gate(target, url, options) {
   return held;
 }
 
-module.exports = { Rejected, Gate, verify, actionable, click, fill, gate };
+const bind = binding({ gate, click });
+module.exports = { bind, button, response, role, oneOf, testId, Rejected, Gate, verify, actionable, click, fill, gate };

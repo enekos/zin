@@ -53,6 +53,7 @@ jobs:
       - name: React example from the npm tarball
         working-directory: examples/react-editor
         run: |
+          "$ZIN_BIN" types ../editor.zin | diff - e2e/editor-model.d.ts
           package=$(npm pack ../../bindings/js --silent --pack-destination "$RUNNER_TEMP")
           npm ci
           npm install --no-save --package-lock=false "$RUNNER_TEMP/$package"

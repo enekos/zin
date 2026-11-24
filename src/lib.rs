@@ -19,6 +19,7 @@ mod scaffold;
 mod source;
 mod symmetry;
 mod trace;
+mod typescript;
 
 pub use ast::{Spec, Value};
 pub use audit::{Audit, Distinction, Mutant, MutantFate, audit};

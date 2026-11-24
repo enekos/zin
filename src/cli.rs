@@ -34,6 +34,7 @@ usage:
   zin trace <spec> <events.jsonl|-> [--symmetry on|off]
                                         check a recorded execution against the specification
   zin audit <spec>                      mutate the specification; list changes nothing notices
+  zin types <spec>                      emit TypeScript declarations for an adapter
   zin init <framework> <spec>           print a conformance test skeleton
                                         (pytest, unittest, jest, vitest, node, playwright,
                                         testing-library, go, rust, junit)
@@ -680,6 +681,12 @@ fn dispatch(args: &[String]) -> Result<Output> {
         "trace" => trace(rest),
         "audit" => run_audit(rest),
         "observe" => observe(rest),
+        "types" => {
+            let arguments = Arguments::parse(rest, &[])?;
+            let spec = load_spec(arguments.one("specification file")?)?;
+            let model = crate::Model::compile(&spec)?;
+            Ok(ok(crate::typescript::declarations(&model)))
+        }
         "init" => init(rest),
         "report" => {
             let arguments = Arguments::parse(rest, &[])?;

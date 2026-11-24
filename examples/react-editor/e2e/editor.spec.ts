@@ -1,30 +1,12 @@
-// The running application against the specification, in a real browser.
 import { test } from "@playwright/test";
-import { click, gate, verify } from "zin-verify/playwright";
+import { type Binding, bind, button, oneOf, response, role, testId, verify } from "zin-verify/playwright";
+import type { Actions, State } from "./editor-model";
 
-verify(
-  new URL("../../editor.zin", import.meta.url),
-  async ({ page }) => {
-    // Hold every save: the plan decides when the server answers, and how.
-    const server = await gate(page, "**/api/quantity");
-    await page.goto("/");
-    const button = (name: string) => page.getByRole("button", { name });
-    const number = async (id: string) => Number(await page.getByTestId(id).textContent());
-    return {
-      actions: {
-        increase: () => click(button("More")),
-        decrease: () => click(button("Less")),
-        save: () => server.request(() => click(button("Save"))),
-        server_ok: () => server.fulfill({ status: 204 }),
-        server_fails: () => server.fulfill({ status: 500 }),
-      },
-      observe: async () => ({
-        draft: await number("draft"),
-        saved: await number("saved"),
-        status: (await page.getByRole("status").textContent()) ?? "",
-      }),
-      teardown: () => server.dispose(),
-    };
+verify(new URL("../../editor.zin", import.meta.url), bind({
+  url: "/", requests: "**/api/quantity",
+  actions: {
+    increase: button("More"), decrease: button("Less"), save: button("Save", { request: true }),
+    server_ok: response(204), server_fails: response(500),
   },
-  { test },
-);
+  fields: { draft: testId("draft", Number), saved: testId("saved", Number), status: role("status", oneOf("idle", "saving", "failed")) },
+} satisfies Binding<Actions, State>), { test });
