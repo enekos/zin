@@ -54,6 +54,10 @@
     "./vitest-reporter": {
       "types": "./vitest-reporter.d.ts",
       "import": "./vitest-reporter.js"
+    },
+    "./playwright-reporter": {
+      "types": "./playwright-reporter.d.ts",
+      "default": "./playwright-reporter.cjs"
     }
   },
   "files": [
@@ -74,7 +78,11 @@
     "vitest.js",
     "vitest.d.ts",
     "vitest-reporter.js",
-    "vitest-reporter.d.ts"
+    "vitest-reporter.d.ts",
+    "playwright-reporter.cjs",
+    "playwright-reporter.d.ts",
+    "coverage.cjs",
+    "hermetic.cjs"
   ],
   "scripts": {
     "test": "npm run test:node && npm run test:jest && npm run test:jest:esm && npm run test:vitest && npm run test:mocha && npm run test:playwright",

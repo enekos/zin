@@ -250,3 +250,12 @@ can share an enabledness check and observation. Custom actions replay individual
 Generate your spec's TypeScript contract with `zin types editor.zin > editor.d.ts`.
 Use its `Adapter` with `satisfies` for a function adapter, or check a declarative
 map with `satisfies Binding<Actions, State>` from `zin-verify/playwright`.
+
+Use `hermetic: { seed: 1 }` with Playwright's `use.serviceWorkers: "block"`
+to fail a test on an ungated fetch, XHR or event stream. The page gets seeded
+randomness on navigation, reduced motion and disabled CSS animations. Install
+your routes in the adapter factory. Use `coverage: true` and configure
+`zin-verify/playwright-reporter` as a Playwright reporter to count distinct
+attempted model operations, failures and observed fields. On shards use the
+blob reporter, collect the blobs and run
+`npx playwright merge-reports --reporter=zin-verify/playwright-reporter ./all-blob-reports`.
