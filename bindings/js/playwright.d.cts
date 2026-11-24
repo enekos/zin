@@ -11,7 +11,7 @@ import type {
   TestInfo,
   TestType,
 } from "@playwright/test";
-import type { Adapter, Awaitable, Plan, PlanOptions } from "./index.cjs";
+import type { Scalar, Observed, Adapter, Awaitable, Plan, PlanOptions } from "./index.cjs";
 
 export { Rejected } from "./index.cjs";
 
@@ -58,3 +58,26 @@ export function gate(
   url: string | RegExp | ((url: URL) => boolean),
   options?: { timeout?: number },
 ): Promise<Gate>;
+
+type Scope = { page: Page; server?: Gate };
+interface Button { kind: "button"; name: string; request?: boolean }
+interface ResponseAction { kind: "response"; status: number }
+export function button(name: string, options?: { request?: boolean }): Button;
+export function oneOf<T extends string>(...values: T[]): (text: string) => T;
+export function response(status: number): ResponseAction;
+export function role(name: Parameters<Page["getByRole"]>[0]): (scope: Scope) => Promise<string>;
+export function role<T>(name: Parameters<Page["getByRole"]>[0], parse: (text: string) => T): (scope: Scope) => Promise<T>;
+export function testId(id: string): (scope: Scope) => Promise<string>;
+export function testId<T>(id: string, parse: (text: string) => T): (scope: Scope) => Promise<T>;
+export type Binding<A, S> = {
+  url?: string;
+  requests?: Parameters<typeof gate>[1];
+  actions: { [K in keyof A]: Button | ResponseAction | ((scope: Scope, args: A[K] extends (args: infer P) => unknown ? P : never) => Awaitable<unknown>) };
+  fields: { [K in keyof S]?: (scope: Scope) => Awaitable<S[K]> };
+};
+export function bind(config: {
+  url?: string;
+  requests?: Parameters<typeof gate>[1];
+  actions: Record<string, Button | ResponseAction | { call(scope: Scope, args: Record<string, Scalar>): Awaitable<unknown> }["call"]>;
+  fields: Record<string, (scope: Scope) => Awaitable<Observed[string]>>;
+}): ((fixtures: { page: Page }) => Promise<Adapter>) & { fields: string[] };

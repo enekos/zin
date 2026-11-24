@@ -235,3 +235,18 @@ The plan has roughly `states × calls` steps, so:
 - Appearance. Use screenshots or visual review for that; `observe` can read
   whatever a user could read, but it reads text and attributes.
 - Timing. The model orders events; it does not say how long they take.
+
+## Binding fields and controls
+
+`bind({ url, requests, actions, fields })` opens a page for each test, installs an
+optional HTTP gate before navigation, and disposes it afterwards. Buttons match an
+exact accessible name. `button("Save", { request: true })` waits for the request
+and `response(204)` answers it. Use a function `({ page, server }, args) => …`
+for any other action, including translating model symbols into input strings.
+Field readers such as `testId("draft", Number)` and `role("status")` also declare
+the projection for `zin plan --observe`. Consecutive refusals of these controls
+can share an enabledness check and observation. Custom actions replay individually.
+
+Generate your spec's TypeScript contract with `zin types editor.zin > editor.d.ts`.
+Use its `Adapter` with `satisfies` for a function adapter, or check a declarative
+map with `satisfies Binding<Actions, State>` from `zin-verify/playwright`.

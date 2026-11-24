@@ -112,6 +112,11 @@ const fresh = (plan, spec) => currentFingerprint(spec, plan.sources) === plan.fi
 function compatible(plan, requested, explicit) {
   if ((plan.component ?? null) !== (requested.component ?? null)) return false;
   const defaults = plan.defaults !== null && typeof plan.defaults === "object" ? plan.defaults : {};
+  const observed = plan.observe;
+  if (requested.observe !== undefined) {
+    if (!Array.isArray(observed) || observed.length !== requested.observe.length ||
+        !requested.observe.every(field => observed.includes(field))) return false;
+  } else if (!explicit && observed !== undefined) return false;
   return PLANNING_OPTIONS.every((key) => {
     if (key in requested) return key in plan && plan[key] === requested[key];
     if (explicit) return true;
@@ -178,6 +183,13 @@ function loadPlan(spec, options = {}) {
   const path = toPath(spec);
   const requested = {};
   const args = ["plan", path];
+  if (options.observe !== undefined) {
+    if (!Array.isArray(options.observe) || options.observe.some(field => typeof field !== "string" || !field || field.includes(","))) {
+      throw new PlanError("observe must be an array of field names");
+    }
+    requested.observe = [...new Set(options.observe)];
+    args.push("--observe", requested.observe.join(","));
+  }
   for (const [name, key, flag] of OPTIONS) {
     const value = options[name];
     if (value === undefined || value === null) continue;
@@ -349,10 +361,28 @@ class Runner {
     let message = await this.compare(adapter, 0, "before any action", progress);
     if (message) return [0, message];
     let state = 0;
-    for (const [index, step] of steps.entries()) {
+    for (let index = 0; index < steps.length; index++) {
+      const step = steps[index];
       const [callId, to] = step;
       const call = this.plan.calls[callId];
       if (progress) progress.attempted = index + 1;
+      if (to < 0 && adapter.refusals) {
+        let end = index + 1;
+        while (end < steps.length && steps[end][1] < 0) end++;
+        const calls = steps.slice(index, end).map(([id]) => this.plan.calls[id]);
+        const refused = await adapter.refusals(calls);
+        if (refused === true) {
+          message = await this.step(calls.map(call => `reject ${call.text}`).join(", "), async () => {
+            if (adapter.settle) await adapter.settle();
+            return this.compare(adapter, state, "after checking refusals", progress);
+          });
+          if (progress) progress.attempted = end;
+          if (message) return [end, message];
+          if (progress) progress.matched = end;
+          index = end - 1;
+          continue;
+        }
+      }
       message = await this.step(this.text(step), async () => {
         const accepted = await this.perform(adapter, call);
         if (typeof adapter.settle === "function") await adapter.settle();

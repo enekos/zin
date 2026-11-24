@@ -5,6 +5,8 @@ export type Awaitable<T> = T | Promise<T>;
 export interface Adapter {
   /** One function per action; arguments arrive as an object keyed by parameter name. Return `false` or throw a rejection to refuse. */
   actions: Record<string, (args: Record<string, Scalar>) => Awaitable<unknown>>;
+  /** Return true only when all these actions would refuse without side effects. Otherwise replay them individually. */
+  refusals?: (calls: Plan["calls"]) => Awaitable<boolean>;
   /** Which thrown errors mean "the implementation refused this action". */
   rejects?: (error: unknown) => boolean;
   /** Any subset of the specification's state fields. */
@@ -61,6 +63,7 @@ export type Cover = "transitions" | "states" | "actions" | "scenarios" | "pairs"
  */
 export interface PlanOptions {
   cover?: Cover;
+  observe?: string[];
   /** A pre-derived plan file to use instead of running `zin plan`. */
   plan?: string | URL;
   /** Path of the `zin` binary; defaults to `$ZIN_BIN`, then `zin` on PATH. */
