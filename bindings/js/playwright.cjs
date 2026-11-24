@@ -24,7 +24,7 @@ const { coverageModel, coverageRecord } = require("./coverage.cjs");
 const { monitor } = require("./monitor.cjs");
 const { hermetic } = require("./hermetic.cjs");
 const { Channel, socketFrames, eventStream, clock, navigation, connectivity, actors } = require("./channels.cjs");
-const { binding, button, response, role, oneOf, testId } = require("./bind.cjs");
+const { binding, button, response, role, oneOf, text, testId } = require("./bind.cjs");
 const { PlanError, Rejected, loadPlan, runTest } = require("./index.cjs");
 
 // How long an observation may take to match the specification: Playwright's own default for `expect`.
@@ -219,4 +219,4 @@ async function gate(target, url, options) {
 }
 
 const bind = binding({ gate, click });
-module.exports = { Channel, socketFrames, eventStream, clock, navigation, connectivity, actors, bind, button, response, role, oneOf, testId, Rejected, Gate, verify, actionable, click, fill, gate };
+module.exports = { Channel, socketFrames, eventStream, clock, navigation, connectivity, actors, bind, button, response, role, oneOf, text, testId, Rejected, Gate, verify, actionable, click, fill, gate };

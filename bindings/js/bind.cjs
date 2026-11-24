@@ -22,8 +22,38 @@ function testId(id, parse = String) {
   return async ({ page }) => parse(await page.getByTestId(id).innerText());
 }
 
+// CSS text fields can be sampled in a single document turn. Keep arbitrary
+// function readers for controls or observations outside the document.
+function text(selector, parse = String) {
+  const read = async ({ page }) => parse(await page.locator(selector).textContent());
+  return Object.assign(read, { selector, parse });
+}
+
+function observation(fields) {
+  const entries = Object.entries(fields);
+  const grouped = entries.filter(([, read]) => typeof read.selector === "string");
+  const individual = entries.filter(([, read]) => typeof read.selector !== "string");
+  const selectors = grouped.map(([, read]) => read.selector);
+  return async scope => {
+    const result = await Promise.all(individual.map(async ([key, read]) => [key, await read(scope)]));
+    if (grouped.length) {
+      const snapshot = await scope.page.evaluate(selectors => selectors.map(selector => {
+        const elements = document.querySelectorAll(selector);
+        if (elements.length > 1) throw new Error(`ambiguous text field: ${selector}`);
+        return elements[0]?.textContent ?? null;
+      }), selectors);
+      for (const [index, [key, read]] of grouped.entries()) {
+        const raw = snapshot[index];
+        result.push([key, raw === null ? await read(scope) : read.parse(raw)]);
+      }
+    }
+    return Object.fromEntries(result);
+  };
+}
+
 function binding({ gate, click }) {
-  return function bind({ url, requests, actions, fields }) {
+  return function bind({ url, requests, actions, fields, restore }) {
+    const observe = observation(fields);
     const factory = async ({ page }) => {
       const server = requests && await gate(page, requests);
       const scope = { page, server: server || undefined };
@@ -45,10 +75,8 @@ function binding({ gate, click }) {
         }));
         return {
           actions: functions,
-          async observe() {
-            return Object.fromEntries(await Promise.all(Object.entries(fields).map(async ([key, read]) =>
-              [key, await read(scope)])));
-          },
+          observe: () => observe(scope),
+          restore: restore && (state => restore(state, scope)),
           async refusals(calls) {
             let buttons;
             for (const { action } of calls) {
@@ -73,4 +101,4 @@ function binding({ gate, click }) {
   };
 }
 
-module.exports = { binding, button, response, role, testId, oneOf };
+module.exports = { binding, button, response, role, testId, text, oneOf };

@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "test": "node corpus.mjs",
+    "test:cost": "node replay-cost.mjs",
     "test:browser": "playwright test --config playwright.config.cjs"
   },
   "devDependencies": {

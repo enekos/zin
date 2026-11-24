@@ -402,6 +402,7 @@ class Runner {
     let message = await monitor?.allow([this.plan.states[state]]);
     if (message) return [0, message];
     await visit(state);
+    let replayUntil = 0;
     for (let index = 0; index < steps.length; index++) {
       const step = steps[index];
       const [callId, to] = step;
@@ -413,9 +414,10 @@ class Runner {
         message = await monitor.allow(allowed);
         if (message) return [index + 1, message];
       }
-      if (to < 0 && adapter.refusals) {
+      if (to < 0 && adapter.refusals && index >= replayUntil) {
         let end = index + 1;
         while (end < steps.length && steps[end][1] < 0) end++;
+        replayUntil = end;
         const calls = steps.slice(index, end).map(([id]) => this.plan.calls[id]);
         const refused = await adapter.refusals(calls);
         if (refused === true) {
