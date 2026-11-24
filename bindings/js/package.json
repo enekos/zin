@@ -58,6 +58,10 @@
     "./playwright-reporter": {
       "types": "./playwright-reporter.d.ts",
       "default": "./playwright-reporter.cjs"
+    },
+    "./browser-tools": {
+      "import": "./browser-tools.cjs",
+      "require": "./browser-tools.cjs"
     }
   },
   "files": [
@@ -84,7 +88,8 @@
     "playwright-reporter.d.ts",
     "coverage.cjs",
     "hermetic.cjs",
-    "monitor.cjs"
+    "monitor.cjs",
+    "browser-tools.cjs"
   ],
   "scripts": {
     "test": "npm run test:node && npm run test:jest && npm run test:jest:esm && npm run test:vitest && npm run test:mocha && npm run test:playwright",
