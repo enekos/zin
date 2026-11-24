@@ -1,0 +1,28 @@
+system "Two tabs editing one revision"
+
+types
+  interchangeable user is one of alice, bob
+
+state
+  revision is an integer from 0 to 2
+  seen is a map from user to an integer from 0 to 2
+
+initially
+  revision is 0
+  seen of every user is 0
+
+action refresh(u is a user)
+  seen of u becomes revision
+
+action save(u is a user)
+  requires revision is less than 2
+  requires seen of u is revision
+  revision becomes revision + 1
+  seen of u becomes revision + 1
+
+scenario "An old tab must refresh before saving"
+  save(alice)
+  reject save(bob)
+  refresh(bob)
+  save(bob)
+  expect revision is 2

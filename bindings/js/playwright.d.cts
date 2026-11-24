@@ -1,4 +1,5 @@
 import type {
+  Browser,
   BrowserContext,
   Locator,
   Page,
@@ -85,3 +86,28 @@ export function bind(config: {
   actions: Record<string, Button | ResponseAction | { call(scope: Scope, args: Record<string, Scalar>): Awaitable<unknown> }["call"]>;
   fields: Record<string, (scope: Scope) => Awaitable<Observed[string]>>;
 }): ((fixtures: { page: Page }) => Promise<Adapter>) & { fields: string[] };
+
+export class Channel<T> {
+  constructor(name?: string);
+  readonly pending: number;
+  hold(value: T): void;
+  take(match?: (value: T) => boolean): T;
+}
+export function socketFrames(page: Page, url: Parameters<Page["routeWebSocket"]>[0],
+  reply?: (message: string | Buffer) => string | Buffer): Promise<{
+    readonly pending: number;
+    release(match?: (data: string | Buffer) => boolean): void;
+  }>;
+export function eventStream(): Promise<{
+  readonly url: string;
+  readonly pending: number;
+  hold(data: string, event?: string): void;
+  release(match?: (data: string) => boolean): void;
+  dispose(): Promise<void>;
+}>;
+export function clock(page: Page, time?: Date): Promise<{ advance(milliseconds: number): Promise<void> }>;
+export function navigation(page: Page): { back(): Promise<void>; forward(): Promise<void>; reload(): ReturnType<Page["reload"]> };
+export function connectivity(page: Page): { offline(): Promise<void>; online(): Promise<void> };
+export function actors<A extends string>(target: Browser | BrowserContext, values: Iterable<A>): Promise<{
+  page(actor: A): Page; dispose(): Promise<void>;
+}>;
