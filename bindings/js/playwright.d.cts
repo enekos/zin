@@ -119,3 +119,14 @@ export function connectivity(page: Page): { offline(): Promise<void>; online(): 
 export function actors<A extends string>(target: Browser | BrowserContext, values: Iterable<A>): Promise<{
   page(actor: A): Page; dispose(): Promise<void>;
 }>;
+
+export function dialogs(page: Page): {
+  readonly pending: number; accept(value?: string): Promise<void>; dismiss(): Promise<void>; dispose(): Promise<void>;
+};
+export function permissions(context: BrowserContext, origin: string): {
+  grant(name: string): Promise<void>; revoke(name: string): Promise<void>; dispose(): Promise<void>;
+};
+export function visibility(page: Page, hidden: boolean): Promise<void>;
+export function messages(page: Page, options?: { windowMessages?: boolean; broadcasts?: string[] }): Promise<{
+  pending(): Promise<unknown[]>; release(index?: number): Promise<void>;
+}>;

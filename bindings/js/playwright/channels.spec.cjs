@@ -37,3 +37,51 @@ test("history and connectivity actions refuse at the boundary", async ({ page })
   await expect(net.offline()).rejects.toThrow(Rejected);
   await net.online();
 });
+
+test("message channels order native window and BroadcastChannel events", async ({ page }) => {
+  const { messages } = require("zin-verify/playwright");
+  const events = await messages(page, { broadcasts: ["changes"] });
+  await page.route("https://messages.test/", r => r.fulfill({ contentType: "text/html", body: "<title>Messages</title>" }));
+  await page.goto("https://messages.test/");
+  await page.evaluate(() => {
+    window.received = [];
+    window.onmessage = e => received.push(e.data);
+    window.receiver = new BroadcastChannel("changes");
+    receiver.onmessage = e => received.push(e.data);
+    window.postMessage("window", location.origin);
+    new BroadcastChannel("changes").postMessage("broadcast");
+  });
+  await expect.poll(async () => (await events.pending()).length).toBe(2);
+  const pending = await events.pending();
+  await events.release(pending.indexOf("broadcast"));
+  await events.release();
+  expect(await page.evaluate(() => received)).toEqual(["broadcast", "window"]);
+  await expect(events.release()).rejects.toThrow(Rejected);
+});
+
+test("dialog, visibility and permission changes are observable browser actions", async ({ page, context }) => {
+  const { dialogs, permissions, visibility } = require("zin-verify/playwright");
+  const origin = "https://events.test";
+  await page.route(origin, r => r.fulfill({ contentType: "text/html", body: "<title>Events</title>" }));
+  await page.goto(origin);
+  const grants = permissions(context, origin);
+  await grants.grant("geolocation");
+  const permission = () => page.evaluate(async () => (await navigator.permissions.query({ name: "geolocation" })).state);
+  expect(await permission()).toBe("granted");
+  await grants.revoke("geolocation");
+  expect(await permission()).not.toBe("granted");
+  await grants.dispose();
+  await visibility(page, true);
+  expect(await page.evaluate(() => document.visibilityState)).toBe("hidden");
+  await expect(visibility(page, true)).rejects.toThrow(Rejected);
+  await visibility(page, false);
+
+  const held = dialogs(page);
+  const opened = page.waitForEvent("dialog");
+  const answer = page.evaluate(() => prompt("name"));
+  await opened;
+  await held.accept("Alice");
+  expect(await answer).toBe("Alice");
+  expect(() => held.dismiss()).toThrow(Rejected);
+  await held.dispose();
+});

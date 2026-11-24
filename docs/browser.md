@@ -310,3 +310,16 @@ Default-export a factory from a binding module, then run
 in fresh Chromium pages and reports missing action implementations, controls that
 never matched in visited states, constant observations and divergences. Use the
 test application's absolute URL in that factory.
+
+`dialogs(page)` queues native dialogs. Schedule a dialog-opening action so it
+can return control to the runner, then accept or dismiss the pending dialog.
+`permissions(context, origin)` grants and revokes permissions in a dedicated
+context whose overrides it owns. `visibility(page, hidden)` simulates
+`document.hidden`, `visibilityState` and the visibility event in the current
+document. It does not simulate background timer throttling.
+
+Install `await messages(page, { windowMessages: true, broadcasts: ["changes"] })`
+before navigation to hold window messages and selected native BroadcastChannel
+messages. Inspect waiting payloads with `pending()` and choose the next delivery
+with `release(index)`. The queue belongs to the current document. Replayed
+messages are synthetic events and have `isTrusted === false`.
