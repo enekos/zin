@@ -374,7 +374,30 @@ fn plan(args: &[String]) -> Result<Output> {
     } else {
         String::new()
     };
-    let mut text = plan.to_json(&verification).to_compact();
+    let entry = std::path::Path::new(arguments.one("specification file")?);
+    let base = entry.parent().unwrap_or(std::path::Path::new(""));
+    let locations = verification
+        .model
+        .actions
+        .iter()
+        .filter_map(|action| {
+            let span = spec.statement_span(action.line)?;
+            let file = std::path::Path::new(&span.file).strip_prefix(base).ok()?;
+            Some((
+                action.name.clone(),
+                Json::object([
+                    ("file", Json::str(file.to_string_lossy().replace('\\', "/"))),
+                    ("line", Json::count(span.line)),
+                    ("column", Json::count(span.column)),
+                ]),
+            ))
+        })
+        .collect();
+    let mut json = plan.to_json(&verification);
+    if let Json::Object(entries) = &mut json {
+        entries.push(("action_locations".to_string(), Json::Object(locations)));
+    }
+    let mut text = json.to_compact();
     text.push('\n');
     match arguments.option("out") {
         Some(path) => {

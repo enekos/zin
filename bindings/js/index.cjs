@@ -271,6 +271,7 @@ class Runner {
     this.observeInterval = options.observeInterval ?? OBSERVE_INTERVAL_MS;
     // Counts steps attempted and matched, and fields observed, for reporters.
     this.progress = options.progress;
+    this.location = options.location;
     this.params = new Map(
       plan.actions.map((action) => [action.name, action.params.map((param) => param.name)]),
     );
@@ -363,7 +364,7 @@ class Runner {
         return accepted
           ? `the implementation accepted ${call.text}, but the specification rejects it`
           : `the implementation rejected ${call.text}, but the specification allows it`;
-      });
+      }, this.location?.(call.action));
       if (message) return [index + 1, message];
       if (progress) progress.matched = index + 1;
     }
@@ -411,6 +412,8 @@ class Runner {
       `in test "${test.name}" at step ${failed}\n${message}\nsteps taken:\n${this.listing(taken)}` +
       `\nspec fingerprint: ${digest}\n${scenario}`;
     if (failed > 0) {
+      const location = this.location?.(this.plan.calls[steps[failed - 1][0]].action);
+      if (location) report += `\nspecification: ${location.file}:${location.line}:${location.column}`;
       const short = this.shortest(steps, failed);
       if (short.length < taken.length) {
         let again;

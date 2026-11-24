@@ -50,10 +50,13 @@ jobs:
           npm ci
           npx playwright install --with-deps --only-shell chromium
           npm test
-      - name: React example
+      - name: React example from the npm tarball
         working-directory: examples/react-editor
         run: |
+          package=$(npm pack ../../bindings/js --silent --pack-destination "$RUNNER_TEMP")
           npm ci
+          npm install --no-save --package-lock=false "$RUNNER_TEMP/$package"
+          test ! -L node_modules/zin-verify
           npx playwright install --with-deps --only-shell chromium
           npm test
       - uses: actions/setup-go@v5

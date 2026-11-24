@@ -1,0 +1,38 @@
+name: Publish zin-verify
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to publish to npm
+        required: true
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+permissions:
+  contents: read
+jobs:
+  npm:
+    if: github.event_name == 'workflow_dispatch' || vars.PUBLISH_NPM == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Validate release tag
+        shell: bash
+        run: '[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]'
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Confirm the tag matches the npm package
+        working-directory: bindings/js
+        run: test "v$(node -p 'require("./package.json").version')" = "$TAG"
+      - working-directory: bindings/js
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
