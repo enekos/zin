@@ -292,6 +292,8 @@ class Runner {
     // Counts steps attempted and matched, and fields observed, for reporters.
     this.progress = options.progress;
     this.location = options.location;
+    this.monitor = options.monitor;
+    this.onState = options.onState;
     this.params = new Map(
       plan.actions.map((action) => [action.name, action.params.map((param) => param.name)]),
     );
@@ -381,12 +383,36 @@ class Runner {
     }
     let message = await this.compare(adapter, from, from ? "after restoring state" : "before any action", progress);
     if (message) return [0, message];
-    let state = from;
+    const monitor = this.monitor && await this.monitor();
+    try {
+      return await this.runSteps(adapter, steps, progress, from, monitor);
+    } finally {
+      if (monitor) await monitor.dispose();
+    }
+  }
+
+  async runSteps(adapter, steps, progress, state, monitor) {
+    const seen = new Set();
+    const visit = async id => {
+      if (this.onState && !seen.has(id)) {
+        seen.add(id);
+        await this.onState(structuredClone(this.plan.states[id]), id);
+      }
+    };
+    let message = await monitor?.allow([this.plan.states[state]]);
+    if (message) return [0, message];
+    await visit(state);
     for (let index = 0; index < steps.length; index++) {
       const step = steps[index];
       const [callId, to] = step;
       const call = this.plan.calls[callId];
       if (progress) progress.attempted = index + 1;
+      if (monitor) {
+        const allowed = [this.plan.states[state]];
+        if (to >= 0) allowed.push(this.plan.states[to]);
+        message = await monitor.allow(allowed);
+        if (message) return [index + 1, message];
+      }
       if (to < 0 && adapter.refusals) {
         let end = index + 1;
         while (end < steps.length && steps[end][1] < 0) end++;
@@ -416,8 +442,14 @@ class Runner {
           ? `the implementation accepted ${call.text}, but the specification rejects it`
           : `the implementation rejected ${call.text}, but the specification allows it`;
       }, this.location?.(call.action));
+      if (!message && monitor) message = await monitor.allow([this.plan.states[state]]);
       if (message) return [index + 1, message];
+      if (this.onState && to >= 0) await visit(state);
       if (progress) progress.matched = index + 1;
+    }
+    if (monitor) {
+      message = await monitor.allow([this.plan.states[state]]);
+      if (message) return [steps.length, message];
     }
     return null;
   }

@@ -276,3 +276,17 @@ blob reporter, collect the blobs and run
 `take(predicate?)` refuses when no matching item is waiting.
 The debounce, tabs and frames pilots replay the same scenarios against correct
 and deliberately faulty implementations in Chromium.
+
+## State probes and transient changes
+
+Pass `onState(state, page, { id, testInfo })` to inspect each canonical state
+on its first matched visit within a generated test. The editor attaches a
+screenshot and runs axe in this hook. A hook can also assert focus, layout or a
+performance budget. Each worker owns its page and its Playwright attachments.
+
+Pass a self-contained synchronous `monitor: () => ({ status: … })` to sample
+DOM fields at MutationObserver delivery boundaries. During an action either
+the pre-state or post-state may match. Between actions the current state must
+match. The reader runs in the document and must return at least one field.
+Monitoring is scoped to that document. Changes coalesced into one observer
+delivery produce one sample.

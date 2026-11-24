@@ -39,6 +39,7 @@ export function Editor({ onEvent }: { onEvent?: (action: string) => void }) {
 
   return (
     <main>
+      <h1>Quantity editor</h1>
       <button aria-label="Less" disabled={draft === 0} onClick={() => change(-1, "decrease")}>
         −
       </button>

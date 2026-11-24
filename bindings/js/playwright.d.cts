@@ -23,6 +23,10 @@ export interface VerifyOptions<Fixtures> extends PlanOptions {
   test?: TestType<any, any>;
   /** Fixtures the factory receives; default `["page"]`. */
   fixtures?: (keyof Fixtures & string)[];
+  /** Run once per visited canonical state in a test, after its observation matches. */
+  onState?: (state: Observed, page: Page, info: { id: number; testInfo: TestInfo }) => Awaitable<void>;
+  /** Synchronous observation evaluated in the document at DOM mutation delivery boundaries. */
+  monitor?: () => Observed;
   /** Attach operation coverage for zin-verify/playwright-reporter or a merged blob report. */
   coverage?: boolean;
   /** Block ungated fetch/XHR/event streams and seed randomness on each page load. The suite blocks service workers. */
