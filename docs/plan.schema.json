@@ -6,7 +6,7 @@
   "type": "object",
   "required": ["zin", "system", "fingerprint", "cover", "fields", "actions", "states", "parents", "calls", "tests", "summary"],
   "properties": {
-    "zin": { "enum": ["plan/1"] },
+    "zin": { "enum": ["plan/1", "plan/2"] },
     "system": { "type": "string" },
     "fingerprint": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
     "sources": {
@@ -99,6 +99,7 @@
         "required": ["name", "kind", "steps"],
         "properties": {
           "name": { "type": "string" },
+          "from": { "type": "integer", "minimum": 0 },
           "kind": { "enum": ["scenario", "witness", "tour", "identify"] },
           "steps": {
             "type": "array",

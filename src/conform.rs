@@ -243,6 +243,11 @@ fn replay<A: Adapter>(
     options: &PlanOptions,
     mut factory: impl FnMut() -> A,
 ) -> Result<Conformance> {
+    if options.restore {
+        return Err(crate::Error::usage(
+            "the Rust replay adapter does not support restore",
+        ));
+    }
     let plan = Plan::build(verification, options)?;
     for test in &plan.tests {
         let Some(divergence) = run(&mut factory(), verification, &test.steps) else {

@@ -112,6 +112,7 @@ const fresh = (plan, spec) => currentFingerprint(spec, plan.sources) === plan.fi
 function compatible(plan, requested, explicit) {
   if ((plan.component ?? null) !== (requested.component ?? null)) return false;
   const defaults = plan.defaults !== null && typeof plan.defaults === "object" ? plan.defaults : {};
+  if ((requested.restore !== undefined || !explicit) && (plan.zin === "plan/2") !== !!requested.restore) return false;
   const observed = plan.observe;
   if (requested.observe !== undefined) {
     if (!Array.isArray(observed) || observed.length !== requested.observe.length ||
@@ -125,7 +126,7 @@ function compatible(plan, requested, explicit) {
 }
 
 function validate(plan, origin) {
-  if (plan === null || typeof plan !== "object" || plan.zin !== PLAN_FORMAT) {
+  if (plan === null || typeof plan !== "object" || ![PLAN_FORMAT, "plan/2"].includes(plan.zin)) {
     throw new PlanError(`${origin} is not a ${PLAN_FORMAT} file`);
   }
   try {
@@ -148,6 +149,9 @@ function validate(plan, origin) {
       throw new PlanError("the plan is malformed: states and parents do not line up");
     }
     for (const test of plan.tests) {
+      if (test.from !== undefined && (plan.zin !== "plan/2" || !Number.isInteger(test.from) || test.from < 0 || test.from >= states)) {
+        throw new PlanError("the plan is malformed: invalid restore state");
+      }
       for (const [call, to] of test.steps) {
         if (!(call >= 0 && call < plan.calls.length && to >= -1 && to < states)) {
           throw new PlanError(`the plan is malformed: step [${call},${to}] is out of range`);
@@ -183,6 +187,10 @@ function loadPlan(spec, options = {}) {
   const path = toPath(spec);
   const requested = {};
   const args = ["plan", path];
+  if (options.restore !== undefined) {
+    requested.restore = options.restore;
+    if (options.restore) args.push("--restore");
+  }
   if (options.observe !== undefined) {
     if (!Array.isArray(options.observe) || options.observe.some(field => typeof field !== "string" || !field || field.includes(","))) {
       throw new PlanError("observe must be an array of field names");
@@ -306,6 +314,12 @@ class Runner {
   /** One observation: `{ message, waitable }`; only a wrong value can still become right. */
   async mismatch(adapter, state, after, progress) {
     const observed = await adapter.observe();
+    const projection = this.plan.observe ?? [];
+    for (const field of projection) {
+      if (!Object.hasOwn(observed ?? {}, field)) {
+        return { message: `observe() omitted the planned field '${field}'` };
+      }
+    }
     if (observed === null || observed === undefined) return null;
     if (typeof observed !== "object") {
       return { message: `observe() must return an object of state fields, not ${typeof observed}` };
@@ -316,7 +330,7 @@ class Runner {
         return { message: `observe() returned '${field}', which is not a state field of the specification` };
       }
       progress?.fields.add(field);
-      if (!same(expected[field], raw)) {
+      if (!same(expected[field], raw) || (projection.includes(field) && !same(raw, expected[field]))) {
         return {
           message: `${after}, ${field} is ${show(raw)}, but the specification says ${show(expected[field])}`,
           waitable: true,
@@ -328,7 +342,9 @@ class Runner {
 
   /** Compares what the adapter observes with a model state, waiting up to `observeTimeout` for it to match. */
   async compare(adapter, state, after, progress) {
-    if (typeof adapter.observe !== "function") return null;
+    if (typeof adapter.observe !== "function") {
+      return this.plan.observe?.length ? "the plan requires an observe() function" : null;
+    }
     const deadline = Date.now() + this.observeTimeout;
     for (;;) {
       const found = await this.mismatch(adapter, state, after, progress);
@@ -357,10 +373,15 @@ class Runner {
   }
 
   /** The `[step number, message]` of the first divergence, if any. */
-  async run(adapter, steps, progress) {
-    let message = await this.compare(adapter, 0, "before any action", progress);
+  async run(adapter, steps, progress, from = 0) {
+    if (from !== 0) {
+      if (typeof adapter.restore !== "function") throw new PlanError("this plan needs adapter.restore(state)");
+      await adapter.restore(structuredClone(this.plan.states[from]));
+      if (adapter.settle) await adapter.settle();
+    }
+    let message = await this.compare(adapter, from, from ? "after restoring state" : "before any action", progress);
     if (message) return [0, message];
-    let state = 0;
+    let state = from;
     for (let index = 0; index < steps.length; index++) {
       const step = steps[index];
       const [callId, to] = step;
@@ -401,11 +422,7 @@ class Runner {
     return null;
   }
 
-  shortest(steps, failed) {
-    let state = 0;
-    for (const [, to] of steps.slice(0, failed - 1)) {
-      if (to >= 0) state = to;
-    }
+  pathTo(state) {
     const path = [];
     while (this.plan.parents[state] !== null) {
       const [parent, call] = this.plan.parents[state];
@@ -413,8 +430,14 @@ class Runner {
       state = parent;
     }
     path.reverse();
-    path.push(steps[failed - 1]);
     return path;
+  }
+
+  shortest(steps, failed, state) {
+    for (const [, to] of steps.slice(0, failed - 1)) {
+      if (to >= 0) state = to;
+    }
+    return [...this.pathTo(state), steps[failed - 1]];
   }
 
   async withAdapter(factory, body) {
@@ -429,22 +452,23 @@ class Runner {
   async check(test, factory) {
     const steps = test.steps;
     const progress = this.progress;
-    const found = await this.withAdapter(factory, (adapter) => this.run(adapter, steps, progress));
+    const found = await this.withAdapter(factory, (adapter) => this.run(adapter, steps, progress, test.from));
     if (found === null) return;
     const [failed, message] = found;
     const taken = steps.slice(0, failed);
     const digest = this.plan.fingerprint ?? "";
     const scenario =
       'scenario "Replay divergence"\n' +
-      (taken.map((step) => `  ${this.text(step)}`).join("\n") || "  expect true");
+      ([...this.pathTo(test.from ?? 0), ...taken].map((step) => `  ${this.text(step)}`).join("\n") || "  expect true");
     let report =
       `${this.plan.system}: implementation diverges from the specification ` +
       `in test "${test.name}" at step ${failed}\n${message}\nsteps taken:\n${this.listing(taken)}` +
       `\nspec fingerprint: ${digest}\n${scenario}`;
+    if (test.from) report += `\nstarted by restoring state ${test.from}: ${show(this.plan.states[test.from])}`;
     if (failed > 0) {
       const location = this.location?.(this.plan.calls[steps[failed - 1][0]].action);
       if (location) report += `\nspecification: ${location.file}:${location.line}:${location.column}`;
-      const short = this.shortest(steps, failed);
+      const short = this.shortest(steps, failed, test.from ?? 0);
       if (short.length < taken.length) {
         let again;
         try {

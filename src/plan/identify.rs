@@ -88,10 +88,12 @@ impl Identifier<'_> {
     /// Lets `steps`, a whole test, rule out look-alikes of every state it
     /// passes through. With `adopt`, transitions seen for the first time
     /// become obligations.
-    fn scan(&mut self, steps: &[PlanStep], adopt: bool) -> Result<()> {
+    fn scan(&mut self, from: u32, steps: &[PlanStep], adopt: bool) -> Result<()> {
         let (graph, classes) = (self.graph, self.classes);
-        separate(graph, classes, steps, &mut self.start, &mut self.work)?;
-        let mut state = 0;
+        if from == 0 {
+            separate(graph, classes, steps, &mut self.start, &mut self.work)?;
+        }
+        let mut state = from;
         for (index, step) in steps.iter().enumerate() {
             let Some(to) = step.to else { continue };
             if let Some(edge) = edge_index(graph, state, step.call) {
@@ -160,7 +162,7 @@ pub(super) fn identify(
         work: 0,
     };
     for test in tests.iter() {
-        identifier.scan(&test.steps, true)?;
+        identifier.scan(test.from, &test.steps, true)?;
         if identifier.pending() > MAX_PENDING_PEERS {
             return Err(limit("leaves too many look-alike states to rule out"));
         }
@@ -174,12 +176,22 @@ pub(super) fn identify(
             .count(),
     };
 
+    // A restored start has no incoming transition. Check its look-alikes
+    // against the continuations that actually start there.
+    let mut starts = BTreeMap::new();
+    for test in tests.iter().filter(|test| test.from != 0) {
+        let peers = starts
+            .entry(test.from)
+            .or_insert_with(|| classes.peers(test.from));
+        separate(graph, classes, &test.steps, peers, &mut identifier.work)?;
+    }
     let mut added = 0;
-    let mut emit = |identifier: &mut Identifier, steps: Vec<PlanStep>| -> Result<()> {
+    let mut emit = |identifier: &mut Identifier, from: u32, steps: Vec<PlanStep>| -> Result<()> {
         budget.charge(steps.len())?;
-        identifier.scan(&steps, false)?;
+        identifier.scan(from, &steps, false)?;
         added += 1;
         tests.push(PlanTest {
+            from,
             name: format!("identify {added}"),
             kind: TestKind::Identify,
             steps,
@@ -192,7 +204,7 @@ pub(super) fn identify(
         let peers = std::mem::take(&mut identifier.start);
         let steps = identifier.best_sequence(0, &peers)?;
         identifier.start = peers;
-        emit(&mut identifier, steps)?;
+        emit(&mut identifier, 0, steps)?;
         if identifier.start.len() == before {
             return Err(stuck());
         }
@@ -220,7 +232,7 @@ pub(super) fn identify(
                 .collect();
             steps.push(PlanStep { call, to: Some(to) });
             steps.extend(sequence);
-            emit(&mut identifier, steps)?;
+            emit(&mut identifier, 0, steps)?;
             let unmoved = identifier
                 .edges
                 .get(&edge)
@@ -228,6 +240,17 @@ pub(super) fn identify(
             if unmoved {
                 return Err(stuck());
             }
+        }
+    }
+    for (from, mut peers) in starts {
+        while !peers.is_empty() {
+            let before = peers.len();
+            let steps = identifier.best_sequence(from, &peers)?;
+            separate(graph, classes, &steps, &mut peers, &mut identifier.work)?;
+            if peers.len() == before {
+                return Err(stuck());
+            }
+            emit(&mut identifier, from, steps)?;
         }
     }
     Ok(identified)

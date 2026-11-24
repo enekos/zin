@@ -1,7 +1,8 @@
 const { createHash } = require("node:crypto");
 
-function* obligations(steps, count) {
-  let state = 0;
+function* obligations(item, count) {
+  const steps = item.steps;
+  let state = item.from ?? 0;
   let previous;
   for (let index = 0; index < count; index++) {
     const [call, to] = steps[index];
@@ -17,7 +18,7 @@ function coverageModel(plan, suite) {
   const operations = new Set();
   const adjacent = new Set();
   for (const item of plan.tests) {
-    for (const [op, pair] of obligations(item.steps, item.steps.length)) {
+    for (const [op, pair] of obligations(item, item.steps.length)) {
       operations.add(op);
       if (pairs && pair !== undefined) adjacent.add(pair);
     }
@@ -31,7 +32,7 @@ function coverageModel(plan, suite) {
 }
 
 function coverageRecord(model, item, progress) {
-  const done = [...obligations(item.steps, progress.attempted)];
+  const done = [...obligations(item, progress.attempted)];
   const failed = progress.attempted > progress.matched ? done.at(-1) : undefined;
   return { model, executed: [...new Set(done.map(([op]) => op))],
     pairs: model.plannedPairs !== null ? [...new Set(done.map(([,pair]) => pair).filter(Boolean))] : [],

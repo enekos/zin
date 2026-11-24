@@ -67,7 +67,7 @@ impl Misrouted {
     fn caught(&self, verification: &Verification, plan: &Plan, seen: &[State]) -> bool {
         let graph = &verification.graph;
         plan.tests.iter().any(|test| {
-            let mut actual = 0;
+            let mut actual = test.from;
             test.steps.iter().any(|step| {
                 let next = if actual == self.from && step.call == self.call {
                     Some(self.lands)
@@ -335,4 +335,42 @@ fn the_plan_command_adds_identify_tests_and_warns_about_blind_states() {
     let plain = run(&["plan", "examples/editor.zin"]);
     assert!(!plain.stdout.contains("identify"));
     assert!(!plain.stdout.contains("\"observe\""));
+}
+
+#[test]
+fn identifying_a_restored_start_catches_every_wrong_seed() {
+    let v = verified(EDITOR);
+    let fields = fields(&["draft", "status"]);
+    let seen = observations(&v, &fields);
+    let mut options = PlanOptions::default();
+    options.restore = true;
+    let plan = Plan::build_observing(&v, &options, &fields).unwrap();
+    assert!(plan.tests.iter().any(|test| test.from != 0));
+    for fault in misroutes(&v, &seen) {
+        assert!(fault.caught(&v, &plan, &seen));
+    }
+    for test in plan.tests.iter().filter(|test| test.from != 0) {
+        for wrong in 0..u32::try_from(seen.len()).unwrap() {
+            if test.from == wrong || seen[test.from as usize] != seen[wrong as usize] {
+                continue;
+            }
+            assert!(
+                plan.tests.iter().filter(|t| t.from == test.from).any(|t| {
+                    let mut actual = wrong;
+                    t.steps
+                        .iter()
+                        .any(|step| match (step.to, v.graph.target(actual, step.call)) {
+                            (None, None) => false,
+                            (Some(to), Some(next)) => {
+                                actual = next;
+                                seen[to as usize] != seen[next as usize]
+                            }
+                            _ => true,
+                        })
+                }),
+                "restored {} as {wrong}",
+                test.from
+            );
+        }
+    }
 }
