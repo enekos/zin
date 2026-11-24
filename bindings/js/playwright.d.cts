@@ -24,7 +24,7 @@ export interface VerifyOptions<Fixtures> extends PlanOptions {
   fixtures?: (keyof Fixtures & string)[];
   /** Attach operation coverage for zin-verify/playwright-reporter or a merged blob report. */
   coverage?: boolean;
-  /** Block ungated fetch/XHR/event streams and seed randomness on each page load. Use serviceWorkers: "block". */
+  /** Block ungated fetch/XHR/event streams and seed randomness on each page load. The suite blocks service workers. */
   hermetic?: boolean | { seed?: number };
   /** The suite name. */
   name?: string;

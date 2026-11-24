@@ -251,8 +251,8 @@ Generate your spec's TypeScript contract with `zin types editor.zin > editor.d.t
 Use its `Adapter` with `satisfies` for a function adapter, or check a declarative
 map with `satisfies Binding<Actions, State>` from `zin-verify/playwright`.
 
-Use `hermetic: { seed: 1 }` with Playwright's `use.serviceWorkers: "block"`
-to fail a test on an ungated fetch, XHR or event stream. The page gets seeded
+Use `hermetic: { seed: 1 }` to block service workers for the generated tests
+and fail a test on an ungated fetch, XHR or event stream. The page gets seeded
 randomness on navigation, reduced motion and disabled CSS animations. Install
 your routes in the adapter factory. Use `coverage: true` and configure
 `zin-verify/playwright-reporter` as a Playwright reporter to count distinct

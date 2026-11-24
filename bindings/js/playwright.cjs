@@ -82,6 +82,7 @@ function verify(spec, factory, options = {}) {
   const suite = options.name ?? `${plan.system} conforms to ${basename(path)}`;
   const model = options.coverage && coverageModel(plan, suite);
   test.describe(suite, () => {
+    if (options.hermetic) test.use({ serviceWorkers: "block" });
     for (const planTest of plan.tests) {
       test(
         planTest.name,
