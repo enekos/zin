@@ -43,6 +43,61 @@ impl Relabeling {
     }
 }
 
+/// Whether relabeling `groups` changes a value of `domain`.
+fn moved(domain: &Domain, groups: &[Vec<i64>]) -> bool {
+    match domain {
+        Domain::Enum(ids) => ids
+            .iter()
+            .any(|id| groups.iter().any(|group| group.contains(&i64::from(*id)))),
+        Domain::Integer { .. } | Domain::Boolean => false,
+    }
+}
+
+/// Where each slot of a relabeled value of type `kind` comes from: slot `j`
+/// of the image is slot `sources[j]` of the original, both counted from the
+/// value's first slot. Entries of a map keyed by a relabeled type move.
+fn sources(kind: &FieldType, relabel: &impl Fn(i64) -> i64, groups: &[Vec<i64>]) -> Vec<usize> {
+    match kind {
+        FieldType::Scalar(_) => vec![0],
+        FieldType::Map { keys, value, .. } => {
+            let inner = sources(value, relabel, groups);
+            let width = inner.len();
+            let moves = moved(keys, groups);
+            let mut out = vec![0; keys.size().saturating_mul(width)];
+            for (position, key) in keys.raws().into_iter().enumerate() {
+                let target = if moves {
+                    keys.position(relabel(key)).unwrap_or(position)
+                } else {
+                    position
+                };
+                for (offset, from) in inner.iter().enumerate() {
+                    if let Some(cell) = out.get_mut(target * width + offset) {
+                        *cell = position * width + from;
+                    }
+                }
+            }
+            out
+        }
+    }
+}
+
+fn relabeling(model: &Model, values: Vec<i64>, groups: &[Vec<i64>]) -> Relabeling {
+    let mut relabeling = Relabeling {
+        values,
+        source: (0..model.slots.len()).collect(),
+    };
+    for field in &model.fields {
+        let relabel = |raw: i64| relabeling.value(raw);
+        let moved = sources(&field.kind, &relabel, groups);
+        for (offset, from) in moved.into_iter().enumerate() {
+            if let Some(cell) = relabeling.source.get_mut(field.offset + offset) {
+                *cell = field.offset + from;
+            }
+        }
+    }
+    relabeling
+}
+
 /// Adjacent transpositions generate the permutation group. Checking these
 /// generators validates the initial state without constructing a factorial table.
 pub(crate) fn validate(model: &Model) -> Result<()> {
@@ -56,45 +111,35 @@ pub(crate) fn validate(model: &Model) -> Result<()> {
                 )));
             }
         }
+    }
+    let symmetry = Symmetry {
+        relabelings: Vec::new(),
+        relabeled: relabeled(model, &model.interchangeable),
+    };
+    for group in &model.interchangeable {
         for pair in group.windows(2) {
-            let swap = |raw: i64| {
-                if raw == pair[0] {
-                    pair[1]
-                } else if raw == pair[1] {
-                    pair[0]
-                } else {
-                    raw
-                }
-            };
-            for field in &model.fields {
-                let (keys, domain) = match &field.kind {
-                    FieldType::Scalar(d) => (None, d),
-                    FieldType::Map { keys, value, .. } => (Some(keys), value),
-                };
-                for index in 0..keys.map_or(1, Domain::size) {
-                    let target = match keys {
-                        Some(keys @ Domain::Enum(_)) => keys
-                            .raw_at(index)
-                            .and_then(|key| keys.position(swap(key)))
-                            .expect("validated interchangeable domain"),
-                        _ => index,
-                    };
-                    let raw = model.initial[field.offset + index];
-                    let image = if matches!(domain, Domain::Enum(_)) {
-                        swap(raw)
-                    } else {
-                        raw
-                    };
-                    if image != model.initial[field.offset + target] {
-                        return Err(Error::new(
-                            "the initial state treats interchangeable values differently",
-                        ));
-                    }
-                }
+            let mut values: Vec<i64> = (0..symbol_count(model)).collect();
+            let (first, second) = (at_raw(pair[0]), at_raw(pair[1]));
+            if first < values.len() && second < values.len() {
+                values.swap(first, second);
+            }
+            let swap = relabeling(model, values, &model.interchangeable);
+            if *symmetry.apply(&swap, &model.initial) != *model.initial {
+                return Err(Error::new(
+                    "the initial state treats interchangeable values differently",
+                ));
             }
         }
     }
     Ok(())
+}
+
+fn relabeled(model: &Model, groups: &[Vec<i64>]) -> Vec<bool> {
+    model
+        .slots
+        .iter()
+        .map(|slot| moved(&slot.domain, groups))
+        .collect()
 }
 
 impl Symmetry {
@@ -128,43 +173,13 @@ impl Symmetry {
             }
             maps = extended;
         }
-        let slots = model.slots.len();
-        let moved = |domain: &Domain| match domain {
-            Domain::Enum(ids) => ids
-                .iter()
-                .any(|id| groups.iter().any(|group| group.contains(&i64::from(*id)))),
-            Domain::Integer { .. } | Domain::Boolean => false,
-        };
-        let relabeled = model.slots.iter().map(|slot| moved(&slot.domain)).collect();
         let relabelings = maps
             .into_iter()
-            .map(|values| {
-                let mut relabeling = Relabeling {
-                    values,
-                    source: (0..slots).collect(),
-                };
-                for field in &model.fields {
-                    let FieldType::Map { keys, .. } = &field.kind else {
-                        continue;
-                    };
-                    if !moved(keys) {
-                        continue;
-                    }
-                    for (position, key) in keys.raws().into_iter().enumerate() {
-                        let Some(target) = keys.position(relabeling.value(key)) else {
-                            continue;
-                        };
-                        if let Some(cell) = relabeling.source.get_mut(field.offset + target) {
-                            *cell = field.offset + position;
-                        }
-                    }
-                }
-                relabeling
-            })
+            .map(|values| relabeling(model, values, groups))
             .collect();
         Ok(Self {
             relabelings,
-            relabeled,
+            relabeled: relabeled(model, groups),
         })
     }
 

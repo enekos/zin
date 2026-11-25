@@ -10,7 +10,7 @@
 
 use crate::check::Verification;
 use crate::explore::Graph;
-use crate::model::{FieldType, Model, at, index32};
+use crate::model::{Model, at, index32};
 use crate::plan::PlanStep;
 use crate::{Error, ErrorKind, Result, State};
 use std::collections::HashMap;
@@ -63,10 +63,7 @@ fn observed_slots(model: &Model, fields: &[String]) -> Result<(Vec<String>, Vec<
     let mut slots = Vec::new();
     for field in model.fields.iter().filter(|f| fields.contains(&f.name)) {
         names.push(field.name.clone());
-        match &field.kind {
-            FieldType::Scalar(_) => slots.push(field.offset),
-            FieldType::Map { keys, .. } => slots.extend(field.offset..field.offset + keys.size()),
-        }
+        slots.extend(field.offset..field.offset + field.kind.width());
     }
     Ok((names, slots))
 }
@@ -403,11 +400,7 @@ impl Classes {
                     .fields
                     .iter()
                     .filter(|field| {
-                        let width = match &field.kind {
-                            FieldType::Scalar(_) => 1,
-                            FieldType::Map { keys, .. } => keys.size(),
-                        };
-                        let slots = field.offset..field.offset + width;
+                        let slots = field.offset..field.offset + field.kind.width();
                         members.iter().any(|state| {
                             graph.state(*state).get(slots.clone()) != lowest.get(slots.clone())
                         })

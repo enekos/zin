@@ -68,8 +68,19 @@ pub enum FieldType {
     Map {
         key_type: String,
         keys: Domain,
-        value: Domain,
+        value: Box<FieldType>,
     },
+}
+
+impl FieldType {
+    /// How many state slots a value of this type occupies.
+    #[must_use]
+    pub fn width(&self) -> usize {
+        match self {
+            Self::Scalar(_) => 1,
+            Self::Map { keys, value, .. } => keys.size().saturating_mul(value.width()),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +106,16 @@ pub struct ActionInfo {
     pub(crate) assignments: Vec<CompiledAssignment>,
 }
 
+/// One dynamic map key on the way to a slot: the key's position in `keys`,
+/// times `stride`, is added to the slot.
+#[derive(Debug, Clone)]
+pub(crate) struct KeyStep {
+    pub key: Ir,
+    pub keys: Domain,
+    pub stride: usize,
+    pub field: String,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum Ir {
     Const(i64),
@@ -102,9 +123,7 @@ pub(crate) enum Ir {
     Local(usize),
     Index {
         offset: usize,
-        keys: Domain,
-        key: Box<Ir>,
-        field: String,
+        steps: Box<[KeyStep]>,
     },
     Not(Box<Ir>),
     Negate(Box<Ir>),
@@ -139,13 +158,12 @@ pub(crate) enum Target {
     Slot(usize),
     Indexed {
         offset: usize,
-        keys: Domain,
-        key: Ir,
-        field: String,
+        steps: Box<[KeyStep]>,
     },
     Every {
         offset: usize,
         count: usize,
+        stride: usize,
     },
 }
 
@@ -280,24 +298,36 @@ impl Model {
     pub(crate) fn decode(&self, state: &[i64]) -> State {
         let mut decoded = State::new();
         for field in &self.fields {
-            let value = match &field.kind {
-                FieldType::Scalar(domain) => {
-                    self.value(domain, state.get(field.offset).copied().unwrap_or(0))
-                }
-                FieldType::Map { keys, value, .. } => Value::Map(
+            let slots = state
+                .get(field.offset..field.offset + field.kind.width())
+                .unwrap_or_default();
+            decoded.insert(field.name.clone(), self.decode_value(&field.kind, slots));
+        }
+        decoded
+    }
+
+    /// The value held in `slots`, laid out as `kind` lays it out.
+    pub(crate) fn decode_value(&self, kind: &FieldType, slots: &[i64]) -> Value {
+        match kind {
+            FieldType::Scalar(domain) => self.value(domain, slots.first().copied().unwrap_or(0)),
+            FieldType::Map { keys, value, .. } => {
+                let width = value.width();
+                Value::Map(
                     keys.raws()
                         .into_iter()
                         .enumerate()
                         .map(|(position, key)| {
-                            let raw = state.get(field.offset + position).copied().unwrap_or(0);
-                            (self.value(keys, key).to_string(), self.value(value, raw))
+                            let start = position * width;
+                            let entry = slots.get(start..start + width).unwrap_or_default();
+                            (
+                                self.value(keys, key).to_string(),
+                                self.decode_value(value, entry),
+                            )
                         })
                         .collect(),
-                ),
-            };
-            decoded.insert(field.name.clone(), value);
+                )
+            }
         }
-        decoded
     }
 
     #[must_use]
@@ -406,12 +436,28 @@ pub(crate) struct Write {
 fn key_slot(
     offset: usize,
     keys: &Domain,
+    stride: usize,
     raw: i64,
     field: &str,
 ) -> std::result::Result<usize, String> {
     keys.position(raw)
-        .map(|position| offset + position)
+        .map(|position| offset + position * stride)
         .ok_or_else(|| format!("{raw} is not a key of {field}"))
+}
+
+/// The slot `offset` plus each key step, evaluated in order.
+fn locate(
+    offset: usize,
+    steps: &[KeyStep],
+    state: &[i64],
+    locals: &mut [i64],
+) -> std::result::Result<usize, String> {
+    let mut slot = offset;
+    for step in steps {
+        let key = eval(&step.key, state, locals)?;
+        slot = key_slot(slot, &step.keys, step.stride, key, &step.field)?;
+    }
+    Ok(slot)
 }
 
 pub(crate) fn collect_writes(
@@ -422,13 +468,18 @@ pub(crate) fn collect_writes(
 ) -> std::result::Result<Vec<Write>, Fault> {
     let mut writes = Vec::new();
     for assignment in assignments {
-        if let Target::Every { offset, count } = &assignment.target {
+        if let Target::Every {
+            offset,
+            count,
+            stride,
+        } = &assignment.target
+        {
             let raw = eval(&assignment.value, state, locals).map_err(|message| Fault {
                 line: assignment.line,
                 message,
             })?;
             writes.extend((0..*count).map(|position| Write {
-                slot: offset + position,
+                slot: offset + position * stride,
                 raw,
                 line: assignment.line,
             }));
@@ -443,14 +494,8 @@ pub(crate) fn collect_writes(
         let slot = match &assignment.target {
             Target::Every { .. } => continue,
             Target::Slot(slot) => *slot,
-            Target::Indexed {
-                offset,
-                keys,
-                key,
-                field,
-            } => {
-                let key = eval(key, state, locals).map_err(fault)?;
-                key_slot(*offset, keys, key, field).map_err(fault)?
+            Target::Indexed { offset, steps } => {
+                locate(*offset, steps, state, locals).map_err(fault)?
             }
         };
         if writes.iter().skip(broad).any(|write| write.slot == slot) {
@@ -481,15 +526,7 @@ pub(crate) fn eval(ir: &Ir, state: &[i64], locals: &mut [i64]) -> std::result::R
         Ir::Const(raw) => *raw,
         Ir::Slot(slot) => fetch(state, *slot)?,
         Ir::Local(local) => fetch(locals, *local)?,
-        Ir::Index {
-            offset,
-            keys,
-            key,
-            field,
-        } => {
-            let key = eval(key, state, locals)?;
-            fetch(state, key_slot(*offset, keys, key, field)?)?
-        }
+        Ir::Index { offset, steps } => fetch(state, locate(*offset, steps, state, locals)?)?,
         Ir::Not(value) => i64::from(eval(value, state, locals)? == 0),
         Ir::Negate(value) => eval(value, state, locals)?
             .checked_neg()
@@ -581,15 +618,6 @@ impl Ty {
             Self::Enum(_) => "an enum value",
         }
     }
-}
-
-enum Resolved {
-    Scalar(Domain),
-    Map {
-        key_type: String,
-        keys: Domain,
-        value: Domain,
-    },
 }
 
 struct Compiler<'a> {
@@ -810,13 +838,13 @@ impl<'a> Compiler<'a> {
 
     fn scalar(&mut self, kind: &TypeExpr, line: usize) -> Result<Domain> {
         match self.resolve(kind, line)? {
-            Resolved::Scalar(domain) => Ok(domain),
-            Resolved::Map { .. } => Err(Error::at(line, "a map is only allowed as a state field")),
+            FieldType::Scalar(domain) => Ok(domain),
+            FieldType::Map { .. } => Err(Error::at(line, "a map is only allowed as a state field")),
         }
     }
 
-    fn resolve(&mut self, kind: &TypeExpr, line: usize) -> Result<Resolved> {
-        Ok(Resolved::Scalar(match kind {
+    fn resolve(&mut self, kind: &TypeExpr, line: usize) -> Result<FieldType> {
+        Ok(FieldType::Scalar(match kind {
             TypeExpr::Integer { min, max } => Domain::Integer {
                 min: *min,
                 max: *max,
@@ -863,10 +891,10 @@ impl<'a> Compiler<'a> {
                         error
                     }
                 })?;
-                return Ok(Resolved::Map {
+                return Ok(FieldType::Map {
                     key_type: key.clone(),
                     keys,
-                    value,
+                    value: Box::new(FieldType::Scalar(value)),
                 });
             }
         }))
@@ -877,33 +905,14 @@ impl<'a> Compiler<'a> {
             return Err(Error::at(line, format!("duplicate state field {name}")));
         }
         let offset = self.slots.len();
-        let kind = match self.resolve(kind, line)? {
-            Resolved::Scalar(domain) => {
-                self.slots.push(Slot {
-                    domain: domain.clone(),
-                    label: name.to_string(),
-                });
-                FieldType::Scalar(domain)
-            }
-            Resolved::Map {
-                key_type,
-                keys,
-                value,
-            } => {
-                for key in keys.raws() {
-                    let key = self.raw_value(&keys, key);
-                    self.slots.push(Slot {
-                        domain: value.clone(),
-                        label: format!("{name} of {key}"),
-                    });
-                }
-                FieldType::Map {
-                    key_type,
-                    keys,
-                    value,
-                }
-            }
-        };
+        let kind = self.resolve(kind, line)?;
+        if offset.saturating_add(kind.width()) > MAX_SLOTS {
+            return Err(Error::at(
+                line,
+                format!("the state may hold at most {MAX_SLOTS} values"),
+            ));
+        }
+        self.lay_out(&kind, name);
         if self.slots.len() > MAX_SLOTS {
             return Err(Error::at(
                 line,
@@ -917,6 +926,22 @@ impl<'a> Compiler<'a> {
             offset,
         });
         Ok(())
+    }
+
+    /// Appends the slots of a value of type `kind`, labeled from `label`.
+    fn lay_out(&mut self, kind: &FieldType, label: &str) {
+        match kind {
+            FieldType::Scalar(domain) => self.slots.push(Slot {
+                domain: domain.clone(),
+                label: label.to_string(),
+            }),
+            FieldType::Map { keys, value, .. } => {
+                for key in keys.raws() {
+                    let key = self.raw_value(keys, key);
+                    self.lay_out(value, &format!("{label} of {key}"));
+                }
+            }
+        }
     }
 
     fn raw_value(&self, domain: &Domain, raw: i64) -> Value {
@@ -934,7 +959,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn declare_type(&mut self, declaration: &TypeDecl) -> Result<()> {
-        let Resolved::Scalar(domain) = self.resolve(&declaration.kind, declaration.line)? else {
+        let FieldType::Scalar(domain) = self.resolve(&declaration.kind, declaration.line)? else {
             return Err(Error::at(
                 declaration.line,
                 "a named type cannot be a map; declare the map in state",
@@ -1163,25 +1188,29 @@ impl<'a> Compiler<'a> {
                     Target::Every {
                         offset: field.offset,
                         count: keys.size(),
+                        stride: value.width(),
                     },
-                    value.clone(),
+                    scalar_value(value, line)?,
                 )
             }
             (FieldType::Map { keys, value, .. }, TargetKey::At(key)) => {
                 let key = self.key(key, keys, &field.name, line)?;
                 let target = match key {
                     Ir::Const(raw) => Target::Slot(
-                        key_slot(field.offset, keys, raw, &field.name)
+                        key_slot(field.offset, keys, value.width(), raw, &field.name)
                             .map_err(|message| Error::at(line, message))?,
                     ),
                     key => Target::Indexed {
                         offset: field.offset,
-                        keys: keys.clone(),
-                        key,
-                        field: field.name.clone(),
+                        steps: Box::new([KeyStep {
+                            key,
+                            keys: keys.clone(),
+                            stride: value.width(),
+                            field: field.name.clone(),
+                        }]),
                     },
                 };
-                (target, value.clone())
+                (target, scalar_value(value, line)?)
             }
         };
         let (value, ty) = self.expr(&assignment.value, line)?;
@@ -1357,19 +1386,23 @@ impl<'a> Compiler<'a> {
                 format!("initial values must be constants, but this reads {map}"),
             ));
         }
+        let domain = scalar_value(value, line)?;
         let ir = match self.key(key, keys, map, line)? {
             Ir::Const(raw) => Ir::Slot(
-                key_slot(field.offset, keys, raw, map)
+                key_slot(field.offset, keys, value.width(), raw, map)
                     .map_err(|message| Error::at(line, message))?,
             ),
             key => Ir::Index {
                 offset: field.offset,
-                keys: keys.clone(),
-                key: Box::new(key),
-                field: field.name.clone(),
+                steps: Box::new([KeyStep {
+                    key,
+                    keys: keys.clone(),
+                    stride: value.width(),
+                    field: field.name.clone(),
+                }]),
             },
         };
-        Ok((ir, Ty::of(value)))
+        Ok((ir, Ty::of(&domain)))
     }
 
     fn binary(
@@ -1504,6 +1537,16 @@ fn assignable(ty: &Ty, domain: &Domain) -> bool {
         (Ty::Int, Domain::Integer { .. }) | (Ty::Bool, Domain::Boolean) => true,
         (Ty::Enum(ids), Domain::Enum(allowed)) => ids.iter().all(|id| allowed.contains(id)),
         _ => false,
+    }
+}
+
+fn scalar_value(kind: &FieldType, line: usize) -> Result<Domain> {
+    match kind {
+        FieldType::Scalar(domain) => Ok(domain.clone()),
+        FieldType::Map { .. } => Err(Error::at(
+            line,
+            "map values must be integers, booleans, or enums",
+        )),
     }
 }
 

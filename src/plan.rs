@@ -929,10 +929,18 @@ fn check_safe_integers(model: &Model) -> Result<()> {
         Domain::Integer { min, max } => *min < -MAX_SAFE_INTEGER || *max > MAX_SAFE_INTEGER,
         _ => false,
     };
-    let fields = model.fields.iter().any(|field| match &field.kind {
-        FieldType::Scalar(domain) => unsafe_domain(domain),
-        FieldType::Map { keys, value, .. } => unsafe_domain(keys) || unsafe_domain(value),
-    });
+    fn unsafe_kind(kind: &FieldType, unsafe_domain: &impl Fn(&Domain) -> bool) -> bool {
+        match kind {
+            FieldType::Scalar(domain) => unsafe_domain(domain),
+            FieldType::Map { keys, value, .. } => {
+                unsafe_domain(keys) || unsafe_kind(value, unsafe_domain)
+            }
+        }
+    }
+    let fields = model
+        .fields
+        .iter()
+        .any(|field| unsafe_kind(&field.kind, &unsafe_domain));
     let params = model
         .actions
         .iter()
@@ -1005,7 +1013,7 @@ fn field_type_json(model: &Model, kind: &FieldType) -> Json {
                         .collect(),
                 ),
             ),
-            ("value", domain_json(model, value)),
+            ("value", field_type_json(model, value)),
         ]),
     }
 }

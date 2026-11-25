@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Rust API: `FieldType::Map` holds its value type as `Box<FieldType>`, and
+  `FieldType::width` gives the number of state slots a type occupies. Map
+  reads and writes address slots through key steps with a stride, so nested
+  types can share one layout. Checking, plans and diagrams are unchanged.
 - `zin observe <spec> [--fields a,b]` reports what an adapter observing those
   fields (none: accepted and rejected calls only) lets a test run tell apart:
   states no sequence of calls separates (exit 1, with the fields to observe),
