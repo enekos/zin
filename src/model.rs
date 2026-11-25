@@ -1,7 +1,7 @@
 use crate::ast::{
     Action, ActionCall, Assignment, BinaryOperator, CallArguments, Condition, Expr, Fairness,
-    PropertyKind, Quantifier, ScenarioStep, Spec, TargetKey, TypeDecl, TypeExpr, UnaryOperator,
-    Value, display_call,
+    PropertyKind, Quantifier, ScenarioStep, Spec, TypeDecl, TypeExpr, UnaryOperator, Value,
+    display_call,
 };
 use crate::{Error, Result, State};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -70,6 +70,8 @@ pub enum FieldType {
         keys: Domain,
         value: Box<FieldType>,
     },
+    /// Named members, laid out one after another in declaration order.
+    Record(Vec<(String, FieldType)>),
 }
 
 impl FieldType {
@@ -79,7 +81,35 @@ impl FieldType {
         match self {
             Self::Scalar(_) => 1,
             Self::Map { keys, value, .. } => keys.size().saturating_mul(value.width()),
+            Self::Record(members) => members
+                .iter()
+                .fold(0, |width, (_, kind)| width.saturating_add(kind.width())),
         }
+    }
+
+    /// Whether `plan/1` can carry this type: a scalar, or a map of scalars.
+    pub(crate) fn is_classic(&self) -> bool {
+        match self {
+            Self::Scalar(_) => true,
+            Self::Map { value, .. } => matches!(value.as_ref(), Self::Scalar(_)),
+            Self::Record(_) => false,
+        }
+    }
+
+    /// The member `name` of a record: its first slot, counted from the
+    /// record's, and its type.
+    pub(crate) fn member(&self, name: &str) -> Option<(usize, &FieldType)> {
+        let Self::Record(members) = self else {
+            return None;
+        };
+        let mut offset = 0;
+        for (member, kind) in members {
+            if member == name {
+                return Some((offset, kind));
+            }
+            offset += kind.width();
+        }
+        None
     }
 }
 
@@ -125,6 +155,9 @@ pub(crate) enum Ir {
         offset: usize,
         steps: Box<[KeyStep]>,
     },
+    /// A compound value, one expression per slot. Compiled code takes it
+    /// apart; it is never evaluated as a whole.
+    Tuple(Vec<Ir>),
     Not(Box<Ir>),
     Negate(Box<Ir>),
     Binary(BinaryOperator, Box<Ir>, Box<Ir>),
@@ -310,6 +343,20 @@ impl Model {
     pub(crate) fn decode_value(&self, kind: &FieldType, slots: &[i64]) -> Value {
         match kind {
             FieldType::Scalar(domain) => self.value(domain, slots.first().copied().unwrap_or(0)),
+            FieldType::Record(members) => {
+                let mut offset = 0;
+                Value::Map(
+                    members
+                        .iter()
+                        .map(|(name, kind)| {
+                            let width = kind.width();
+                            let entry = slots.get(offset..offset + width).unwrap_or_default();
+                            offset += width;
+                            (name.clone(), self.decode_value(kind, entry))
+                        })
+                        .collect(),
+                )
+            }
             FieldType::Map { keys, value, .. } => {
                 let width = value.width();
                 Value::Map(
@@ -527,6 +574,7 @@ pub(crate) fn eval(ir: &Ir, state: &[i64], locals: &mut [i64]) -> std::result::R
         Ir::Slot(slot) => fetch(state, *slot)?,
         Ir::Local(local) => fetch(locals, *local)?,
         Ir::Index { offset, steps } => fetch(state, locate(*offset, steps, state, locals)?)?,
+        Ir::Tuple(_) => return Err("internal error: a compound value was evaluated".to_string()),
         Ir::Not(value) => i64::from(eval(value, state, locals)? == 0),
         Ir::Negate(value) => eval(value, state, locals)?
             .checked_neg()
@@ -595,11 +643,15 @@ pub(crate) fn eval(ir: &Ir, state: &[i64], locals: &mut [i64]) -> std::result::R
     })
 }
 
+/// The static type of an expression. Compound types are structural: two
+/// records agree when their members agree name by name, in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Ty {
     Int,
     Bool,
     Enum(BTreeSet<u32>),
+    Record(Vec<(String, Ty)>),
+    Map { keys: Domain, value: Box<Ty> },
 }
 
 impl Ty {
@@ -611,20 +663,166 @@ impl Ty {
         }
     }
 
+    fn of_kind(kind: &FieldType) -> Self {
+        match kind {
+            FieldType::Scalar(domain) => Self::of(domain),
+            FieldType::Map { keys, value, .. } => Self::Map {
+                keys: keys.clone(),
+                value: Box::new(Self::of_kind(value)),
+            },
+            FieldType::Record(members) => Self::Record(
+                members
+                    .iter()
+                    .map(|(name, kind)| (name.clone(), Self::of_kind(kind)))
+                    .collect(),
+            ),
+        }
+    }
+
     fn noun(&self) -> &'static str {
         match self {
             Self::Int => "a number",
             Self::Bool => "a true/false value",
             Self::Enum(_) => "an enum value",
+            Self::Record(_) => "a record",
+            Self::Map { .. } => "a map",
         }
     }
+
+    fn is_scalar(&self) -> bool {
+        matches!(self, Self::Int | Self::Bool | Self::Enum(_))
+    }
+
+    /// The type of a value that may be either `self` or `other`, if they agree.
+    fn join(&self, other: &Self) -> Option<Self> {
+        Some(match (self, other) {
+            (Self::Int, Self::Int) => Self::Int,
+            (Self::Bool, Self::Bool) => Self::Bool,
+            (Self::Enum(left), Self::Enum(right)) => Self::Enum(left | right),
+            (Self::Record(left), Self::Record(right)) if left.len() == right.len() => {
+                let mut members = Vec::with_capacity(left.len());
+                for ((name, left), (other, right)) in left.iter().zip(right) {
+                    if name != other {
+                        return None;
+                    }
+                    members.push((name.clone(), left.join(right)?));
+                }
+                Self::Record(members)
+            }
+            (
+                Self::Map { keys, value },
+                Self::Map {
+                    keys: other_keys,
+                    value: other_value,
+                },
+            ) if keys == other_keys => Self::Map {
+                keys: keys.clone(),
+                value: Box::new(value.join(other_value)?),
+            },
+            _ => return None,
+        })
+    }
+
+    fn member(&self, name: &str) -> Option<(usize, &Ty)> {
+        let Self::Record(members) = self else {
+            return None;
+        };
+        let mut offset = 0;
+        for (member, ty) in members {
+            if member == name {
+                return Some((offset, ty));
+            }
+            offset += ty.width();
+        }
+        None
+    }
+
+    fn width(&self) -> usize {
+        match self {
+            Self::Int | Self::Bool | Self::Enum(_) => 1,
+            Self::Record(members) => members.iter().map(|(_, ty)| ty.width()).sum(),
+            Self::Map { keys, value } => keys.size().saturating_mul(value.width()),
+        }
+    }
+}
+
+/// A state location: a first slot, the dynamic keys that move it, and the
+/// type found there.
+#[derive(Debug, Clone)]
+struct Place {
+    offset: usize,
+    steps: Vec<KeyStep>,
+    /// Set by `of every <type>`: the number of entries and the slots between them.
+    every: Option<(usize, usize)>,
+    kind: FieldType,
+    label: String,
+}
+
+impl Place {
+    fn targets(&self) -> Vec<Target> {
+        (0..self.kind.width())
+            .map(|position| {
+                let offset = self.offset + position;
+                match self.every {
+                    Some((count, stride)) => Target::Every {
+                        offset,
+                        count,
+                        stride,
+                    },
+                    None if self.steps.is_empty() => Target::Slot(offset),
+                    None => Target::Indexed {
+                        offset,
+                        steps: self.steps.clone().into(),
+                    },
+                }
+            })
+            .collect()
+    }
+
+    fn member(&self, name: &str) -> Option<Self> {
+        let (offset, kind) = self.kind.member(name)?;
+        Some(Self {
+            offset: self.offset + offset,
+            steps: self.steps.clone(),
+            every: self.every,
+            kind: kind.clone(),
+            label: format!("{name} of {}", self.label),
+        })
+    }
+}
+
+/// A compiled expression: a state location, which can still be indexed,
+/// assigned or read, or a value.
+enum Operand {
+    Place(Place),
+    Value(Ir, Ty),
+}
+
+/// The per-slot expressions of a compiled value.
+fn parts(ir: Ir) -> Vec<Ir> {
+    match ir {
+        Ir::Tuple(parts) => parts,
+        ir => vec![ir],
+    }
+}
+
+fn tuple(mut parts: Vec<Ir>) -> Ir {
+    if parts.len() == 1 {
+        parts.pop().unwrap_or(Ir::Const(0))
+    } else {
+        Ir::Tuple(parts)
+    }
+}
+
+fn record_literal(expr: &Expr) -> bool {
+    matches!(expr, Expr::Record(_))
 }
 
 struct Compiler<'a> {
     spec: &'a Spec,
     symbols: Vec<String>,
     symbol_ids: HashMap<String, u32>,
-    types: HashMap<String, Domain>,
+    types: HashMap<String, FieldType>,
     fields: Vec<FieldInfo>,
     field_ids: HashMap<String, usize>,
     slots: Vec<Slot>,
@@ -780,7 +978,8 @@ impl<'a> Compiler<'a> {
     fn interchangeable(&mut self) -> Result<Vec<(String, Vec<u32>, usize)>> {
         let mut groups = Vec::new();
         for declaration in self.spec.types.iter().filter(|type_| type_.interchangeable) {
-            let Some(Domain::Enum(ids)) = self.types.get(&declaration.name) else {
+            let Some(FieldType::Scalar(Domain::Enum(ids))) = self.types.get(&declaration.name)
+            else {
                 return Err(Error::at(
                     declaration.line,
                     format!(
@@ -840,6 +1039,10 @@ impl<'a> Compiler<'a> {
         match self.resolve(kind, line)? {
             FieldType::Scalar(domain) => Ok(domain),
             FieldType::Map { .. } => Err(Error::at(line, "a map is only allowed as a state field")),
+            FieldType::Record(_) => Err(Error::at(
+                line,
+                "a record is only allowed in state; parameters are integers, booleans or enums",
+            )),
         }
     }
 
@@ -865,36 +1068,54 @@ impl<'a> Compiler<'a> {
                 self.enums.push((ids.clone(), line));
                 Domain::Enum(ids)
             }
-            TypeExpr::Named(name) => self.types.get(name).cloned().ok_or_else(|| {
-                Error::at(
-                    line,
-                    format!("unknown type {name}; declare it in a types block"),
-                )
-            })?,
-            TypeExpr::Map { key, value } => {
-                let keys = self.types.get(key).cloned().ok_or_else(|| {
+            TypeExpr::Named(name) => {
+                return self.types.get(name).cloned().ok_or_else(|| {
                     Error::at(
                         line,
-                        format!("unknown key type {key}; declare it in a types block"),
+                        format!("unknown type {name}; declare it in a types block"),
                     )
-                })?;
+                });
+            }
+            TypeExpr::Record(members) => {
+                let mut resolved = Vec::with_capacity(members.len());
+                for member in members {
+                    resolved.push((
+                        member.name.clone(),
+                        self.resolve(&member.kind, member.line)
+                            .map_err(|e| e.within(member.span))?,
+                    ));
+                }
+                return Ok(FieldType::Record(resolved));
+            }
+            TypeExpr::Map { key, value } => {
+                let keys = match self.types.get(key) {
+                    Some(FieldType::Scalar(domain)) => domain.clone(),
+                    Some(_) => {
+                        return Err(Error::at(
+                            line,
+                            format!(
+                                "map keys must be integers, booleans or enums, and {key} is not"
+                            ),
+                        ));
+                    }
+                    None => {
+                        return Err(Error::at(
+                            line,
+                            format!("unknown key type {key}; declare it in a types block"),
+                        ));
+                    }
+                };
                 if keys.size() > MAX_SLOTS {
                     return Err(Error::at(
                         line,
                         format!("a map may have at most {MAX_SLOTS} keys"),
                     ));
                 }
-                let value = self.scalar(value, line).map_err(|error| {
-                    if error.message.starts_with("a map is only") {
-                        Error::at(line, "map values must be integers, booleans, or enums")
-                    } else {
-                        error
-                    }
-                })?;
+                let value = self.resolve(value, line)?;
                 return Ok(FieldType::Map {
                     key_type: key.clone(),
                     keys,
-                    value: Box::new(FieldType::Scalar(value)),
+                    value: Box::new(value),
                 });
             }
         }))
@@ -941,6 +1162,11 @@ impl<'a> Compiler<'a> {
                     self.lay_out(value, &format!("{label} of {key}"));
                 }
             }
+            FieldType::Record(members) => {
+                for (name, kind) in members {
+                    self.lay_out(kind, &format!("{name} of {label}"));
+                }
+            }
         }
     }
 
@@ -959,12 +1185,13 @@ impl<'a> Compiler<'a> {
     }
 
     fn declare_type(&mut self, declaration: &TypeDecl) -> Result<()> {
-        let FieldType::Scalar(domain) = self.resolve(&declaration.kind, declaration.line)? else {
+        let domain = self.resolve(&declaration.kind, declaration.line)?;
+        if matches!(domain, FieldType::Map { .. }) {
             return Err(Error::at(
                 declaration.line,
                 "a named type cannot be a map; declare the map in state",
             ));
-        };
+        }
         if self
             .types
             .insert(declaration.name.clone(), domain)
@@ -1023,7 +1250,7 @@ impl<'a> Compiler<'a> {
         self.constant_only = true;
         let mut assignments = Vec::new();
         for assignment in &spec.initially {
-            assignments.push(self.assignment(assignment)?);
+            assignments.extend(self.assignment(assignment)?);
         }
         self.constant_only = false;
         check_duplicate_targets(&assignments)?;
@@ -1086,7 +1313,7 @@ impl<'a> Compiler<'a> {
         let mut assignments = Vec::new();
         for assignment in &action.assignments {
             self.enter_action(&params, assignment.params.as_deref());
-            assignments.push(self.assignment(assignment)?);
+            assignments.extend(self.assignment(assignment)?);
         }
         check_duplicate_targets(&assignments)?;
         self.scope.clear();
@@ -1138,100 +1365,76 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    fn assignment(&mut self, assignment: &Assignment) -> Result<CompiledAssignment> {
+    fn assignment(&mut self, assignment: &Assignment) -> Result<Vec<CompiledAssignment>> {
         self.assignment_at(assignment)
             .map_err(|e| e.within(assignment.target))
     }
 
-    fn assignment_at(&mut self, assignment: &Assignment) -> Result<CompiledAssignment> {
+    fn assignment_at(&mut self, assignment: &Assignment) -> Result<Vec<CompiledAssignment>> {
         let line = assignment.line;
-        let field = self
-            .field_ids
-            .get(&assignment.field)
-            .and_then(|index| self.fields.get(*index))
-            .cloned()
-            .ok_or_else(|| {
-                Error::at(line, format!("unknown state field {}", assignment.field))
-                    .coded("name.unknown")
-            })?;
-        let (target, domain) = match (&field.kind, &assignment.key) {
-            (FieldType::Scalar(domain), TargetKey::Whole) => {
-                (Target::Slot(field.offset), domain.clone())
-            }
-            (FieldType::Scalar(_), _) => {
-                return Err(Error::at(line, format!("{} is not a map", field.name)));
-            }
-            (FieldType::Map { key_type, .. }, TargetKey::Whole) => {
+        let place = self.target(&assignment.place, line)?;
+        let want = Ty::of_kind(&place.kind);
+        let (value, ty) = self.expr_as(&assignment.value, Some(&want), line)?;
+        if !assignable(&ty, &place.kind) {
+            if let (FieldType::Map { key_type, .. }, true) = (&place.kind, ty.is_scalar()) {
                 return Err(Error::at(
                     line,
                     format!(
                         "{name} is a map; assign '{name} of <{key_type}>' or '{name} of every {key_type}'",
-                        name = field.name
+                        name = place.label
                     ),
                 ));
             }
-            (
-                FieldType::Map {
-                    key_type,
-                    keys,
-                    value,
-                },
-                TargetKey::Every(named),
-            ) => {
-                if named != key_type {
-                    return Err(Error::at(
-                        line,
-                        format!("{} is keyed by {key_type}, not {named}", field.name),
-                    ));
-                }
-                (
-                    Target::Every {
-                        offset: field.offset,
-                        count: keys.size(),
-                        stride: value.width(),
-                    },
-                    scalar_value(value, line)?,
-                )
-            }
-            (FieldType::Map { keys, value, .. }, TargetKey::At(key)) => {
-                let key = self.key(key, keys, &field.name, line)?;
-                let target = match key {
-                    Ir::Const(raw) => Target::Slot(
-                        key_slot(field.offset, keys, value.width(), raw, &field.name)
-                            .map_err(|message| Error::at(line, message))?,
-                    ),
-                    key => Target::Indexed {
-                        offset: field.offset,
-                        steps: Box::new([KeyStep {
-                            key,
-                            keys: keys.clone(),
-                            stride: value.width(),
-                            field: field.name.clone(),
-                        }]),
-                    },
-                };
-                (target, scalar_value(value, line)?)
-            }
-        };
-        let (value, ty) = self.expr(&assignment.value, line)?;
-        if !assignable(&ty, &domain) {
             return Err(Error::at(
                 line,
                 format!(
                     "{} is {}, but '{}' assigns {}",
-                    assignment.field,
-                    self.describe(&domain),
+                    place.label,
+                    self.describe_kind(&place.kind),
                     assignment.source,
                     self.describe_ty(&ty)
                 ),
             )
             .coded("type.mismatch"));
         }
-        Ok(CompiledAssignment {
-            target,
-            value,
-            line,
-        })
+        Ok(place
+            .targets()
+            .into_iter()
+            .zip(parts(value))
+            .map(|(target, value)| CompiledAssignment {
+                target,
+                value,
+                line,
+            })
+            .collect())
+    }
+
+    /// The place an assignment writes.
+    fn target(&mut self, expr: &Expr, line: usize) -> Result<Place> {
+        match self.operand(expr, None, line)? {
+            Operand::Place(place) => Ok(place),
+            Operand::Value(..) => Err(Error::at(
+                line,
+                "only a state field, or an entry or member of one, can be assigned",
+            )),
+        }
+    }
+
+    fn describe_kind(&self, kind: &FieldType) -> String {
+        match kind {
+            FieldType::Scalar(domain) => self.describe(domain),
+            FieldType::Map {
+                key_type, value, ..
+            } => format!("a map from {key_type} to {}", self.describe_kind(value)),
+            FieldType::Record(members) => format!(
+                "a record with ({})",
+                members
+                    .iter()
+                    .map(|(name, kind)| format!("{name} is {}", self.describe_kind(kind)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
     }
 
     fn describe_ty(&self, ty: &Ty) -> String {
@@ -1245,13 +1448,21 @@ impl<'a> Compiler<'a> {
                 })
                 .collect::<Vec<_>>()
                 .join(" or "),
+            Ty::Record(members) => format!(
+                "{{{}}}",
+                members
+                    .iter()
+                    .map(|(name, ty)| format!("{name}: {}", self.describe_ty(ty)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             other => other.noun().to_string(),
         }
     }
 
     fn key(&mut self, key: &Expr, keys: &Domain, field: &str, line: usize) -> Result<Ir> {
         let (ir, ty) = self.expr(key, line)?;
-        if !assignable(&ty, keys) {
+        if !assignable(&ty, &FieldType::Scalar(keys.clone())) {
             return Err(Error::at(
                 line,
                 format!(
@@ -1266,6 +1477,69 @@ impl<'a> Compiler<'a> {
     }
 
     fn expr(&mut self, expr: &Expr, line: usize) -> Result<(Ir, Ty)> {
+        self.expr_as(expr, None, line)
+    }
+
+    /// Compiles `expr` to a value. `want` is the type the context expects,
+    /// which a record literal needs to order its members.
+    fn expr_as(&mut self, expr: &Expr, want: Option<&Ty>, line: usize) -> Result<(Ir, Ty)> {
+        match self.operand(expr, want, line)? {
+            Operand::Place(place) => self.read(&place, line),
+            Operand::Value(ir, ty) => Ok((ir, ty)),
+        }
+    }
+
+    fn read(&self, place: &Place, line: usize) -> Result<(Ir, Ty)> {
+        if self.constant_only {
+            return Err(Error::at(
+                line,
+                format!(
+                    "initial values must be constants, but this reads {}",
+                    place.label
+                ),
+            ));
+        }
+        if place.every.is_some() {
+            return Err(Error::at(
+                line,
+                "'of every' names all entries at once, so it can only be assigned",
+            ));
+        }
+        let read = (0..place.kind.width())
+            .map(|position| {
+                let offset = place.offset + position;
+                if place.steps.is_empty() {
+                    Ir::Slot(offset)
+                } else {
+                    Ir::Index {
+                        offset,
+                        steps: place.steps.clone().into(),
+                    }
+                }
+            })
+            .collect();
+        Ok((tuple(read), Ty::of_kind(&place.kind)))
+    }
+
+    fn operand(&mut self, expr: &Expr, want: Option<&Ty>, line: usize) -> Result<Operand> {
+        match expr {
+            Expr::Name { name, span } => self.name(name, line).map_err(|e| e.within(*span)),
+            Expr::Index { map, key, span } => self.of(map, key, line).map_err(|e| e.within(*span)),
+            Expr::Subscript { base, key } => match self.operand(base, None, line)? {
+                Operand::Place(place) => Ok(Operand::Place(self.index(place, key, line)?)),
+                Operand::Value(_, ty) => Err(Error::at(
+                    line,
+                    format!("only a map in the state can be indexed, not {}", ty.noun()),
+                )),
+            },
+            other => {
+                let (ir, ty) = self.value(other, want, line)?;
+                Ok(Operand::Value(ir, ty))
+            }
+        }
+    }
+
+    fn value(&mut self, expr: &Expr, want: Option<&Ty>, line: usize) -> Result<(Ir, Ty)> {
         match expr {
             Expr::Literal(Value::Integer(raw)) => Ok((Ir::Const(*raw), Ty::Int)),
             Expr::Literal(Value::Boolean(flag)) => Ok((Ir::Const(i64::from(*flag)), Ty::Bool)),
@@ -1274,10 +1548,14 @@ impl<'a> Compiler<'a> {
                 None => Err(Error::at(line, format!("unknown enum value \"{name}\""))),
             },
             Expr::Literal(Value::Map(_)) => Err(Error::at(line, "map literals are not supported")),
-            Expr::Name { name, span } => self.name(name, line).map_err(|e| e.within(*span)),
-            Expr::Index { map, key, span } => {
-                self.index(map, key, line).map_err(|e| e.within(*span))
+            Expr::Name { .. } | Expr::Index { .. } | Expr::Subscript { .. } => {
+                self.expr_as(expr, want, line)
             }
+            Expr::Every(domain) => Err(Error::at(
+                line,
+                format!("'every {domain}' names all keys at once, so it can only be assigned to"),
+            )),
+            Expr::Record(members) => self.record(members, want, line),
             Expr::Unary { operator, value } => {
                 let (value, ty) = self.expr(value, line)?;
                 match operator {
@@ -1303,29 +1581,30 @@ impl<'a> Compiler<'a> {
             } => {
                 let (condition, ty) = self.expr(condition, line)?;
                 expect(&ty, &Ty::Bool, "the condition of 'if'", line)?;
-                let (then, then_ty) = self.expr(then, line)?;
-                let (otherwise, otherwise_ty) = self.expr(otherwise, line)?;
-                let ty = match (then_ty, otherwise_ty) {
-                    (Ty::Enum(mut left), Ty::Enum(right)) => {
-                        left.extend(right);
-                        Ty::Enum(left)
-                    }
-                    (left, right) if left == right => left,
-                    (left, right) => {
-                        return Err(Error::at(
-                            line,
-                            format!(
-                                "both branches of 'if' must have the same kind of value, but one is {} and the other {}",
-                                left.noun(),
-                                right.noun()
-                            ),
-                        ));
-                    }
+                let ((then, then_ty), (otherwise, otherwise_ty)) =
+                    self.pair(then, otherwise, want, line)?;
+                let Some(ty) = then_ty.join(&otherwise_ty) else {
+                    return Err(Error::at(
+                        line,
+                        format!(
+                            "both branches of 'if' must have the same kind of value, but one is {} and the other {}",
+                            then_ty.noun(),
+                            otherwise_ty.noun()
+                        ),
+                    ));
                 };
-                Ok((
-                    Ir::If(Box::new(condition), Box::new(then), Box::new(otherwise)),
-                    ty,
-                ))
+                let branches = parts(then)
+                    .into_iter()
+                    .zip(parts(otherwise))
+                    .map(|(then, otherwise)| {
+                        Ir::If(
+                            Box::new(condition.clone()),
+                            Box::new(then),
+                            Box::new(otherwise),
+                        )
+                    })
+                    .collect();
+                Ok((tuple(branches), ty))
             }
             Expr::Quantified {
                 quantifier,
@@ -1336,32 +1615,121 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn name(&mut self, name: &str, line: usize) -> Result<(Ir, Ty)> {
-        if let Some(local) = self.scope.iter().rposition(|(local, _)| local == name) {
-            let ty = self.scope.get(local).map_or(Ty::Int, |(_, ty)| ty.clone());
-            return Ok((Ir::Local(local), ty));
+    /// Two operands that must agree in type: a record literal on one side
+    /// takes its member order from the other.
+    fn pair(
+        &mut self,
+        left: &Expr,
+        right: &Expr,
+        want: Option<&Ty>,
+        line: usize,
+    ) -> Result<((Ir, Ty), (Ir, Ty))> {
+        if record_literal(left) && !record_literal(right) {
+            let right = self.expr_as(right, want, line)?;
+            let left = self.expr_as(left, Some(&right.1), line)?;
+            Ok((left, right))
+        } else {
+            let left = self.expr_as(left, want, line)?;
+            let right = self.expr_as(right, want.or(Some(&left.1)), line)?;
+            Ok((left, right))
         }
-        if let Some(field) = self
-            .field_ids
-            .get(name)
-            .and_then(|index| self.fields.get(*index))
-        {
-            if self.constant_only {
+    }
+
+    fn record(
+        &mut self,
+        members: &[(String, Expr)],
+        want: Option<&Ty>,
+        line: usize,
+    ) -> Result<(Ir, Ty)> {
+        if let Some(Ty::Map { keys, value }) = want {
+            return self.map_literal(members, keys, value, line);
+        }
+        let order: Vec<(String, Option<Ty>)> = match want {
+            Some(Ty::Record(wanted)) => {
+                if let Some((extra, _)) = members
+                    .iter()
+                    .find(|(name, _)| !wanted.iter().any(|(member, _)| member == name))
+                {
+                    return Err(Error::at(
+                        line,
+                        format!("this record has no member {extra}"),
+                    ));
+                }
+                wanted
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), Some(ty.clone())))
+                    .collect()
+            }
+            _ => members
+                .iter()
+                .map(|(name, _)| (name.clone(), None))
+                .collect(),
+        };
+        let mut irs = Vec::new();
+        let mut tys = Vec::with_capacity(order.len());
+        for (name, want) in order {
+            let Some((_, value)) = members.iter().find(|(member, _)| *member == name) else {
                 return Err(Error::at(
                     line,
-                    format!("initial values must be constants, but this reads {name}"),
+                    format!("this record needs a value for {name}"),
                 ));
-            }
-            return match &field.kind {
-                FieldType::Scalar(domain) => Ok((Ir::Slot(field.offset), Ty::of(domain))),
-                FieldType::Map { key_type, .. } => Err(Error::at(
-                    line,
-                    format!("{name} is a map; read one entry with '{name} of <{key_type}>'"),
-                )),
             };
+            let (ir, ty) = self.expr_as(value, want.as_ref(), line)?;
+            irs.extend(parts(ir));
+            tys.push((name, ty));
+        }
+        Ok((tuple(irs), Ty::Record(tys)))
+    }
+
+    /// `{key: value, ...}` where a map is expected: one value for every key.
+    fn map_literal(
+        &mut self,
+        members: &[(String, Expr)],
+        keys: &Domain,
+        value: &Ty,
+        line: usize,
+    ) -> Result<(Ir, Ty)> {
+        let names: Vec<String> = keys
+            .raws()
+            .into_iter()
+            .map(|raw| self.raw_value(keys, raw).to_string())
+            .collect();
+        if let Some((extra, _)) = members.iter().find(|(name, _)| !names.contains(name)) {
+            return Err(Error::at(line, format!("{extra} is not a key of this map")));
+        }
+        let mut irs = Vec::new();
+        let mut joined = value.clone();
+        for name in names {
+            let Some((_, entry)) = members.iter().find(|(member, _)| *member == name) else {
+                return Err(Error::at(
+                    line,
+                    format!("this map needs a value for every key, and {name} has none"),
+                ));
+            };
+            let (ir, ty) = self.expr_as(entry, Some(value), line)?;
+            joined = joined.join(&ty).unwrap_or(ty);
+            irs.extend(parts(ir));
+        }
+        Ok((
+            tuple(irs),
+            Ty::Map {
+                keys: keys.clone(),
+                value: Box::new(joined),
+            },
+        ))
+    }
+
+    fn name(&mut self, name: &str, line: usize) -> Result<Operand> {
+        if let Some(local) = self.scope.iter().rposition(|(local, _)| local == name) {
+            let ty = self.scope.get(local).map_or(Ty::Int, |(_, ty)| ty.clone());
+            return Ok(Operand::Value(Ir::Local(local), ty));
+        }
+        if let Some(place) = self.field(name) {
+            return Ok(Operand::Place(place));
         }
         if let Some(id) = self.symbol_ids.get(name).copied() {
-            return self.symbol(id, line);
+            let (ir, ty) = self.symbol(id, line)?;
+            return Ok(Operand::Value(ir, ty));
         }
         Err(Error::at(
             line,
@@ -1370,39 +1738,108 @@ impl<'a> Compiler<'a> {
         .coded("name.unknown"))
     }
 
-    fn index(&mut self, map: &str, key: &Expr, line: usize) -> Result<(Ir, Ty)> {
+    fn field(&self, name: &str) -> Option<Place> {
         let field = self
             .field_ids
-            .get(map)
-            .and_then(|index| self.fields.get(*index))
-            .cloned()
-            .ok_or_else(|| Error::at(line, format!("unknown map {map}")).coded("name.unknown"))?;
-        let FieldType::Map { keys, value, .. } = &field.kind else {
-            return Err(Error::at(line, format!("{map} is not a map")));
-        };
-        if self.constant_only {
-            return Err(Error::at(
-                line,
-                format!("initial values must be constants, but this reads {map}"),
-            ));
+            .get(name)
+            .and_then(|index| self.fields.get(*index))?;
+        Some(Place {
+            offset: field.offset,
+            steps: Vec::new(),
+            every: None,
+            kind: field.kind.clone(),
+            label: field.name.clone(),
+        })
+    }
+
+    /// `name of key`: the member `name` of the record `key`, or else the
+    /// entry `key` of the map field `name`.
+    fn of(&mut self, name: &str, key: &Expr, line: usize) -> Result<Operand> {
+        if !matches!(key, Expr::Every(_)) {
+            let base = self.operand(key, None, line);
+            match base {
+                Ok(Operand::Place(place)) if place.kind.member(name).is_some() => {
+                    return Ok(Operand::Place(place.member(name).unwrap_or(place)));
+                }
+                Ok(Operand::Value(ir, ty)) if ty.member(name).is_some() => {
+                    let (offset, member) = ty.member(name).unwrap_or((0, &ty));
+                    let member = member.clone();
+                    let width = member.width();
+                    let slice = parts(ir).into_iter().skip(offset).take(width).collect();
+                    return Ok(Operand::Value(tuple(slice), member));
+                }
+                Ok(Operand::Place(place)) if self.field(name).is_none() => {
+                    return Err(Error::at(
+                        line,
+                        match place.kind {
+                            FieldType::Record(_) => format!("{} has no member {name}", place.label),
+                            _ => format!("unknown map {name}"),
+                        },
+                    )
+                    .coded("name.unknown"));
+                }
+                Err(error) if self.field(name).is_none() => return Err(error),
+                _ => {}
+            }
         }
-        let domain = scalar_value(value, line)?;
-        let ir = match self.key(key, keys, map, line)? {
-            Ir::Const(raw) => Ir::Slot(
-                key_slot(field.offset, keys, value.width(), raw, map)
-                    .map_err(|message| Error::at(line, message))?,
-            ),
-            key => Ir::Index {
-                offset: field.offset,
-                steps: Box::new([KeyStep {
+        let place = self
+            .field(name)
+            .ok_or_else(|| Error::at(line, format!("unknown map {name}")).coded("name.unknown"))?;
+        Ok(Operand::Place(self.index(place, key, line)?))
+    }
+
+    /// The entry `key` of the map at `place`.
+    fn index(&mut self, place: Place, key: &Expr, line: usize) -> Result<Place> {
+        let FieldType::Map {
+            key_type,
+            keys,
+            value,
+        } = &place.kind
+        else {
+            return Err(Error::at(line, format!("{} is not a map", place.label)));
+        };
+        let stride = value.width();
+        let mut entry = Place {
+            kind: value.as_ref().clone(),
+            ..place.clone()
+        };
+        if let Expr::Every(named) = key {
+            if named != key_type {
+                return Err(Error::at(
+                    line,
+                    format!("{} is keyed by {key_type}, not {named}", place.label),
+                ));
+            }
+            if place.every.is_some() || !place.steps.is_empty() {
+                return Err(Error::at(
+                    line,
+                    "'of every' cannot follow a key that is not a constant, or another 'of every'",
+                ));
+            }
+            entry.every = Some((keys.size(), stride));
+            return Ok(entry);
+        }
+        match self.key(key, keys, &place.label, line)? {
+            Ir::Const(raw) => {
+                entry.offset = key_slot(place.offset, keys, stride, raw, &place.label)
+                    .map_err(|message| Error::at(line, message))?;
+            }
+            key => {
+                if place.every.is_some() {
+                    return Err(Error::at(
+                        line,
+                        "after 'of every', every key must be a constant",
+                    ));
+                }
+                entry.steps.push(KeyStep {
                     key,
                     keys: keys.clone(),
-                    stride: value.width(),
-                    field: field.name.clone(),
-                }]),
-            },
-        };
-        Ok((ir, Ty::of(&domain)))
+                    stride,
+                    field: place.label.clone(),
+                });
+            }
+        }
+        Ok(entry)
     }
 
     fn binary(
@@ -1412,8 +1849,15 @@ impl<'a> Compiler<'a> {
         right: &Expr,
         line: usize,
     ) -> Result<(Ir, Ty)> {
-        let (left, left_ty) = self.expr(left, line)?;
-        let (right, right_ty) = self.expr(right, line)?;
+        let ((left, left_ty), (right, right_ty)) =
+            if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
+                self.pair(left, right, None, line)?
+            } else {
+                (self.expr(left, line)?, self.expr(right, line)?)
+            };
+        if !left_ty.is_scalar() || !right_ty.is_scalar() {
+            return self.compare_compound(operator, (left, left_ty), (right, right_ty), line);
+        }
         let ty = match operator {
             BinaryOperator::And | BinaryOperator::Or | BinaryOperator::Implies => {
                 let word = match operator {
@@ -1470,6 +1914,56 @@ impl<'a> Compiler<'a> {
         Ok((Ir::Binary(operator, Box::new(left), Box::new(right)), ty))
     }
 
+    /// `=` and `!=` on records and maps: every slot equal. Encodings are
+    /// canonical, so equal values have equal slots.
+    fn compare_compound(
+        &self,
+        operator: BinaryOperator,
+        (left, left_ty): (Ir, Ty),
+        (right, right_ty): (Ir, Ty),
+        line: usize,
+    ) -> Result<(Ir, Ty)> {
+        let negate = match operator {
+            BinaryOperator::Equal => false,
+            BinaryOperator::NotEqual => true,
+            _ => {
+                let culprit = if left_ty.is_scalar() {
+                    &right_ty
+                } else {
+                    &left_ty
+                };
+                return Err(Error::at(
+                    line,
+                    format!("{} cannot be used with this operator", culprit.noun()),
+                )
+                .coded("type.mismatch"));
+            }
+        };
+        if left_ty.join(&right_ty).is_none() {
+            return Err(Error::at(
+                line,
+                format!(
+                    "cannot compare {} with {}",
+                    self.describe_ty(&left_ty),
+                    self.describe_ty(&right_ty)
+                ),
+            )
+            .coded("type.mismatch"));
+        }
+        let equal = parts(left)
+            .into_iter()
+            .zip(parts(right))
+            .map(|(left, right)| Ir::Binary(BinaryOperator::Equal, Box::new(left), Box::new(right)))
+            .reduce(|all, next| Ir::Binary(BinaryOperator::And, Box::new(all), Box::new(next)))
+            .unwrap_or(Ir::Const(1));
+        let ir = if negate {
+            Ir::Not(Box::new(equal))
+        } else {
+            equal
+        };
+        Ok((ir, Ty::Bool))
+    }
+
     fn quantified(
         &mut self,
         quantifier: Quantifier,
@@ -1478,13 +1972,24 @@ impl<'a> Compiler<'a> {
         body: &Expr,
         line: usize,
     ) -> Result<(Ir, Ty)> {
-        let domain = self.types.get(domain).cloned().ok_or_else(|| {
-            Error::at(
-                line,
-                format!("unknown type {domain}; declare it in a types block"),
-            )
-            .coded("name.unknown")
-        })?;
+        let domain = match self.types.get(domain) {
+            Some(FieldType::Scalar(domain)) => domain.clone(),
+            Some(_) => {
+                return Err(Error::at(
+                    line,
+                    format!(
+                        "a quantifier ranges over integers, booleans or enums, and {domain} is not one"
+                    ),
+                ));
+            }
+            None => {
+                return Err(Error::at(
+                    line,
+                    format!("unknown type {domain}; declare it in a types block"),
+                )
+                .coded("name.unknown"));
+            }
+        };
         if domain.size() > MAX_QUANTIFIER_VALUES {
             return Err(Error::at(
                 line,
@@ -1532,21 +2037,31 @@ fn expect(actual: &Ty, wanted: &Ty, what: &str, line: usize) -> Result<()> {
     }
 }
 
-fn assignable(ty: &Ty, domain: &Domain) -> bool {
-    match (ty, domain) {
-        (Ty::Int, Domain::Integer { .. }) | (Ty::Bool, Domain::Boolean) => true,
-        (Ty::Enum(ids), Domain::Enum(allowed)) => ids.iter().all(|id| allowed.contains(id)),
+/// Whether a value of type `ty` can be stored as `kind`. Integer ranges are
+/// checked when the value is written.
+fn assignable(ty: &Ty, kind: &FieldType) -> bool {
+    match (ty, kind) {
+        (Ty::Int, FieldType::Scalar(Domain::Integer { .. }))
+        | (Ty::Bool, FieldType::Scalar(Domain::Boolean)) => true,
+        (Ty::Enum(ids), FieldType::Scalar(Domain::Enum(allowed))) => {
+            ids.iter().all(|id| allowed.contains(id))
+        }
+        (Ty::Record(members), FieldType::Record(wanted)) => {
+            members.len() == wanted.len()
+                && members
+                    .iter()
+                    .zip(wanted)
+                    .all(|((name, ty), (other, kind))| name == other && assignable(ty, kind))
+        }
+        (
+            Ty::Map { keys, value },
+            FieldType::Map {
+                keys: wanted_keys,
+                value: wanted,
+                ..
+            },
+        ) => keys == wanted_keys && assignable(value, wanted),
         _ => false,
-    }
-}
-
-fn scalar_value(kind: &FieldType, line: usize) -> Result<Domain> {
-    match kind {
-        FieldType::Scalar(domain) => Ok(domain.clone()),
-        FieldType::Map { .. } => Err(Error::at(
-            line,
-            "map values must be integers, booleans, or enums",
-        )),
     }
 }
 

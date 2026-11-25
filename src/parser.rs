@@ -1,7 +1,7 @@
 use crate::ast::{
     Action, ActionCall, Assignment, BinaryOperator, CallArguments, Condition, Expr, Fairness,
-    Field, Property, PropertyKind, Quantifier, Scenario, ScenarioStep, Span, Spec, TargetKey,
-    TypeDecl, TypeExpr, UnaryOperator, Value, is_reserved_word,
+    Field, Property, PropertyKind, Quantifier, Scenario, ScenarioStep, Span, Spec, TypeDecl,
+    TypeExpr, UnaryOperator, Value, is_reserved_word,
 };
 use crate::{Error, Result};
 use std::collections::BTreeMap;
@@ -21,6 +21,9 @@ enum Token {
     RightParen,
     LeftBracket,
     RightBracket,
+    LeftBrace,
+    RightBrace,
+    Colon,
     Comma,
     Plus,
     Minus,
@@ -534,26 +537,13 @@ fn parse_condition(source: &str, at: At) -> Result<Condition> {
 
 fn parse_assignment(source: &str, keyword: &str, at: At) -> Result<Assignment> {
     let mut tokens = Tokens::new(source, at)?;
-    let (field, target) = tokens.take_word()?;
-    let key = if tokens.eat(&Token::LeftBracket) {
-        let key = parse_expression(&mut tokens)?;
-        tokens.expect(&Token::RightBracket)?;
-        TargetKey::At(key)
-    } else if tokens.eat_word("of") {
-        if tokens.eat_word("every") {
-            TargetKey::Every(tokens.take_word()?.0)
-        } else {
-            TargetKey::At(parse_primary(&mut tokens)?)
-        }
-    } else {
-        TargetKey::Whole
-    };
+    let target = tokens.span(0);
+    let place = tokens.nested(parse_target)?;
     tokens.expect_word(keyword)?;
     let value = parse_expression(&mut tokens)?;
     tokens.finish()?;
     Ok(Assignment {
-        field,
-        key,
+        place,
         value,
         source: source.trim().to_string(),
         line: at.line,
@@ -874,6 +864,28 @@ impl Tokens {
             }
             return Ok(TypeExpr::Enum { values });
         }
+        if self.eat_word("record") {
+            self.expect_word("with")?;
+            self.expect(&Token::LeftParen)?;
+            let mut members: Vec<Field> = Vec::new();
+            loop {
+                let member = self.nested(|tokens| tokens.take_field(true))?;
+                if members.iter().any(|other| other.name == member.name) {
+                    return Err(Error::at(
+                        self.at.line,
+                        format!("{name} has two members named {}", member.name),
+                    )
+                    .spanned(member.span));
+                }
+                members.push(member);
+                if self.eat(&Token::Comma) {
+                    continue;
+                }
+                self.expect(&Token::RightParen)?;
+                break;
+            }
+            return Ok(TypeExpr::Record(members));
+        }
         if self.eat_word("map") {
             self.expect_word("from")?;
             if !self.eat_word("a") {
@@ -890,7 +902,7 @@ impl Tokens {
         match self.next() {
             Some(Token::Word(word)) if !is_reserved_word(&word) => Ok(TypeExpr::Named(word)),
             _ => Err(self.previous_error(
-                "expected 'an integer from ... to ...', 'a boolean', 'one of ...', 'a map from ... to ...', or a declared type",
+                "expected 'an integer from ... to ...', 'a boolean', 'one of ...', 'a map from ... to ...', 'a record with (...)', or a declared type",
             )),
         }
     }
@@ -941,6 +953,9 @@ fn token_name(token: &Token) -> String {
         Token::RightParen => ")",
         Token::LeftBracket => "[",
         Token::RightBracket => "]",
+        Token::LeftBrace => "{",
+        Token::RightBrace => "}",
+        Token::Colon => ":",
         Token::Comma => ",",
         Token::Plus => "+",
         Token::Minus => "-",
@@ -981,6 +996,9 @@ fn lex(source: &str, at: At) -> Result<(Vec<Token>, Vec<Span>)> {
             ')' => (Token::RightParen, 1),
             '[' => (Token::LeftBracket, 1),
             ']' => (Token::RightBracket, 1),
+            '{' => (Token::LeftBrace, 1),
+            '}' => (Token::RightBrace, 1),
+            ':' => (Token::Colon, 1),
             ',' => (Token::Comma, 1),
             '+' => (Token::Plus, 1),
             '-' => (Token::Minus, 1),
@@ -1250,9 +1268,72 @@ fn parse_primary(tokens: &mut Tokens) -> Result<Expr> {
         Some(Token::LeftParen) => {
             let expression = parse_expression(tokens)?;
             tokens.expect(&Token::RightParen)?;
-            Ok(expression)
+            parse_subscripts(tokens, expression)
         }
+        Some(Token::LeftBrace) => parse_record(tokens),
         _ => Err(tokens.previous_error("expected a value, name, or parenthesized expression")),
+    }
+}
+
+/// The left side of an assignment: `name`, `name[key]...`, `name of every
+/// <type>`, or `name of <target>`, which may itself be a path.
+fn parse_target(tokens: &mut Tokens) -> Result<Expr> {
+    let (name, span) = tokens.take_word()?;
+    let place = if tokens.eat(&Token::LeftBracket) {
+        let key = parse_expression(tokens)?;
+        tokens.expect(&Token::RightBracket)?;
+        Expr::Index {
+            map: name,
+            key: Box::new(key),
+            span,
+        }
+    } else if tokens.eat_word("of") {
+        let key = if tokens.eat_word("every") {
+            Expr::Every(tokens.take_word()?.0)
+        } else if matches!(tokens.peek(), Some(Token::Word(word)) if !is_reserved_word(word)) {
+            tokens.nested(parse_target)?
+        } else {
+            tokens.nested(parse_primary)?
+        };
+        Expr::Index {
+            map: name,
+            key: Box::new(key),
+            span,
+        }
+    } else {
+        Expr::Name { name, span }
+    };
+    parse_subscripts(tokens, place)
+}
+
+fn parse_subscripts(tokens: &mut Tokens, mut base: Expr) -> Result<Expr> {
+    while tokens.eat(&Token::LeftBracket) {
+        let key = parse_expression(tokens)?;
+        tokens.expect(&Token::RightBracket)?;
+        base = Expr::Subscript {
+            base: Box::new(base),
+            key: Box::new(key),
+        };
+    }
+    Ok(base)
+}
+
+fn parse_record(tokens: &mut Tokens) -> Result<Expr> {
+    let mut members: Vec<(String, Expr)> = Vec::new();
+    loop {
+        let (member, span) = tokens.take_word()?;
+        if members.iter().any(|(other, _)| *other == member) {
+            return Err(
+                Error::at(tokens.at.line, format!("{member} is given twice")).spanned(span),
+            );
+        }
+        tokens.expect(&Token::Colon)?;
+        members.push((member, parse_expression(tokens)?));
+        if tokens.eat(&Token::Comma) {
+            continue;
+        }
+        tokens.expect(&Token::RightBrace)?;
+        return Ok(Expr::Record(members));
     }
 }
 
@@ -1260,11 +1341,14 @@ fn parse_name(tokens: &mut Tokens, name: String, span: Span) -> Result<Expr> {
     if tokens.eat(&Token::LeftBracket) {
         let key = parse_expression(tokens)?;
         tokens.expect(&Token::RightBracket)?;
-        return Ok(Expr::Index {
-            map: name,
-            key: Box::new(key),
-            span,
-        });
+        return parse_subscripts(
+            tokens,
+            Expr::Index {
+                map: name,
+                key: Box::new(key),
+                span,
+            },
+        );
     }
     if tokens.eat_word("of") {
         let key = tokens.nested(parse_primary)?;

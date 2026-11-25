@@ -112,7 +112,33 @@ fn variants(expr: &Expr) -> Vec<(String, Expr)> {
                 )
             })
             .collect(),
-        Expr::Literal(_) | Expr::Name { .. } => Vec::new(),
+        Expr::Literal(_) | Expr::Name { .. } | Expr::Every(_) => Vec::new(),
+        Expr::Subscript { base, key } => {
+            let mut all = boxed(variants(base), |base| Expr::Subscript {
+                base,
+                key: key.clone(),
+            });
+            all.extend(boxed(variants(key), |key| Expr::Subscript {
+                base: base.clone(),
+                key,
+            }));
+            all
+        }
+        Expr::Record(members) => members
+            .iter()
+            .enumerate()
+            .flat_map(|(index, (_, value))| {
+                variants(value)
+                    .into_iter()
+                    .map(move |(description, value)| {
+                        let mut changed = members.clone();
+                        if let Some(member) = changed.get_mut(index) {
+                            member.1 = value;
+                        }
+                        (description, Expr::Record(changed))
+                    })
+            })
+            .collect(),
         Expr::Index { map, key, span } => boxed(variants(key), |key| Expr::Index {
             map: map.clone(),
             key,

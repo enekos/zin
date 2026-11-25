@@ -1,6 +1,7 @@
 """The runner contract shared by every binding: bindings/fixtures/contract."""
 
 import copy
+import dataclasses
 import enum
 import json
 from pathlib import Path
@@ -104,6 +105,11 @@ class Token(enum.Enum):
 def native(value):
     if isinstance(value, dict) and "$enum" in value:
         return Token(value["$enum"])
+    if isinstance(value, dict) and "$set" in value:
+        return {native(item) for item in value["$set"]}
+    if isinstance(value, dict) and "$record" in value:
+        members = {key: native(item) for key, item in value["$record"].items()}
+        return dataclasses.make_dataclass("Record", list(members))(**members)
     if isinstance(value, dict) and "$map" in value:
         return {native(key): native(item) for key, item in value["$map"]}
     if isinstance(value, dict):

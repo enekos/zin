@@ -27,6 +27,14 @@ import (
 // PlanFormat is the plan file format this package reads.
 const PlanFormat = "plan/1"
 
+// PlanFormat2 is the format of plans whose state holds records, nested maps,
+// optional values, sets or lists. This package reads both.
+const PlanFormat2 = "plan/2"
+
+// Set marks an observed value as a set: it matches the specification's set
+// in any order. Observe a list as an ordinary slice.
+type Set []any
+
 // listedSteps is how many of the latest steps a report lists before eliding
 // earlier ones.
 const listedSteps = 8
@@ -224,8 +232,8 @@ func parsePlan(data []byte, origin string) (*Plan, error) {
 	var format struct {
 		Format string `json:"zin"`
 	}
-	if json.Unmarshal(data, &format) != nil || format.Format != PlanFormat {
-		return nil, fmt.Errorf("zin: %s is not a %s file", origin, PlanFormat)
+	if json.Unmarshal(data, &format) != nil || (format.Format != PlanFormat && format.Format != PlanFormat2) {
+		return nil, fmt.Errorf("zin: %s is not a %s or %s file", origin, PlanFormat, PlanFormat2)
 	}
 	var plan Plan
 	if err := json.Unmarshal(data, &plan); err != nil {
@@ -456,12 +464,20 @@ func LoadPlan(spec string, options ...Option) (*Plan, error) {
 	return parsePlan(output, resolved)
 }
 
-// plain converts a value into the plan's vocabulary: int64, bool, string, or
-// map[string]any of those.
+// plain converts a value into the plan's vocabulary: int64, bool, string,
+// nil, []any, Set, or map[string]any of those. A struct becomes a map of its
+// exported fields, named by a `zin` tag, else a `json` tag, else the field
+// name with its first letter in lower case.
 func plain(value any) any {
 	switch typed := value.(type) {
 	case nil:
 		return nil
+	case Set:
+		out := make(Set, len(typed))
+		for index, item := range typed {
+			out[index] = plain(item)
+		}
+		return out
 	case float64:
 		if typed == float64(int64(typed)) {
 			return int64(typed)
@@ -486,11 +502,53 @@ func plain(value any) any {
 			out[fmt.Sprint(plain(key.Interface()))] = plain(reflected.MapIndex(key).Interface())
 		}
 		return out
+	case reflect.Slice, reflect.Array:
+		out := make([]any, reflected.Len())
+		for index := range out {
+			out[index] = plain(reflected.Index(index).Interface())
+		}
+		return out
+	case reflect.Pointer:
+		if reflected.IsNil() {
+			return nil
+		}
+		return plain(reflected.Elem().Interface())
+	case reflect.Struct:
+		out := map[string]any{}
+		for index := 0; index < reflected.NumField(); index++ {
+			field := reflected.Type().Field(index)
+			if !field.IsExported() {
+				continue
+			}
+			out[memberName(field)] = plain(reflected.Field(index).Interface())
+		}
+		return out
 	}
 	return value
 }
 
+func memberName(field reflect.StructField) string {
+	for _, tag := range []string{"zin", "json"} {
+		if name, _, _ := strings.Cut(field.Tag.Get(tag), ","); name != "" && name != "-" {
+			return name
+		}
+	}
+	return strings.ToLower(field.Name[:1]) + field.Name[1:]
+}
+
 func show(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return "nothing"
+	case Set:
+		return show([]any(typed))
+	case []any:
+		parts := make([]string, len(typed))
+		for index, item := range typed {
+			parts[index] = show(item)
+		}
+		return "[" + strings.Join(parts, ", ") + "]"
+	}
 	entries, ok := value.(map[string]any)
 	if !ok {
 		return fmt.Sprint(value)
@@ -508,8 +566,14 @@ func show(value any) string {
 }
 
 func same(expected, observed any) bool {
+	if items, ok := expected.([]any); ok {
+		return sameItems(items, observed)
+	}
 	wanted, ok := expected.(map[string]any)
 	if !ok {
+		if observed != nil && !reflect.TypeOf(observed).Comparable() {
+			return false
+		}
 		return expected == observed
 	}
 	actual, ok := observed.(map[string]any)
@@ -523,6 +587,40 @@ func same(expected, observed any) bool {
 		}
 	}
 	return true
+}
+
+// sameItems compares a list in order, and a Set in any order.
+func sameItems(expected []any, observed any) bool {
+	switch typed := observed.(type) {
+	case Set:
+		if len(typed) != len(expected) {
+			return false
+		}
+		for _, item := range typed {
+			found := false
+			for _, want := range expected {
+				if same(want, item) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return false
+			}
+		}
+		return true
+	case []any:
+		if len(typed) != len(expected) {
+			return false
+		}
+		for index, item := range typed {
+			if !same(expected[index], item) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 type runner struct {

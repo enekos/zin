@@ -7,7 +7,7 @@
 //! between components. An action declared in one component interleaves with
 //! everything else.
 
-use crate::ast::{Action, BinaryOperator, Condition, Expr, Field, Span, Spec, TargetKey, TypeDecl};
+use crate::ast::{Action, BinaryOperator, Condition, Expr, Field, Span, Spec, TypeDecl};
 use crate::{Error, Result};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -20,19 +20,22 @@ pub(crate) fn compose(components: Vec<Spec>) -> Result<Spec> {
             confine(action, &component.name, &owners)?;
         }
         for assignment in &component.initially {
-            if let Some((owner, _)) = owners
-                .get(assignment.field.as_str())
-                .filter(|(owner, _)| *owner != component.name)
-            {
+            let foreign = |name: &str| {
+                owners
+                    .get(name)
+                    .filter(|(owner, _)| *owner != component.name)
+                    .map(|(owner, _)| *owner)
+            };
+            if let Some((field, owner, span)) = foreign_name(&assignment.place, &foreign) {
                 return Err(Error::at(
                     assignment.line,
                     format!(
-                        "{} sets the initial value of {}, which belongs to {owner}",
-                        component.name, assignment.field
+                        "{} sets the initial value of {field}, which belongs to {owner}",
+                        component.name
                     ),
                 )
                 .coded("component.foreign_field")
-                .spanned(assignment.target));
+                .spanned(span));
             }
         }
     }
@@ -162,20 +165,49 @@ fn confine(action: &Action, component: &str, owners: &HashMap<&str, (&str, Span)
         }
     }
     for assignment in &action.assignments {
-        if let Some(owner) = foreign(&assignment.field) {
-            return Err(fail(assignment.target, &assignment.field, owner, "assigns"));
+        let mut keys = Vec::new();
+        if let Some((field, owner, span)) = foreign_path(&assignment.place, &foreign, &mut keys) {
+            return Err(fail(span, &field, owner, "assigns"));
         }
-        let key = match &assignment.key {
-            TargetKey::At(key) => foreign_name(key, &foreign),
-            TargetKey::Whole | TargetKey::Every(_) => None,
-        };
-        if let Some((field, owner, span)) =
-            key.or_else(|| foreign_name(&assignment.value, &foreign))
+        if let Some((field, owner, span)) = keys
+            .into_iter()
+            .chain([&assignment.value])
+            .find_map(|expr| foreign_name(expr, &foreign))
         {
             return Err(fail(span, &field, owner, "reads"));
         }
     }
     Ok(())
+}
+
+/// The first foreign name along an assignment target's path. Key
+/// expressions, which the assignment reads, are collected into `keys`.
+fn foreign_path<'e, 'a>(
+    place: &'e Expr,
+    foreign: &impl Fn(&str) -> Option<&'a str>,
+    keys: &mut Vec<&'e Expr>,
+) -> Option<(String, &'a str, Span)> {
+    match place {
+        Expr::Name { name, span }
+        | Expr::Index {
+            map: name, span, ..
+        } if foreign(name).is_some() => foreign(name).map(|owner| (name.clone(), owner, *span)),
+        Expr::Index { key, .. } => match key.as_ref() {
+            Expr::Name { .. } | Expr::Index { .. } | Expr::Subscript { .. } => {
+                foreign_path(key, foreign, keys)
+            }
+            Expr::Every(_) => None,
+            key => {
+                keys.push(key);
+                None
+            }
+        },
+        Expr::Subscript { base, key } => {
+            keys.push(key);
+            foreign_path(base, foreign, keys)
+        }
+        _ => None,
+    }
 }
 
 /// The first name in `expr` that another component owns.
@@ -213,6 +245,12 @@ fn foreign_name<'a>(
                 pending.push(otherwise);
             }
             Expr::Quantified { body, .. } => pending.push(body),
+            Expr::Subscript { base, key } => {
+                pending.push(base);
+                pending.push(key);
+            }
+            Expr::Record(members) => pending.extend(members.iter().map(|(_, value)| value)),
+            Expr::Every(_) => {}
         }
     }
     None

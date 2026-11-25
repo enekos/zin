@@ -11,6 +11,9 @@ mod identify;
 mod pairs;
 
 pub const PLAN_FORMAT: &str = "plan/1";
+/// The format of a plan whose state holds records or nested maps. Plans for
+/// specifications without them stay `plan/1`, byte for byte.
+pub const PLAN_FORMAT_2: &str = "plan/2";
 const DEFAULT_MAX_STEPS: usize = 200;
 const MAX_PLAN_STEPS: usize = 2_000_000;
 const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
@@ -799,7 +802,16 @@ impl Plan {
             })
             .collect();
         let mut plan = Json::object([
-            ("zin", Json::str(PLAN_FORMAT)),
+            (
+                "zin",
+                Json::str(
+                    if model.fields.iter().all(|field| field.kind.is_classic()) {
+                        PLAN_FORMAT
+                    } else {
+                        PLAN_FORMAT_2
+                    },
+                ),
+            ),
             ("system", Json::str(model.name.clone())),
             ("fingerprint", Json::str(model.fingerprint.clone())),
             (
@@ -935,6 +947,9 @@ fn check_safe_integers(model: &Model) -> Result<()> {
             FieldType::Map { keys, value, .. } => {
                 unsafe_domain(keys) || unsafe_kind(value, unsafe_domain)
             }
+            FieldType::Record(members) => members
+                .iter()
+                .any(|(_, kind)| unsafe_kind(kind, unsafe_domain)),
         }
     }
     let fields = model
@@ -1014,6 +1029,23 @@ fn field_type_json(model: &Model, kind: &FieldType) -> Json {
                 ),
             ),
             ("value", field_type_json(model, value)),
+        ]),
+        FieldType::Record(members) => Json::object([
+            ("kind", Json::str("record")),
+            (
+                "members",
+                Json::Array(
+                    members
+                        .iter()
+                        .map(|(name, kind)| {
+                            Json::object([
+                                ("name", Json::str(name.clone())),
+                                ("type", field_type_json(model, kind)),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
         ]),
     }
 }

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Records: `a record with (status is one of draft, paid, items is an integer
+  from 0 to 2)` as a state field, a named type or a map value. Members read
+  right to left (`status of orders of c`), literals are `{status: paid, items:
+  2}`, and `is` compares whole records. Any path can be assigned, including
+  `status of orders of every customer`.
+- Nested maps: a map value may be a map. Index one with brackets
+  (`paid_on[c][tue]`) and write a whole map as `{mon: false, tue: false}`.
+- `plan/2`: plans whose state holds records or nested maps say `plan/2`;
+  every other plan stays `plan/1`. The Python, JavaScript, Go and JUnit
+  runners read both, and compare `null`, lists in order, native sets in any
+  order, and records given as dataclasses, Java records or Go structs.
 - Rust API: `FieldType::Map` holds its value type as `Box<FieldType>`, and
   `FieldType::width` gives the number of state slots a type occupies. Map
   reads and writes address slots through key steps with a stride, so nested

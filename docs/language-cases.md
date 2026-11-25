@@ -72,3 +72,23 @@ action send(value is a boolean) # fails: action send(value is an integer from 0 
   received becomes value
 always sent is received
 ```
+
+## Records
+
+```zin
+system "Order"
+state
+  order is a record with (status is one of draft, paid, items is an integer from 0 to 2)
+initially
+  order is {items: 0, status: draft}
+action add
+  requires status of order is draft and items of order < 2
+  items of order becomes items of order + 1
+action pay
+  requires items of order > 0
+  order becomes {status: paid, items: items of order}
+scenario "Pay for one"
+  add
+  pay
+  expect order is {status: paid, items: 1} # fails: expect order is {status: paid, items: 0}
+```

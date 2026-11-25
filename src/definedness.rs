@@ -147,6 +147,16 @@ impl Analysis<'_> {
                 }
                 facts
             }
+            Ir::Tuple(parts) => {
+                let mut facts = Facts::total(BOOLEAN);
+                for part in parts {
+                    let part = self.facts(part);
+                    facts.values = facts.values.union(part.values);
+                    facts.can_fault |= part.can_fault;
+                    facts.order_sensitive |= part.order_sensitive;
+                }
+                facts
+            }
             Ir::Not(value) => {
                 let value = self.facts(value);
                 Facts {

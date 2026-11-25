@@ -99,11 +99,21 @@ pub struct Field {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeExpr {
-    Integer { min: i64, max: i64 },
-    Enum { values: Vec<String> },
+    Integer {
+        min: i64,
+        max: i64,
+    },
+    Enum {
+        values: Vec<String>,
+    },
     Boolean,
     Named(String),
-    Map { key: String, value: Box<TypeExpr> },
+    Map {
+        key: String,
+        value: Box<TypeExpr>,
+    },
+    /// `a record with (name is <type>, ...)`: named members, in order.
+    Record(Vec<Field>),
 }
 
 impl fmt::Display for TypeExpr {
@@ -114,6 +124,14 @@ impl fmt::Display for TypeExpr {
             Self::Boolean => formatter.write_str("a boolean"),
             Self::Named(name) => formatter.write_str(name),
             Self::Map { key, value } => write!(formatter, "a map from {key} to {value}"),
+            Self::Record(members) => {
+                let members = members
+                    .iter()
+                    .map(|member| format!("{} is {}", member.name, member.kind))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(formatter, "a record with ({members})")
+            }
         }
     }
 }
@@ -177,20 +195,15 @@ impl Property {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TargetKey {
-    Whole,
-    At(Expr),
-    Every(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Assignment {
-    pub field: String,
-    pub key: TargetKey,
+    /// What is assigned: a state field, or a path into one built from map
+    /// keys (`at of w`, `m[a][b]`), members (`status of order`) and
+    /// `of every <type>` ([`Expr::Every`] as a key).
+    pub place: Expr,
     pub value: Expr,
     pub source: String,
     pub line: usize,
-    /// The assigned field's name.
+    /// The first name of the assigned path.
     pub target: Span,
     /// The action parameters this clause may read. `None` means all of them.
     pub params: Option<Arc<[String]>>,
@@ -366,12 +379,23 @@ pub enum Expr {
         name: String,
         span: Span,
     },
+    /// `name of key` or `name[key]`: an entry of the map field `name`, or the
+    /// member `name` of the record `key`, decided by the types.
     Index {
         map: String,
         key: Box<Expr>,
         /// The map's name.
         span: Span,
     },
+    /// `base[key]` where `base` is itself an entry or member: `m[a][b]`.
+    Subscript {
+        base: Box<Expr>,
+        key: Box<Expr>,
+    },
+    /// `{name: value, ...}`: a record value.
+    Record(Vec<(String, Expr)>),
+    /// `every <type>` as a key in an assignment target: all keys at once.
+    Every(String),
     Unary {
         operator: UnaryOperator,
         value: Box<Expr>,

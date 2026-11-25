@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -245,6 +246,16 @@ func native(value any) any {
 	if name, ok := object["$enum"]; ok {
 		return token(name.(string))
 	}
+	if items, ok := object["$set"]; ok {
+		out := Set{}
+		for _, item := range items.([]any) {
+			out = append(out, native(item))
+		}
+		return out
+	}
+	if members, ok := object["$record"]; ok {
+		return native(members)
+	}
 	if entries, ok := object["$map"]; ok {
 		out := map[any]any{}
 		for _, entry := range entries.([]any) {
@@ -345,5 +356,24 @@ func TestContractPlansHaveTheSchemaKeys(t *testing.T) {
 				t.Fatalf("%s: missing summary.%s", name, key)
 			}
 		}
+	}
+}
+
+func TestStructsAreObservedAsRecords(t *testing.T) {
+	type order struct {
+		Status token `zin:"status"`
+		Items  int
+		secret int
+	}
+	got := plain(map[string]any{"order": order{Status: "paid", Items: 2, secret: 1}, "queue": []order{{Status: "open"}}})
+	want := map[string]any{
+		"order": map[string]any{"status": "paid", "items": int64(2)},
+		"queue": []any{map[string]any{"status": "open", "items": int64(0)}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("plain = %#v", got)
+	}
+	if !same(plain([]any{"ann", "ben"}), Set{"ben", "ann"}) || same(plain([]any{"ann", "ben"}), []any{"ben", "ann"}) {
+		t.Fatal("a Set matches in any order, a slice in order")
 	}
 }

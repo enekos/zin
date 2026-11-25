@@ -24,7 +24,7 @@ export interface PlanTest {
 }
 
 export interface Plan {
-  zin: "plan/1";
+  zin: "plan/1" | "plan/2";
   system: string;
   fingerprint: string;
   /** Included files by path relative to the specification, each with its FNV-1a 64 hash. Absent before 0.3. */

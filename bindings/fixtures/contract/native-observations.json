@@ -5,5 +5,10 @@
   {"name":"integer map keys","expected":{"slots":{"1":true,"2":false}},"observed":{"slots":{"$map":[[2,false]]}},"matches":true},
   {"name":"enum map keys and values","expected":{"at":{"ann":"idle","ben":"busy"}},"observed":{"at":{"$map":[[{"$enum":"ben"},{"$enum":"busy"}]]}},"matches":true},
   {"name":"wrong value behind a native key","expected":{"at":{"ann":"idle"}},"observed":{"at":{"$map":[[{"$enum":"ann"},{"$enum":"busy"}]]}},"matches":false},
-  {"name":"a boolean is not an integer","expected":{"count":1},"observed":{"count":true},"matches":false}
+  {"name":"a boolean is not an integer","expected":{"count":1},"observed":{"count":true},"matches":false},
+  {"name":"native set in any order","expected":{"holders":["ann","ben"]},"observed":{"holders":{"$set":[{"$enum":"ben"},{"$enum":"ann"}]}},"matches":true},
+  {"name":"native set missing a member","expected":{"holders":["ann","ben"]},"observed":{"holders":{"$set":["ann"]}},"matches":false},
+  {"name":"native set with another member","expected":{"holders":["ann","ben"]},"observed":{"holders":{"$set":["ann","cid"]}},"matches":false},
+  {"name":"native record","expected":{"order":{"status":"paid","items":2}},"observed":{"order":{"$record":{"status":{"$enum":"open"},"items":2}}},"matches":false},
+  {"name":"native record with enum members","expected":{"order":{"status":"open","items":2}},"observed":{"order":{"$record":{"status":{"$enum":"open"},"items":2}}},"matches":true}
 ]

@@ -59,6 +59,18 @@ fn moved(domain: &Domain, groups: &[Vec<i64>]) -> bool {
 fn sources(kind: &FieldType, relabel: &impl Fn(i64) -> i64, groups: &[Vec<i64>]) -> Vec<usize> {
     match kind {
         FieldType::Scalar(_) => vec![0],
+        FieldType::Record(members) => {
+            let mut out = Vec::with_capacity(kind.width());
+            for (_, member) in members {
+                let base = out.len();
+                out.extend(
+                    sources(member, relabel, groups)
+                        .into_iter()
+                        .map(|from| base + from),
+                );
+            }
+            out
+        }
         FieldType::Map { keys, value, .. } => {
             let inner = sources(value, relabel, groups);
             let width = inner.len();

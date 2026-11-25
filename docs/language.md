@@ -36,9 +36,11 @@ scenario "Name"                    # worked examples, checked and turned into te
 | Enumeration | `one of open, closed` or `one of open, closed or frozen` |
 | Named type | `a worker` / `worker` (declared under `types`) |
 | Map | `a map from worker to a boolean` |
+| Record | `a record with (status is one of draft, paid, items is an integer from 0 to 2)` |
 
-Map keys must be finite (an enum, a boolean, or a bounded integer); map values
-are any non-map type. Every key always has a value.
+Map keys must be a named finite type (an enum, a boolean, or a bounded
+integer); map values may be any type, including maps and records. Every key
+always has a value.
 
 Enum values are plain words. Quote one (`"on"`) when it would otherwise read as
 a keyword or as another name. An enum value may belong to several enums; where
@@ -82,6 +84,46 @@ from the declared ranges, so `load of w + 1` over a bounded map keeps the
 reduction. `zin check` notes why it explored the full state space. `zin check
 --symmetry off` turns the reduction off.
 
+### Records and nested maps
+
+```zin
+types
+  order is a record with (status is one of draft, paid, shipped, items is an integer from 0 to 2)
+
+state
+  orders is a map from customer to order
+  paid_on is a map from customer to a map from day to a boolean
+
+initially
+  orders of every customer is {status: draft, items: 0}
+  paid_on of every customer is {mon: false, tue: false}
+```
+
+A record groups values that belong together, so they cannot drift apart the
+way two parallel maps can. Members are separated by commas, as action
+parameters are, and may have any type.
+
+- **Reading.** `status of orders of c` reads right to left: the entry `c` of
+  `orders`, then its member `status`. `name of x` is a member when `x` is a
+  record and a map entry when `name` is a map; the types decide. Index a map
+  that is itself a map value with brackets: `paid_on[c][tue]`.
+- **Literals.** `{status: paid, items: 2}` is a record; members may come in
+  any order. The same braces write a whole map with one value per key:
+  `{mon: false, tue: false}`. A literal takes its type from the other side of
+  `is` or `becomes`.
+- **Comparison.** `is` and `is not` compare whole records and maps, member by
+  member; the other operators take integers.
+- **Assignment.** Any path can be assigned: `items of orders of c becomes 1`,
+  `orders of c becomes {status: shipped, items: 2}`,
+  `status of orders of every customer becomes draft`. A path may use `of every`
+  once, and every other key on it must then be a constant.
+- **Limits.** Action parameters, quantifiers and map keys stay integers,
+  booleans and enums.
+
+Every slot of a record is part of the state: an order with two members takes
+two slots, a map from two customers to orders takes four. Plans for a
+specification with records or nested maps are [`plan/2`](plan-format.md).
+
 ## State and initial values
 
 ```zin
@@ -95,7 +137,8 @@ initially
   at of alice is holding         # single entries refine 'of every'
 ```
 
-Every variable, and every key of every map, must receive an initial value.
+Every variable, every key of every map and every member of every record must
+receive an initial value.
 
 ## Expressions
 
@@ -163,7 +206,8 @@ fair action deposit(amount is an integer from 1 to 5, w is a worker)
   Otherwise it is **rejected** and the state does not change.
 - All assignments read the state **before** the action: `a becomes b` and
   `b becomes a` in one action swap the two.
-- Assigning the same variable or map entry twice in one action is an error.
+- Assigning the same variable, map entry or record member twice in one action
+  is an error, including through a whole record and one of its members.
   The one exception: `m of every <type>` sets a default that assignments to
   single entries refine.
 - A variable not assigned keeps its value.
