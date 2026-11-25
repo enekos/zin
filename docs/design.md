@@ -41,6 +41,16 @@ scenarios, using the same idea as mutation testing of code.
 
 - States are vectors of integers; enum values and booleans are interned.
   Exploration is breadth-first, so every safety counterexample is shortest.
+- **Compound values are slot ranges.** A record is its members' slots in
+  order, a map one value per key, a set one boolean per element, an
+  optional a presence slot and the value, a list a length and every item it
+  could hold, an enumeration with members a tag and each case's members.
+  Compound expressions compile to one expression per slot, so exploration
+  still evaluates integers only. Every value has one encoding: each write
+  puts the first value of its slot into the slots an absent optional, the
+  items past a list's length, or the cases not taken would hold, and
+  symmetry images reset them the same way. Equality ignores those slots, so
+  values computed in an expression need not be canonical.
 - `always` / `never` are checked as states are discovered and stop
   exploration at the first violation.
 - **Symmetry.** Values of an `interchangeable` type cannot be named, so
@@ -101,7 +111,9 @@ shared actions are the only coupling between components.
   states and calls. It says nothing about inputs outside the modeled ranges
   or state the model omits. Plans are derived from the full state space even
   when the specification declares interchangeable values.
-- **Finite state only.** Bounded integers, booleans, enums, maps over them.
+- **Finite state only.** Bounded integers, booleans and enums, and records,
+  maps, optional values, sets, bounded lists and enumerations with members
+  built from them.
   No unbounded data, time, probability or floating point. Explicit-state
   exploration is practical to roughly millions of states; there is no
   symbolic engine or partial-order reduction, and symmetry reduction covers
