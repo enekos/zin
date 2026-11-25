@@ -147,6 +147,11 @@ impl Analysis<'_> {
                 }
                 facts
             }
+            Ir::Fail(_) => Facts {
+                values: Values::Range(0, 0),
+                can_fault: true,
+                order_sensitive: false,
+            },
             Ir::Tuple(parts) => {
                 let mut facts = Facts::total(BOOLEAN);
                 for part in parts {

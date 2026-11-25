@@ -72,6 +72,9 @@ pub enum FieldType {
     },
     /// Named members, laid out one after another in declaration order.
     Record(Vec<(String, FieldType)>),
+    /// A presence slot (0 for nothing, 1 for a value), then the value's
+    /// slots. When the value is nothing they hold each slot's first value.
+    Optional(Box<FieldType>),
 }
 
 impl FieldType {
@@ -84,6 +87,25 @@ impl FieldType {
             Self::Record(members) => members
                 .iter()
                 .fold(0, |width, (_, kind)| width.saturating_add(kind.width())),
+            Self::Optional(value) => value.width().saturating_add(1),
+        }
+    }
+
+    /// The slot values of a value of this type that nothing has set: the
+    /// first value of every slot. A value that is nothing holds these.
+    pub(crate) fn defaults(&self) -> Vec<i64> {
+        match self {
+            Self::Scalar(domain) => vec![domain.raw_at(0).unwrap_or(0)],
+            Self::Map { keys, value, .. } => value.defaults().repeat(keys.size()),
+            Self::Record(members) => members
+                .iter()
+                .flat_map(|(_, kind)| kind.defaults())
+                .collect(),
+            Self::Optional(value) => {
+                let mut out = vec![0];
+                out.extend(value.defaults());
+                out
+            }
         }
     }
 
@@ -92,7 +114,7 @@ impl FieldType {
         match self {
             Self::Scalar(_) => true,
             Self::Map { value, .. } => matches!(value.as_ref(), Self::Scalar(_)),
-            Self::Record(_) => false,
+            Self::Record(_) | Self::Optional(_) => false,
         }
     }
 
@@ -158,6 +180,8 @@ pub(crate) enum Ir {
     /// A compound value, one expression per slot. Compiled code takes it
     /// apart; it is never evaluated as a whole.
     Tuple(Vec<Ir>),
+    /// A model fault with this message, such as reading the value of nothing.
+    Fail(String),
     Not(Box<Ir>),
     Negate(Box<Ir>),
     Binary(BinaryOperator, Box<Ir>, Box<Ir>),
@@ -343,6 +367,10 @@ impl Model {
     pub(crate) fn decode_value(&self, kind: &FieldType, slots: &[i64]) -> Value {
         match kind {
             FieldType::Scalar(domain) => self.value(domain, slots.first().copied().unwrap_or(0)),
+            FieldType::Optional(value) => match slots.split_first() {
+                Some((1, rest)) => self.decode_value(value, rest),
+                _ => Value::Nothing,
+            },
             FieldType::Record(members) => {
                 let mut offset = 0;
                 Value::Map(
@@ -575,6 +603,7 @@ pub(crate) fn eval(ir: &Ir, state: &[i64], locals: &mut [i64]) -> std::result::R
         Ir::Local(local) => fetch(locals, *local)?,
         Ir::Index { offset, steps } => fetch(state, locate(*offset, steps, state, locals)?)?,
         Ir::Tuple(_) => return Err("internal error: a compound value was evaluated".to_string()),
+        Ir::Fail(message) => return Err(message.clone()),
         Ir::Not(value) => i64::from(eval(value, state, locals)? == 0),
         Ir::Negate(value) => eval(value, state, locals)?
             .checked_neg()
@@ -651,7 +680,13 @@ enum Ty {
     Bool,
     Enum(BTreeSet<u32>),
     Record(Vec<(String, Ty)>),
-    Map { keys: Domain, value: Box<Ty> },
+    Map {
+        keys: Domain,
+        value: Box<Ty>,
+    },
+    Optional(Box<Ty>),
+    /// The literal `nothing`, before the context says what it is nothing of.
+    Nothing,
 }
 
 impl Ty {
@@ -676,6 +711,7 @@ impl Ty {
                     .map(|(name, kind)| (name.clone(), Self::of_kind(kind)))
                     .collect(),
             ),
+            FieldType::Optional(value) => Self::Optional(Box::new(Self::of_kind(value))),
         }
     }
 
@@ -686,6 +722,8 @@ impl Ty {
             Self::Enum(_) => "an enum value",
             Self::Record(_) => "a record",
             Self::Map { .. } => "a map",
+            Self::Optional(_) => "a value that may be nothing",
+            Self::Nothing => "nothing",
         }
     }
 
@@ -719,6 +757,19 @@ impl Ty {
                 keys: keys.clone(),
                 value: Box::new(value.join(other_value)?),
             },
+            (Self::Nothing, Self::Nothing) => Self::Nothing,
+            (Self::Nothing, Self::Optional(value)) | (Self::Optional(value), Self::Nothing) => {
+                Self::Optional(value.clone())
+            }
+            (Self::Nothing, value) | (value, Self::Nothing) => {
+                Self::Optional(Box::new(value.clone()))
+            }
+            (Self::Optional(left), Self::Optional(right)) => {
+                Self::Optional(Box::new(left.join(right)?))
+            }
+            (Self::Optional(left), right) | (right, Self::Optional(left)) => {
+                Self::Optional(Box::new(left.join(right)?))
+            }
             _ => return None,
         })
     }
@@ -742,7 +793,194 @@ impl Ty {
             Self::Int | Self::Bool | Self::Enum(_) => 1,
             Self::Record(members) => members.iter().map(|(_, ty)| ty.width()).sum(),
             Self::Map { keys, value } => keys.size().saturating_mul(value.width()),
+            Self::Optional(value) => value.width() + 1,
+            Self::Nothing => 1,
         }
+    }
+}
+
+/// `parts` of a value of type `from`, laid out as the wider type `to`: a value
+/// becomes present, `nothing` becomes an absent value of the right width.
+fn coerce(parts: Vec<Ir>, from: &Ty, to: &Ty) -> Vec<Ir> {
+    match (from, to) {
+        (Ty::Nothing, Ty::Optional(value)) => std::iter::repeat_with(|| Ir::Const(0))
+            .take(1 + value.width())
+            .collect(),
+        (Ty::Optional(from), Ty::Optional(to)) => {
+            let mut parts = parts.into_iter();
+            let tag = parts.next().unwrap_or(Ir::Const(0));
+            let mut out = vec![tag];
+            out.extend(coerce(parts.collect(), from, to));
+            out
+        }
+        (from, Ty::Optional(to)) => {
+            let mut out = vec![Ir::Const(1)];
+            out.extend(coerce(parts, from, to));
+            out
+        }
+        (Ty::Record(from), Ty::Record(to)) => {
+            let mut parts = parts.into_iter();
+            let mut out = Vec::new();
+            for ((_, from), (_, to)) in from.iter().zip(to) {
+                let member = parts.by_ref().take(from.width()).collect();
+                out.extend(coerce(member, from, to));
+            }
+            out
+        }
+        (Ty::Map { value: from, .. }, Ty::Map { keys, value: to }) => {
+            let mut parts = parts.into_iter();
+            let mut out = Vec::new();
+            for _ in 0..keys.size() {
+                let entry = parts.by_ref().take(from.width()).collect();
+                out.extend(coerce(entry, from, to));
+            }
+            out
+        }
+        _ => parts,
+    }
+}
+
+/// Whether two values laid out as `ty` are equal. An absent optional equals
+/// another absent one whatever its slots hold.
+fn equal_as(left: Vec<Ir>, right: Vec<Ir>, ty: &Ty) -> Ir {
+    let all = |checks: Vec<Ir>| {
+        checks
+            .into_iter()
+            .reduce(|all, next| Ir::Binary(BinaryOperator::And, Box::new(all), Box::new(next)))
+            .unwrap_or(Ir::Const(1))
+    };
+    match ty {
+        Ty::Int | Ty::Bool | Ty::Enum(_) => {
+            match (left.into_iter().next(), right.into_iter().next()) {
+                (Some(left), Some(right)) => {
+                    Ir::Binary(BinaryOperator::Equal, Box::new(left), Box::new(right))
+                }
+                _ => Ir::Const(1),
+            }
+        }
+        Ty::Nothing => Ir::Const(1),
+        Ty::Optional(value) => {
+            let (mut left, mut right) = (left.into_iter(), right.into_iter());
+            let (Some(left_tag), Some(right_tag)) = (left.next(), right.next()) else {
+                return Ir::Const(1);
+            };
+            let same_tag = Ir::Binary(
+                BinaryOperator::Equal,
+                Box::new(left_tag.clone()),
+                Box::new(right_tag),
+            );
+            let values = equal_as(left.collect(), right.collect(), value);
+            let absent_or_equal = Ir::Binary(
+                BinaryOperator::Or,
+                Box::new(Ir::Not(Box::new(left_tag))),
+                Box::new(values),
+            );
+            Ir::Binary(
+                BinaryOperator::And,
+                Box::new(same_tag),
+                Box::new(absent_or_equal),
+            )
+        }
+        Ty::Record(members) => {
+            let (mut left, mut right) = (left.into_iter(), right.into_iter());
+            all(members
+                .iter()
+                .map(|(_, member)| {
+                    let width = member.width();
+                    equal_as(
+                        left.by_ref().take(width).collect(),
+                        right.by_ref().take(width).collect(),
+                        member,
+                    )
+                })
+                .collect())
+        }
+        Ty::Map { keys, value } => {
+            let (mut left, mut right) = (left.into_iter(), right.into_iter());
+            let width = value.width();
+            all((0..keys.size())
+                .map(|_| {
+                    equal_as(
+                        left.by_ref().take(width).collect(),
+                        right.by_ref().take(width).collect(),
+                        value,
+                    )
+                })
+                .collect())
+        }
+    }
+}
+
+/// `parts`, to be written to a place of type `kind`, with every absent
+/// optional's slots set to their first values, so each value has one encoding.
+fn canonical(parts: Vec<Ir>, kind: &FieldType) -> Vec<Ir> {
+    match kind {
+        FieldType::Scalar(_) => parts,
+        FieldType::Optional(value) => {
+            let mut parts = parts.into_iter();
+            let tag = parts.next().unwrap_or(Ir::Const(0));
+            let inner = canonical(parts.collect(), value);
+            let mut out = vec![tag.clone()];
+            out.extend(
+                inner
+                    .into_iter()
+                    .zip(value.defaults())
+                    .map(|(part, default)| match part {
+                        Ir::Const(raw) if raw == default => part,
+                        part => Ir::If(
+                            Box::new(tag.clone()),
+                            Box::new(part),
+                            Box::new(Ir::Const(default)),
+                        ),
+                    }),
+            );
+            out
+        }
+        FieldType::Record(members) => {
+            let mut parts = parts.into_iter();
+            members
+                .iter()
+                .flat_map(|(_, member)| {
+                    canonical(parts.by_ref().take(member.width()).collect(), member)
+                })
+                .collect()
+        }
+        FieldType::Map { keys, value, .. } => {
+            let mut parts = parts.into_iter();
+            (0..keys.size())
+                .flat_map(|_| canonical(parts.by_ref().take(value.width()).collect(), value))
+                .collect()
+        }
+    }
+}
+
+/// The value inside an optional, faulting with `message` when it is nothing.
+fn unwrap(ir: Ir, ty: Ty, message: &str) -> (Ir, Ty) {
+    let Ty::Optional(value) = ty else {
+        return (ir, ty);
+    };
+    let mut parts = parts(ir).into_iter();
+    let tag = parts.next().unwrap_or(Ir::Const(0));
+    let inner = parts
+        .map(|part| {
+            Ir::If(
+                Box::new(tag.clone()),
+                Box::new(part),
+                Box::new(Ir::Fail(message.to_string())),
+            )
+        })
+        .collect();
+    unwrap(tuple(inner), *value, message)
+}
+
+/// How a fault message names the value `expr` reads.
+fn describe_expr(expr: &Expr) -> String {
+    match expr {
+        Expr::Name { name, .. } => name.clone(),
+        Expr::Index { map, key, .. } => format!("{map} of {}", describe_expr(key)),
+        Expr::Subscript { base, key } => format!("{}[{}]", describe_expr(base), describe_expr(key)),
+        Expr::Literal(value) => value.source(),
+        _ => "a value".to_string(),
     }
 }
 
@@ -1043,6 +1281,10 @@ impl<'a> Compiler<'a> {
                 line,
                 "a record is only allowed in state; parameters are integers, booleans or enums",
             )),
+            FieldType::Optional(_) => Err(Error::at(
+                line,
+                "'or nothing' is only allowed in state; parameters are integers, booleans or enums",
+            )),
         }
     }
 
@@ -1075,6 +1317,9 @@ impl<'a> Compiler<'a> {
                         format!("unknown type {name}; declare it in a types block"),
                     )
                 });
+            }
+            TypeExpr::Optional(value) => {
+                return Ok(FieldType::Optional(Box::new(self.resolve(value, line)?)));
             }
             TypeExpr::Record(members) => {
                 let mut resolved = Vec::with_capacity(members.len());
@@ -1166,6 +1411,13 @@ impl<'a> Compiler<'a> {
                 for (name, kind) in members {
                     self.lay_out(kind, &format!("{name} of {label}"));
                 }
+            }
+            FieldType::Optional(value) => {
+                self.slots.push(Slot {
+                    domain: Domain::Boolean,
+                    label: label.to_string(),
+                });
+                self.lay_out(value, label);
             }
         }
     }
@@ -1409,10 +1661,11 @@ impl<'a> Compiler<'a> {
             )
             .coded("type.mismatch"));
         }
+        let value = canonical(coerce(parts(value), &ty, &want), &place.kind);
         Ok(place
             .targets()
             .into_iter()
-            .zip(parts(value))
+            .zip(value)
             .map(|(target, value)| CompiledAssignment {
                 target,
                 value,
@@ -1446,6 +1699,7 @@ impl<'a> Compiler<'a> {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
+            FieldType::Optional(value) => format!("{} or nothing", self.describe_kind(value)),
         }
     }
 
@@ -1468,6 +1722,7 @@ impl<'a> Compiler<'a> {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
+            Ty::Optional(value) => format!("{} or nothing", self.describe_ty(value)),
             other => other.noun().to_string(),
         }
     }
@@ -1488,8 +1743,15 @@ impl<'a> Compiler<'a> {
         Ok(ir)
     }
 
+    /// Compiles `expr` where an integer, boolean or enum is needed: the value
+    /// of an optional is read, and reading it when it is nothing is a fault.
     fn expr(&mut self, expr: &Expr, line: usize) -> Result<(Ir, Ty)> {
-        self.expr_as(expr, None, line)
+        let (ir, ty) = self.expr_as(expr, None, line)?;
+        Ok(unwrap(
+            ir,
+            ty,
+            &format!("{} is nothing", describe_expr(expr)),
+        ))
     }
 
     /// Compiles `expr` to a value. `want` is the type the context expects,
@@ -1595,6 +1857,7 @@ impl<'a> Compiler<'a> {
                 None => Err(Error::at(line, format!("unknown enum value \"{name}\""))),
             },
             Expr::Literal(Value::Map(_)) => Err(Error::at(line, "map literals are not supported")),
+            Expr::Literal(Value::Nothing) => Ok((Ir::Const(0), Ty::Nothing)),
             Expr::Name { .. } | Expr::Index { .. } | Expr::Subscript { .. } => {
                 self.expr_as(expr, want, line)
             }
@@ -1640,9 +1903,11 @@ impl<'a> Compiler<'a> {
                         ),
                     ));
                 };
-                let branches = parts(then)
+                let then = coerce(parts(then), &then_ty, &ty);
+                let otherwise = coerce(parts(otherwise), &otherwise_ty, &ty);
+                let branches = then
                     .into_iter()
-                    .zip(parts(otherwise))
+                    .zip(otherwise)
                     .map(|(then, otherwise)| {
                         Ir::If(
                             Box::new(condition.clone()),
@@ -1800,10 +2065,23 @@ impl<'a> Compiler<'a> {
     }
 
     /// `name of key`: the member `name` of the record `key`, or else the
-    /// entry `key` of the map field `name`.
+    /// entry `key` of the map field `name`. A record that may be nothing is
+    /// read first; reading a member of nothing is a fault.
     fn of(&mut self, name: &str, key: &Expr, line: usize) -> Result<Operand> {
         if !matches!(key, Expr::Every(_)) {
-            let base = self.operand(key, None, line);
+            let base = match self.operand(key, None, line) {
+                Ok(Operand::Place(place)) if matches!(place.kind, FieldType::Optional(_)) => self
+                    .read(&place, line)
+                    .map(|(ir, ty)| Operand::Value(ir, ty)),
+                other => other,
+            };
+            let base = match base {
+                Ok(Operand::Value(ir, ty @ Ty::Optional(_))) => {
+                    let (ir, ty) = unwrap(ir, ty, &format!("{} is nothing", describe_expr(key)));
+                    Ok(Operand::Value(ir, ty))
+                }
+                other => other,
+            };
             match base {
                 Ok(Operand::Place(place)) if place.kind.member(name).is_some() => {
                     return Ok(Operand::Place(place.member(name).unwrap_or(place)));
@@ -1986,7 +2264,7 @@ impl<'a> Compiler<'a> {
                 .coded("type.mismatch"));
             }
         };
-        if left_ty.join(&right_ty).is_none() {
+        let Some(joined) = left_ty.join(&right_ty) else {
             return Err(Error::at(
                 line,
                 format!(
@@ -1996,13 +2274,12 @@ impl<'a> Compiler<'a> {
                 ),
             )
             .coded("type.mismatch"));
-        }
-        let equal = parts(left)
-            .into_iter()
-            .zip(parts(right))
-            .map(|(left, right)| Ir::Binary(BinaryOperator::Equal, Box::new(left), Box::new(right)))
-            .reduce(|all, next| Ir::Binary(BinaryOperator::And, Box::new(all), Box::new(next)))
-            .unwrap_or(Ir::Const(1));
+        };
+        let equal = equal_as(
+            coerce(parts(left), &left_ty, &joined),
+            coerce(parts(right), &right_ty, &joined),
+            &joined,
+        );
         let ir = if negate {
             Ir::Not(Box::new(equal))
         } else {
@@ -2108,6 +2385,9 @@ fn assignable(ty: &Ty, kind: &FieldType) -> bool {
                 ..
             },
         ) => keys == wanted_keys && assignable(value, wanted),
+        (Ty::Nothing, FieldType::Optional(_)) => true,
+        (Ty::Optional(value), FieldType::Optional(wanted)) => assignable(value, wanted),
+        (value, FieldType::Optional(wanted)) => assignable(value, wanted),
         _ => false,
     }
 }

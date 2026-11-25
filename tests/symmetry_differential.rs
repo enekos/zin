@@ -163,6 +163,7 @@ fn json(value: &Value) -> String {
         Value::Integer(n) => n.to_string(),
         Value::Boolean(b) => b.to_string(),
         Value::Symbol(s) => format!("\"{s}\""),
+        Value::Nothing => "null".to_string(),
         Value::Map(entries) => format!(
             "{{{}}}",
             entries

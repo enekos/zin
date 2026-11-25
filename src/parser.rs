@@ -829,6 +829,15 @@ impl Tokens {
     }
 
     fn take_type(&mut self, name: &str, parameter_list: bool) -> Result<TypeExpr> {
+        let kind = self.take_plain_type(name, parameter_list)?;
+        if self.peek_word(0) == Some("or") && self.peek_word(1) == Some("nothing") {
+            self.index += 2;
+            return Ok(TypeExpr::Optional(Box::new(kind)));
+        }
+        Ok(kind)
+    }
+
+    fn take_plain_type(&mut self, name: &str, parameter_list: bool) -> Result<TypeExpr> {
         if !self.eat_word("a") {
             self.eat_word("an");
         }
@@ -849,6 +858,9 @@ impl Tokens {
             self.expect_word("of")?;
             let mut values = vec![self.take_name()?.0];
             loop {
+                if self.peek_word(0) == Some("or") && self.peek_word(1) == Some("nothing") {
+                    break;
+                }
                 if self.eat_word("or") {
                     values.push(self.take_name()?.0);
                     continue;
@@ -1243,6 +1255,7 @@ fn parse_primary(tokens: &mut Tokens) -> Result<Expr> {
         Some(Token::Word(word)) => match word.as_str() {
             "true" => Ok(Expr::Literal(Value::Boolean(true))),
             "false" => Ok(Expr::Literal(Value::Boolean(false))),
+            "nothing" => Ok(Expr::Literal(Value::Nothing)),
             "if" => {
                 let condition = parse_expression(tokens)?;
                 tokens.expect_word("then")?;

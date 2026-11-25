@@ -92,3 +92,20 @@ scenario "Pay for one"
   pay
   expect order is {status: paid, items: 1} # fails: expect order is {status: paid, items: 0}
 ```
+
+## Optional values
+
+```zin
+system "Question"
+state
+  asked is an integer from 1 to 3 or nothing
+initially
+  asked is nothing
+action ask(n is an integer from 1 to 3)
+  requires asked is nothing
+  asked becomes n
+action answer
+  requires asked is not nothing
+  asked becomes nothing
+always asked is nothing or asked > 0 # fails: always asked > 0
+```

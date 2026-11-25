@@ -114,6 +114,8 @@ pub enum TypeExpr {
     },
     /// `a record with (name is <type>, ...)`: named members, in order.
     Record(Vec<Field>),
+    /// `<type> or nothing`: a value of the type, or no value.
+    Optional(Box<TypeExpr>),
 }
 
 impl fmt::Display for TypeExpr {
@@ -132,6 +134,7 @@ impl fmt::Display for TypeExpr {
                     .join(", ");
                 write!(formatter, "a record with ({members})")
             }
+            Self::Optional(value) => write!(formatter, "{value} or nothing"),
         }
     }
 }
@@ -292,6 +295,8 @@ pub enum Value {
     Symbol(String),
     Boolean(bool),
     Map(BTreeMap<String, Value>),
+    /// The value of an optional that holds none.
+    Nothing,
 }
 
 impl Value {
@@ -316,7 +321,7 @@ impl Value {
                     .join(", ");
                 format!("{{{entries}}}")
             }
-            Self::Integer(_) | Self::Boolean(_) => self.to_string(),
+            Self::Integer(_) | Self::Boolean(_) | Self::Nothing => self.to_string(),
         }
     }
 }
@@ -358,6 +363,7 @@ pub fn is_reserved_word(name: &str) -> bool {
             | "satisfies"
             | "where"
             | "eventually"
+            | "nothing"
     )
 }
 
@@ -368,6 +374,7 @@ impl fmt::Display for Value {
             Self::Symbol(value) => formatter.write_str(value),
             Self::Boolean(value) => write!(formatter, "{value}"),
             Self::Map(_) => formatter.write_str(&self.source()),
+            Self::Nothing => formatter.write_str("nothing"),
         }
     }
 }

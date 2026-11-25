@@ -950,6 +950,7 @@ fn check_safe_integers(model: &Model) -> Result<()> {
             FieldType::Record(members) => members
                 .iter()
                 .any(|(_, kind)| unsafe_kind(kind, unsafe_domain)),
+            FieldType::Optional(value) => unsafe_kind(value, unsafe_domain),
         }
     }
     let fields = model
@@ -974,6 +975,7 @@ pub(crate) fn value_json(value: &Value) -> Json {
         Value::Integer(raw) => Json::Int(*raw),
         Value::Boolean(flag) => Json::Bool(*flag),
         Value::Symbol(name) => Json::str(name.clone()),
+        Value::Nothing => Json::Null,
         Value::Map(entries) => Json::Object(
             entries
                 .iter()
@@ -1028,6 +1030,10 @@ fn field_type_json(model: &Model, kind: &FieldType) -> Json {
                         .collect(),
                 ),
             ),
+            ("value", field_type_json(model, value)),
+        ]),
+        FieldType::Optional(value) => Json::object([
+            ("kind", Json::str("optional")),
             ("value", field_type_json(model, value)),
         ]),
         FieldType::Record(members) => Json::object([

@@ -23,6 +23,62 @@ pub(crate) struct Symmetry {
     relabelings: Vec<Relabeling>,
     /// Whether each slot holds a value that relabeling changes.
     relabeled: Vec<bool>,
+    /// What makes each slot hidden, and the value a hidden slot holds.
+    hidden: Hidden,
+}
+
+/// A slot is hidden when the value it belongs to is absent. A hidden slot
+/// holds its first value, so relabeling a state must put that value back
+/// rather than relabel it.
+#[derive(Debug, Clone, Default)]
+struct Hidden {
+    /// For each slot, the presence slots that must all be 1 for it to show.
+    guards: Vec<Vec<usize>>,
+    defaults: Vec<i64>,
+}
+
+impl Hidden {
+    fn new(model: &Model) -> Self {
+        let mut hidden = Self {
+            guards: vec![Vec::new(); model.slots.len()],
+            defaults: Vec::with_capacity(model.slots.len()),
+        };
+        for field in &model.fields {
+            hidden.defaults.extend(field.kind.defaults());
+            hidden.guard(&field.kind, field.offset, &[]);
+        }
+        hidden
+    }
+
+    fn guard(&mut self, kind: &FieldType, offset: usize, outer: &[usize]) {
+        match kind {
+            FieldType::Scalar(_) => {
+                if let Some(cell) = self.guards.get_mut(offset) {
+                    *cell = outer.to_vec();
+                }
+            }
+            FieldType::Map { keys, value, .. } => {
+                for position in 0..keys.size() {
+                    self.guard(value, offset + position * value.width(), outer);
+                }
+            }
+            FieldType::Record(members) => {
+                let mut start = offset;
+                for (_, member) in members {
+                    self.guard(member, start, outer);
+                    start += member.width();
+                }
+            }
+            FieldType::Optional(value) => {
+                if let Some(cell) = self.guards.get_mut(offset) {
+                    *cell = outer.to_vec();
+                }
+                let mut inner = outer.to_vec();
+                inner.push(offset);
+                self.guard(value, offset + 1, &inner);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +115,15 @@ fn moved(domain: &Domain, groups: &[Vec<i64>]) -> bool {
 fn sources(kind: &FieldType, relabel: &impl Fn(i64) -> i64, groups: &[Vec<i64>]) -> Vec<usize> {
     match kind {
         FieldType::Scalar(_) => vec![0],
+        FieldType::Optional(value) => {
+            let mut out = vec![0];
+            out.extend(
+                sources(value, relabel, groups)
+                    .into_iter()
+                    .map(|from| from + 1),
+            );
+            out
+        }
         FieldType::Record(members) => {
             let mut out = Vec::with_capacity(kind.width());
             for (_, member) in members {
@@ -173,6 +238,7 @@ pub(crate) fn validate(model: &Model) -> Result<()> {
     let symmetry = Symmetry {
         relabelings: Vec::new(),
         relabeled: relabeled(model, &model.interchangeable),
+        hidden: Hidden::new(model),
     };
     let moving = moving_fields(model, &model.interchangeable);
     for values in swaps(model, &model.interchangeable) {
@@ -233,10 +299,23 @@ impl Symmetry {
         Ok(Self {
             relabelings,
             relabeled: relabeled(model, groups),
+            hidden: Hidden::new(model),
         })
     }
 
     fn image_at(&self, relabeling: &Relabeling, state: &[i64], slot: usize) -> i64 {
+        let guards = self.hidden.guards.get(slot).map_or(&[][..], Vec::as_slice);
+        if guards
+            .iter()
+            .any(|guard| self.shown_at(relabeling, state, *guard) == 0)
+        {
+            return self.hidden.defaults.get(slot).copied().unwrap_or(0);
+        }
+        self.shown_at(relabeling, state, slot)
+    }
+
+    /// The image of `slot` ignoring whether it is hidden.
+    fn shown_at(&self, relabeling: &Relabeling, state: &[i64], slot: usize) -> i64 {
         let raw = relabeling
             .source
             .get(slot)

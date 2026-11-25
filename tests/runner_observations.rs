@@ -17,6 +17,7 @@ fn value(json: &Json) -> Value {
         Json::Bool(b) => Value::Boolean(*b),
         Json::Str(s) => Value::Symbol(s.clone()),
         Json::Object(_) => Value::Map(state(json)),
+        Json::Null => Value::Nothing,
         _ => panic!("unexpected fixture value {json:?}"),
     }
 }
@@ -37,6 +38,7 @@ fn kind(item: &Value) -> String {
     match item {
         Value::Boolean(_) => "a boolean".into(),
         Value::Integer(_) => "an integer from 0 to 2".into(),
+        Value::Nothing => "an integer from 0 to 2 or nothing".into(),
         Value::Symbol(_) => format!("one of {}, other", item.source()),
         Value::Map(entries) => format!(
             "a record with ({})",
@@ -64,7 +66,7 @@ fn model(expected: &State) -> String {
 fn representable(json: &Json) -> bool {
     match json {
         Json::Object(entries) => entries.iter().all(|(_, item)| representable(item)),
-        Json::Int(_) | Json::Bool(_) | Json::Str(_) => true,
+        Json::Int(_) | Json::Bool(_) | Json::Str(_) | Json::Null => true,
         _ => false,
     }
 }

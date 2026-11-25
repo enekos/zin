@@ -37,6 +37,7 @@ scenario "Name"                    # worked examples, checked and turned into te
 | Named type | `a worker` / `worker` (declared under `types`) |
 | Map | `a map from worker to a boolean` |
 | Record | `a record with (status is one of draft, paid, items is an integer from 0 to 2)` |
+| Optional | `a worker or nothing`, `an integer from 1 to 3 or nothing` |
 
 Map keys must be a named finite type (an enum, a boolean, or a bounded
 integer); map values may be any type, including maps and records. Every key
@@ -123,6 +124,33 @@ parameters are, and may have any type.
 Every slot of a record is part of the state: an order with two members takes
 two slots, a map from two customers to orders takes four. Plans for a
 specification with records or nested maps are [`plan/2`](plan-format.md).
+
+### Optional values
+
+```zin
+state
+  lease is a record with (holder is a worker, left is ticks) or nothing
+  last is a worker or nothing
+
+action acquire(w is a worker)
+  requires lease is nothing
+  lease becomes {holder: w, left: 2}
+  last becomes w
+```
+
+`<type> or nothing` holds a value of the type or no value, so an absent
+holder needs no made-up worker and an unasked question no made-up number 0.
+`nothing` is the absent value.
+
+- **Comparison.** `lease is nothing`, `last is not nothing`, and `last is w`,
+  which is false when `last` is nothing.
+- **Assignment.** Assign a value or `nothing`; `if` may mix the two.
+- **Reading the value.** Where an integer, boolean or enum is needed
+  (arithmetic, ordering, a condition, a map key) and wherever a member is read
+  (`left of lease`), the value is used, and reading it when it is nothing is a
+  model fault. Guard the read: `lease is not nothing and left of lease is 1`.
+- An optional record is assigned whole; its members cannot be assigned one by
+  one.
 
 ## State and initial values
 

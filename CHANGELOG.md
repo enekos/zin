@@ -9,7 +9,13 @@
   `status of orders of every customer`.
 - Nested maps: a map value may be a map. Index one with brackets
   (`paid_on[c][tue]`) and write a whole map as `{mon: false, tue: false}`.
-- `plan/2`: plans whose state holds records or nested maps say `plan/2`;
+- Optional values: `<type> or nothing`. `nothing` is the absent value; `is
+  nothing` and `is w` compare without reading the value, and reading the value
+  of nothing (`left of lease`, `asked + 1`) is a model fault. In plans an
+  absent value is `null`. **Breaking:** `nothing` is now a reserved word, so
+  it can no longer name an enum value or a field.
+- `plan/2`: plans whose state holds records, nested maps or optional values
+  say `plan/2`;
   every other plan stays `plan/1`. The Python, JavaScript, Go and JUnit
   runners read both, and compare `null`, lists in order, native sets in any
   order, and records given as dataclasses, Java records or Go structs.

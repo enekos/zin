@@ -142,7 +142,7 @@
       "type": "object",
       "required": ["kind"],
       "properties": {
-        "kind": { "enum": ["integer", "boolean", "enum", "map", "record"] },
+        "kind": { "enum": ["integer", "boolean", "enum", "map", "record", "optional"] },
         "min": { "type": "integer" },
         "max": { "type": "integer" },
         "values": { "type": "array", "items": { "type": "string" } },

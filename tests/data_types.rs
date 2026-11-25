@@ -228,3 +228,109 @@ fn an_implementation_with_structs_conforms_and_a_wrong_member_is_caught() {
     let error = check(ORDERS, &PlanOptions::default(), Forgetful::default).unwrap_err();
     assert!(error.message.contains("orders is {"), "{error}");
 }
+
+const LEASE: &str = include_str!("../examples/lease.zin");
+
+#[test]
+fn optional_values_have_one_encoding_under_symmetry() {
+    let full = verify(&parse(LEASE).unwrap()).unwrap();
+    assert_eq!(full.graph.state_count(), 10);
+    let reduced = verify_with(&parse(LEASE).unwrap(), Options::default()).unwrap();
+    assert_eq!(reduced.graph.state_count(), 4);
+    assert_eq!(full.state(0).get("lease"), Some(&Value::Nothing));
+    let plan = Plan::build(&full, &PlanOptions::default()).unwrap();
+    let json = plan.to_json(&full);
+    assert_eq!(json.get("zin"), Some(&Json::str("plan/2")));
+    let Some(Json::Array(states)) = json.get("states") else {
+        panic!("no states")
+    };
+    assert_eq!(states[0].to_compact(), r#"{"last":null,"lease":null}"#);
+}
+
+#[test]
+fn reading_nothing_is_a_fault_unless_guarded() {
+    let unguarded = error(&LEASE.replace(
+        "  lease is not nothing and left of lease is 1",
+        "  left of lease is 1",
+    ));
+    assert_eq!(unguarded.kind, ErrorKind::Model);
+    assert!(
+        unguarded
+            .message
+            .starts_with("lease is nothing while evaluating"),
+        "{unguarded}"
+    );
+    let compared = error(&LEASE.replace("  last is nothing\n", "  last is 0\n"));
+    assert!(compared.message.contains("assigns a number"), "{compared}");
+}
+
+#[test]
+fn a_value_compares_with_an_optional_without_unwrapping_it() {
+    let source = r#"system "Ask"
+state
+  asked is an integer from 1 to 3 or nothing
+initially
+  asked is nothing
+always
+  asked is 2 implies asked is not nothing
+sometimes
+  asked is 2
+never
+  asked is 0
+action ask(n is an integer from 1 to 3)
+  requires asked is nothing
+  asked becomes n
+action answer
+  requires asked is not nothing
+  asked becomes if asked > 2 then nothing else asked + 1
+"#;
+    let verification = verify(&parse(source).unwrap()).unwrap();
+    assert_eq!(verification.graph.state_count(), 4);
+}
+
+#[test]
+fn an_implementation_with_options_conforms() {
+    #[derive(Default)]
+    struct Lease {
+        held: Option<(String, i64)>,
+        last: Option<String>,
+    }
+    impl Adapter for Lease {
+        fn call(&mut self, action: &str, args: &Args) -> Outcome {
+            let worker = args.get("w").map(ToString::to_string);
+            match (action, &mut self.held) {
+                ("acquire", None) => {
+                    self.held = worker.clone().map(|w| (w, 2));
+                    self.last = worker;
+                }
+                ("tick", Some((_, 1))) => self.held = None,
+                ("tick", Some((_, left))) => *left -= 1,
+                ("release", Some((holder, _))) if Some(holder.clone()) == worker => {
+                    self.held = None;
+                }
+                _ => return Outcome::Rejected,
+            }
+            Outcome::Accepted
+        }
+        fn observe(&self) -> Option<State> {
+            let optional = |value: Option<Value>| value.unwrap_or(Value::Nothing);
+            Some(State::from([
+                (
+                    "lease".to_string(),
+                    optional(self.held.as_ref().map(|(holder, left)| {
+                        Value::Map(BTreeMap::from([
+                            ("holder".to_string(), Value::Symbol(holder.clone())),
+                            ("left".to_string(), Value::Integer(*left)),
+                        ]))
+                    })),
+                ),
+                (
+                    "last".to_string(),
+                    optional(self.last.clone().map(Value::Symbol)),
+                ),
+            ]))
+        }
+    }
+    let report = check(LEASE, &PlanOptions::default(), Lease::default).unwrap();
+    assert!(report.tests > 0);
+}
