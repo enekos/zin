@@ -1747,6 +1747,9 @@ impl<'a> Compiler<'a> {
     /// of an optional is read, and reading it when it is nothing is a fault.
     fn expr(&mut self, expr: &Expr, line: usize) -> Result<(Ir, Ty)> {
         let (ir, ty) = self.expr_as(expr, None, line)?;
+        if !matches!(ty, Ty::Optional(_)) {
+            return Ok((ir, ty));
+        }
         Ok(unwrap(
             ir,
             ty,

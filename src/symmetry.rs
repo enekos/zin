@@ -35,6 +35,8 @@ struct Hidden {
     /// For each slot, the presence slots that must all be 1 for it to show.
     guards: Vec<Vec<usize>>,
     defaults: Vec<i64>,
+    /// Whether any slot can be hidden; most models have none.
+    any: bool,
 }
 
 impl Hidden {
@@ -42,11 +44,13 @@ impl Hidden {
         let mut hidden = Self {
             guards: vec![Vec::new(); model.slots.len()],
             defaults: Vec::with_capacity(model.slots.len()),
+            any: false,
         };
         for field in &model.fields {
             hidden.defaults.extend(field.kind.defaults());
             hidden.guard(&field.kind, field.offset, &[]);
         }
+        hidden.any = hidden.guards.iter().any(|guards| !guards.is_empty());
         hidden
     }
 
@@ -303,7 +307,11 @@ impl Symmetry {
         })
     }
 
+    #[inline]
     fn image_at(&self, relabeling: &Relabeling, state: &[i64], slot: usize) -> i64 {
+        if !self.hidden.any {
+            return self.shown_at(relabeling, state, slot);
+        }
         let guards = self.hidden.guards.get(slot).map_or(&[][..], Vec::as_slice);
         if guards
             .iter()
@@ -315,6 +323,7 @@ impl Symmetry {
     }
 
     /// The image of `slot` ignoring whether it is hidden.
+    #[inline]
     fn shown_at(&self, relabeling: &Relabeling, state: &[i64], slot: usize) -> i64 {
         let raw = relabeling
             .source
