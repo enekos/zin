@@ -578,3 +578,106 @@ fn an_implementation_with_a_vec_conforms_and_a_stack_does_not() {
         "{error}"
     );
 }
+
+const RETRY: &str = include_str!("../examples/retry.zin");
+
+#[test]
+fn enumeration_cases_carry_members_only_while_they_hold() {
+    let verification = verify(&parse(RETRY).unwrap()).unwrap();
+    assert_eq!(verification.graph.state_count(), 11);
+    let plan = Plan::build(&verification, &PlanOptions::default()).unwrap();
+    let json = plan.to_json(&verification);
+    let Some(Json::Array(states)) = json.get("states") else {
+        panic!("no states")
+    };
+    assert_eq!(
+        states[1].to_compact(),
+        r#"{"job":{"running":{"attempt":1}},"tries":1}"#
+    );
+    assert_eq!(states[0].to_compact(), r#"{"job":"queued","tries":0}"#);
+    assert!(
+        json.get("fields")
+            .unwrap()
+            .to_compact()
+            .contains(r#""kind":"variant""#)
+    );
+}
+
+#[test]
+fn case_errors_and_faults() {
+    let bare = error(&RETRY.replace("  job becomes succeeded", "  job becomes running"));
+    assert_eq!(
+        bare.message,
+        "running carries members; write 'running with {attempt: ...}'"
+    );
+    let read = error(&RETRY.replace(
+        "requires job is running and attempt of job is 3",
+        "requires attempt of job is 3",
+    ));
+    assert_eq!(read.kind, ErrorKind::Model);
+    assert!(
+        read.message
+            .contains("job is not running, so it has no attempt"),
+        "{read}"
+    );
+    let member = error(&RETRY.replace(
+        "failed with {reason: crashed} else",
+        "failed with {cause: crashed} else",
+    ));
+    assert!(
+        member
+            .message
+            .starts_with("this record has no member cause"),
+        "{member}"
+    );
+}
+
+#[test]
+fn an_implementation_with_an_enum_conforms() {
+    #[derive(Default)]
+    enum Job {
+        #[default]
+        Queued,
+        Running(i64),
+        Succeeded,
+        Failed(&'static str),
+    }
+    #[derive(Default)]
+    struct Runner {
+        job: Job,
+        tries: i64,
+    }
+    impl Adapter for Runner {
+        fn call(&mut self, action: &str, _: &Args) -> Outcome {
+            self.job = match (action, &self.job) {
+                ("start", Job::Queued) => {
+                    self.tries += 1;
+                    Job::Running(self.tries)
+                }
+                ("succeed", Job::Running(_)) => Job::Succeeded,
+                ("crash", Job::Running(3)) => Job::Failed("crashed"),
+                ("crash", Job::Running(_)) => Job::Queued,
+                ("time_out", Job::Running(3)) => Job::Failed("timed_out"),
+                _ => return Outcome::Rejected,
+            };
+            Outcome::Accepted
+        }
+        fn observe(&self) -> Option<State> {
+            let tagged = |tag: &str, member: &str, value: Value| Value::Tagged {
+                tag: tag.into(),
+                members: BTreeMap::from([(member.to_string(), value)]),
+            };
+            let job = match &self.job {
+                Job::Queued => Value::Symbol("queued".into()),
+                Job::Running(attempt) => tagged("running", "attempt", Value::Integer(*attempt)),
+                Job::Succeeded => Value::Symbol("succeeded".into()),
+                Job::Failed(reason) => tagged("failed", "reason", Value::Symbol((*reason).into())),
+            };
+            Some(State::from([
+                ("job".to_string(), job),
+                ("tries".to_string(), Value::Integer(self.tries)),
+            ]))
+        }
+    }
+    check(RETRY, &PlanOptions::default(), Runner::default).unwrap();
+}

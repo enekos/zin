@@ -165,6 +165,9 @@ fn json(value: &Value) -> String {
         Value::Symbol(s) => format!("\"{s}\""),
         Value::Nothing => "null".to_string(),
         Value::List(items) => format!("[{}]", items.iter().map(json).collect::<Vec<_>>().join(",")),
+        Value::Tagged { tag, members } => {
+            format!("{{\"{tag}\":{}}}", json(&Value::Map(members.clone())))
+        }
         Value::Map(entries) => format!(
             "{{{}}}",
             entries

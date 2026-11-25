@@ -40,6 +40,7 @@ fn kind(item: &Value) -> String {
         Value::Boolean(_) => "a boolean".into(),
         Value::Integer(_) => "an integer from 0 to 2".into(),
         Value::Nothing => "an integer from 0 to 2 or nothing".into(),
+        Value::Tagged { .. } => unreachable!("fixtures write cases as objects"),
         Value::List(items) => {
             let symbols: Vec<String> = items
                 .iter()

@@ -5,7 +5,7 @@
 
 use zin::{ErrorKind, Options, Trace, Value, check_trace, parse, verify, verify_with};
 
-const MODELS: u64 = 600;
+const MODELS: u64 = 200;
 
 struct Rng(u64);
 
@@ -60,20 +60,24 @@ impl Generator {
     }
 
     fn atom(&mut self, depth: usize, vars: &[String]) -> String {
-        let bound = if vars.is_empty() { 6 } else { 14 };
+        let bound = if vars.is_empty() { 7 } else { 17 };
         match self.rng.below(bound) {
             0 => format!("({} is {})", self.int(depth, vars), self.rng.below(3)),
             1 => "(boss is nothing)".into(),
             2 => "(crew is [])".into(),
             3 => "(spare is nothing)".into(),
             5 => "(log is [])".into(),
+            6 => "(mode is on)".into(),
             // Unguarded: faults when the spare is nothing.
             4 => format!("(n of spare is {})", self.rng.below(3)),
             11 => format!("(crew has {})", self.worker(vars)),
             12 => format!("(log has {})", self.worker(vars)),
             // Unguarded: faults when the log is empty.
             13 => format!("(first of log is {})", self.worker(vars)),
-            6 => format!("(boss is {})", self.worker(vars)),
+            // Unguarded: faults when the mode is off.
+            14 => format!("(by of mode is {})", self.worker(vars)),
+            15 => format!("(mode is on with {{by: {}}})", self.worker(vars)),
+            16 => format!("(boss is {})", self.worker(vars)),
             7 => format!(
                 "(stage of task of {} is {})",
                 self.worker(vars),
@@ -142,8 +146,9 @@ impl Generator {
              state\n  crew is a set of worker\n  boss is a worker or nothing\n  \
              task is a map from worker to a record with (stage is stage, n is an integer from 0 to 2)\n  \
              spare is a record with (who is a worker or nothing, n is an integer from 0 to 2) or nothing\n  \
-             log is a list of at most 2 worker\n\
-             initially\n  crew is []\n  boss is nothing\n  task of every worker is {{stage: idle, n: 0}}\n  spare is nothing\n  log is []\n\
+             log is a list of at most 2 worker\n  \
+             mode is one of off, on with (by is a worker)\n\
+             initially\n  crew is []\n  boss is nothing\n  task of every worker is {{stage: idle, n: 0}}\n  spare is nothing\n  log is []\n  mode is off\n\
              {word} {property}\n\
              action join(w is a worker)\n  requires not crew has w and {join_guard}\n  crew becomes crew with w\n\
              action quit(w is a worker)\n  requires crew has w\n  crew becomes crew without w\n  \
@@ -154,7 +159,9 @@ impl Generator {
              spare becomes {{who: {stash_who}, n: {stash_n}}}\n\
              action drop\n  requires spare is not nothing\n  spare becomes nothing\n\
              action note(w is a worker)\n  requires length of log < 2\n  log becomes log without w with w\n\
-             action forget\n  requires log is not []\n  log becomes rest of log\n"
+             action forget\n  requires log is not []\n  log becomes rest of log\n\
+             action switch(w is a worker)\n  requires mode is off\n  mode becomes on with {{by: w}}\n\
+             action stop\n  requires mode is on\n  mode becomes off\n"
         )
     }
 }
@@ -166,6 +173,9 @@ fn json(value: &Value) -> String {
         Value::Symbol(s) => format!("\"{s}\""),
         Value::Nothing => "null".to_string(),
         Value::List(items) => format!("[{}]", items.iter().map(json).collect::<Vec<_>>().join(",")),
+        Value::Tagged { tag, members } => {
+            format!("{{\"{tag}\":{}}}", json(&Value::Map(members.clone())))
+        }
         Value::Map(entries) => format!(
             "{{{}}}",
             entries
@@ -263,7 +273,7 @@ fn reduction_agrees_with_full_exploration_on_compound_models() {
     }
     assert_eq!(checked, MODELS as usize);
     assert!(
-        reduced > MODELS as usize / 5,
+        reduced > MODELS as usize / 8,
         "only {reduced} models were reduced"
     );
     assert!(

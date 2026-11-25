@@ -151,3 +151,23 @@ scenario "First in, first out"
   deliver
   expect queue is [pong] # fails: expect queue is [ping]
 ```
+
+## Enumeration values with members
+
+```zin
+system "Attempts"
+state
+  job is one of idle, running with (attempt is an integer from 1 to 2)
+initially
+  job is idle
+action start
+  requires job is idle
+  job becomes running with {attempt: 1}
+action retry
+  requires job is running and attempt of job < 2
+  job becomes running with {attempt: attempt of job + 1}
+action stop
+  requires job is running
+  job becomes idle
+always job is idle or attempt of job >= 1 # fails: always attempt of job >= 1
+```

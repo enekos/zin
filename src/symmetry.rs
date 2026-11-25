@@ -36,6 +36,8 @@ enum Guard {
     Present(usize),
     /// The list with this length slot is longer than the position.
     Longer(usize, usize),
+    /// The enumeration with this tag slot holds this case.
+    Case(usize, i64),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -96,6 +98,20 @@ impl Hidden {
                 inner.push(Guard::Present(offset));
                 self.guard(value, offset + 1, &inner);
             }
+            FieldType::Variant { tags, cases } => {
+                if let Some(cell) = self.guards.get_mut(offset) {
+                    *cell = outer.to_vec();
+                }
+                let mut start = offset + 1;
+                for (raw, (_, members)) in tags.raws().into_iter().zip(cases) {
+                    let mut inner = outer.to_vec();
+                    inner.push(Guard::Case(offset, raw));
+                    for (_, member) in members {
+                        self.guard(member, start, &inner);
+                        start += member.width();
+                    }
+                }
+            }
             FieldType::List { capacity, element } => {
                 if let Some(cell) = self.guards.get_mut(offset) {
                     *cell = outer.to_vec();
@@ -144,6 +160,20 @@ fn moved(domain: &Domain, groups: &[Vec<i64>]) -> bool {
 fn sources(kind: &FieldType, relabel: &impl Fn(i64) -> i64, groups: &[Vec<i64>]) -> Vec<usize> {
     match kind {
         FieldType::Scalar(_) => vec![0],
+        FieldType::Variant { cases, .. } => {
+            let mut out = vec![0];
+            for (_, members) in cases {
+                for (_, member) in members {
+                    let base = out.len();
+                    out.extend(
+                        sources(member, relabel, groups)
+                            .into_iter()
+                            .map(|from| base + from),
+                    );
+                }
+            }
+            out
+        }
         FieldType::List { capacity, element } => {
             let inner = sources(element, relabel, groups);
             let mut out = vec![0];
@@ -363,6 +393,7 @@ impl Symmetry {
         let guards = self.hidden.guards.get(slot).map_or(&[][..], Vec::as_slice);
         if guards.iter().any(|guard| match *guard {
             Guard::Present(tag) => self.shown_at(relabeling, state, tag) == 0,
+            Guard::Case(tag, raw) => self.shown_at(relabeling, state, tag) != raw,
             Guard::Longer(length, position) => {
                 usize::try_from(self.shown_at(relabeling, state, length)).unwrap_or(0) <= position
             }

@@ -123,6 +123,9 @@ pub enum TypeExpr {
         capacity: usize,
         element: Box<TypeExpr>,
     },
+    /// `one of idle, running with (attempts is <type>), ...`: an enumeration
+    /// whose values may carry members. Each case has its members, possibly none.
+    Variant(Vec<(String, Vec<Field>)>),
 }
 
 impl fmt::Display for TypeExpr {
@@ -145,6 +148,25 @@ impl fmt::Display for TypeExpr {
             Self::Set(element) => write!(formatter, "a set of {element}"),
             Self::List { capacity, element } => {
                 write!(formatter, "a list of at most {capacity} {element}")
+            }
+            Self::Variant(cases) => {
+                let cases = cases
+                    .iter()
+                    .map(|(name, members)| {
+                        if members.is_empty() {
+                            name.clone()
+                        } else {
+                            let members = members
+                                .iter()
+                                .map(|member| format!("{} is {}", member.name, member.kind))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            format!("{name} with ({members})")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(formatter, "one of {cases}")
             }
         }
     }
@@ -311,6 +333,11 @@ pub enum Value {
     /// The items of a list in order, or the members of a set in the order
     /// their type declares them.
     List(Vec<Value>),
+    /// A value of an enumeration case that carries members.
+    Tagged {
+        tag: String,
+        members: BTreeMap<String, Value>,
+    },
 }
 
 impl Value {
@@ -342,6 +369,11 @@ impl Value {
                     .map(Value::source)
                     .collect::<Vec<_>>()
                     .join(", ")
+            ),
+            Self::Tagged { tag, members } => format!(
+                "{} with {}",
+                Self::Symbol(tag.clone()).source(),
+                Self::Map(members.clone()).source()
             ),
             Self::Integer(_) | Self::Boolean(_) | Self::Nothing => self.to_string(),
         }
@@ -397,7 +429,7 @@ impl fmt::Display for Value {
             Self::Boolean(value) => write!(formatter, "{value}"),
             Self::Map(_) => formatter.write_str(&self.source()),
             Self::Nothing => formatter.write_str("nothing"),
-            Self::List(_) => formatter.write_str(&self.source()),
+            Self::List(_) | Self::Tagged { .. } => formatter.write_str(&self.source()),
         }
     }
 }

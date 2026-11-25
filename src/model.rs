@@ -86,6 +86,12 @@ pub enum FieldType {
         capacity: usize,
         element: Box<FieldType>,
     },
+    /// A tag slot holding the case, then each case's members in turn. The
+    /// members of the cases not taken hold their first values.
+    Variant {
+        tags: Domain,
+        cases: Vec<(String, Vec<(String, FieldType)>)>,
+    },
 }
 
 impl FieldType {
@@ -103,6 +109,10 @@ impl FieldType {
             Self::List { capacity, element } => {
                 capacity.saturating_mul(element.width()).saturating_add(1)
             }
+            Self::Variant { cases, .. } => cases
+                .iter()
+                .flat_map(|(_, members)| members)
+                .fold(1, |width, (_, kind)| width.saturating_add(kind.width())),
         }
     }
 
@@ -127,6 +137,13 @@ impl FieldType {
                 out.extend(element.defaults().repeat(*capacity));
                 out
             }
+            Self::Variant { tags, cases } => {
+                let mut out = vec![tags.raw_at(0).unwrap_or(0)];
+                for (_, members) in cases {
+                    out.extend(members.iter().flat_map(|(_, kind)| kind.defaults()));
+                }
+                out
+            }
         }
     }
 
@@ -135,7 +152,11 @@ impl FieldType {
         match self {
             Self::Scalar(_) => true,
             Self::Map { value, .. } => matches!(value.as_ref(), Self::Scalar(_)),
-            Self::Record(_) | Self::Optional(_) | Self::Set { .. } | Self::List { .. } => false,
+            Self::Record(_)
+            | Self::Optional(_)
+            | Self::Set { .. }
+            | Self::List { .. }
+            | Self::Variant { .. } => false,
         }
     }
 
@@ -405,6 +426,28 @@ impl Model {
                     .map(|(raw, _)| self.value(elements, raw))
                     .collect(),
             ),
+            FieldType::Variant { tags, cases } => {
+                let (tag, mut rest) = slots.split_first().unwrap_or((&0, &[]));
+                let taken = tags.position(*tag).unwrap_or(0);
+                for (_, members) in cases.iter().take(taken) {
+                    let width: usize = members.iter().map(|(_, kind)| kind.width()).sum();
+                    rest = rest.get(width..).unwrap_or_default();
+                }
+                let Some((name, members)) = cases.get(taken) else {
+                    return Value::Nothing;
+                };
+                if members.is_empty() {
+                    return Value::Symbol(name.clone());
+                }
+                let record = FieldType::Record(members.clone());
+                let Value::Map(members) = self.decode_value(&record, rest) else {
+                    return Value::Nothing;
+                };
+                Value::Tagged {
+                    tag: name.clone(),
+                    members,
+                }
+            }
             FieldType::List { element, .. } => {
                 let width = element.width();
                 let (length, items) = slots.split_first().unwrap_or((&0, &[]));
@@ -574,6 +617,26 @@ pub(crate) fn observation_matches(kind: &FieldType, expected: &Value, actual: &V
         }
         (FieldType::Optional(value), wanted, observed) if *wanted != Value::Nothing => {
             observation_matches(value, wanted, observed)
+        }
+        (
+            FieldType::Variant { cases, .. },
+            Value::Tagged {
+                tag: wanted_tag,
+                members: wanted,
+            },
+            Value::Tagged { tag, members },
+        ) => {
+            wanted_tag == tag
+                && cases
+                    .iter()
+                    .find(|(name, _)| name == tag)
+                    .is_some_and(|(_, kinds)| {
+                        observation_matches(
+                            &FieldType::Record(kinds.clone()),
+                            &Value::Map(wanted.clone()),
+                            &Value::Map(members.clone()),
+                        )
+                    })
         }
         (FieldType::Set { .. }, Value::List(wanted), Value::List(observed)) => {
             observed.len() == wanted.len() && observed.iter().all(|item| wanted.contains(item))
@@ -795,6 +858,8 @@ enum Ty {
         capacity: usize,
         element: Box<Ty>,
     },
+    /// Each case's tag and members, in declaration order.
+    Variant(Vec<(u32, Vec<(String, Ty)>)>),
 }
 
 impl Ty {
@@ -825,6 +890,21 @@ impl Ty {
                 capacity: *capacity,
                 element: Box::new(Self::of_kind(element)),
             },
+            FieldType::Variant { tags, cases } => Self::Variant(
+                tags.raws()
+                    .into_iter()
+                    .zip(cases)
+                    .map(|(tag, (_, members))| {
+                        (
+                            u32::try_from(tag).unwrap_or(u32::MAX),
+                            members
+                                .iter()
+                                .map(|(name, kind)| (name.clone(), Self::of_kind(kind)))
+                                .collect(),
+                        )
+                    })
+                    .collect(),
+            ),
         }
     }
 
@@ -839,6 +919,7 @@ impl Ty {
             Self::Nothing => "nothing",
             Self::Set(_) => "a set",
             Self::List { .. } => "a list",
+            Self::Variant(_) => "an enum value with members",
         }
     }
 
@@ -873,6 +954,26 @@ impl Ty {
                 value: Box::new(value.join(other_value)?),
             },
             (Self::Set(left), Self::Set(right)) if left == right => Self::Set(left.clone()),
+            (Self::Variant(left), Self::Variant(right)) if left.len() == right.len() => {
+                let mut cases = Vec::with_capacity(left.len());
+                for ((tag, left), (other, right)) in left.iter().zip(right) {
+                    if tag != other {
+                        return None;
+                    }
+                    let Self::Record(members) =
+                        Self::Record(left.clone()).join(&Self::Record(right.clone()))?
+                    else {
+                        return None;
+                    };
+                    cases.push((*tag, members));
+                }
+                Self::Variant(cases)
+            }
+            (Self::Variant(cases), Self::Enum(ids)) | (Self::Enum(ids), Self::Variant(cases))
+                if bare_tags(cases, ids) =>
+            {
+                Self::Variant(cases.clone())
+            }
             (
                 Self::List { capacity, element },
                 Self::List {
@@ -923,8 +1024,38 @@ impl Ty {
             Self::Nothing => 1,
             Self::Set(elements) => elements.size(),
             Self::List { capacity, element } => capacity * element.width() + 1,
+            Self::Variant(cases) => {
+                1 + cases
+                    .iter()
+                    .flat_map(|(_, members)| members)
+                    .map(|(_, ty)| ty.width())
+                    .sum::<usize>()
+            }
         }
     }
+}
+
+/// Whether every id in `ids` is the tag of a case without members.
+fn bare_tags(cases: &[(u32, Vec<(String, Ty)>)], ids: &BTreeSet<u32>) -> bool {
+    ids.iter().all(|id| {
+        cases
+            .iter()
+            .any(|(tag, members)| tag == id && members.is_empty())
+    })
+}
+
+/// The parts of a variant value: its tag, then each case's members.
+fn split_variant(parts: Vec<Ir>, cases: &[(u32, Vec<(String, Ty)>)]) -> (Ir, Vec<Vec<Ir>>) {
+    let mut parts = parts.into_iter();
+    let tag = parts.next().unwrap_or(Ir::Const(0));
+    let payloads = cases
+        .iter()
+        .map(|(_, members)| {
+            let width = members.iter().map(|(_, ty)| ty.width()).sum();
+            parts.by_ref().take(width).collect()
+        })
+        .collect();
+    (tag, payloads)
 }
 
 /// `parts` of a value of type `from`, laid out as the wider type `to`: a value
@@ -970,6 +1101,24 @@ fn coerce(parts: Vec<Ir>, from: &Ty, to: &Ty) -> Vec<Ir> {
             }
             out
         }
+        (Ty::Enum(_), Ty::Variant(cases)) => {
+            let mut parts = parts;
+            let width = Ty::Variant(cases.clone()).width();
+            parts.extend(std::iter::repeat_with(|| Ir::Const(0)).take(width - 1));
+            parts
+        }
+        (Ty::Variant(from), Ty::Variant(to)) => {
+            let (tag, payloads) = split_variant(parts, from);
+            let mut out = vec![tag];
+            for (payload, ((_, from), (_, to))) in payloads.into_iter().zip(from.iter().zip(to)) {
+                out.extend(coerce(
+                    payload,
+                    &Ty::Record(from.clone()),
+                    &Ty::Record(to.clone()),
+                ));
+            }
+            out
+        }
         (Ty::Map { value: from, .. }, Ty::Map { keys, value: to }) => {
             let mut parts = parts.into_iter();
             let mut out = Vec::new();
@@ -1002,6 +1151,26 @@ fn equal_as(left: Vec<Ir>, right: Vec<Ir>, ty: &Ty) -> Ir {
             }
         }
         Ty::Nothing => Ir::Const(1),
+        Ty::Variant(cases) => {
+            let (left_tag, left) = split_variant(left, cases);
+            let (right_tag, right) = split_variant(right, cases);
+            let mut checks = vec![Ir::Binary(
+                BinaryOperator::Equal,
+                Box::new(left_tag.clone()),
+                Box::new(right_tag),
+            )];
+            for (((tag, members), left), right) in cases.iter().zip(left).zip(right) {
+                if members.is_empty() {
+                    continue;
+                }
+                checks.push(Ir::Binary(
+                    BinaryOperator::Implies,
+                    Box::new(is_raw(&left_tag, i64::from(*tag))),
+                    Box::new(equal_as(left, right, &Ty::Record(members.clone()))),
+                ));
+            }
+            all(checks)
+        }
         Ty::List { capacity, element } => {
             let (mut left, mut right) = (left.into_iter(), right.into_iter());
             let (Some(length), Some(other)) = (left.next(), right.next()) else {
@@ -1123,6 +1292,29 @@ fn canonical(parts: Vec<Ir>, kind: &FieldType) -> Vec<Ir> {
             (0..keys.size())
                 .flat_map(|_| canonical(parts.by_ref().take(value.width()).collect(), value))
                 .collect()
+        }
+        FieldType::Variant { tags, cases } => {
+            let mut parts = parts.into_iter();
+            let tag = parts.next().unwrap_or(Ir::Const(0));
+            let mut out = vec![tag.clone()];
+            for (raw, (_, members)) in tags.raws().into_iter().zip(cases) {
+                let record = FieldType::Record(members.clone());
+                let payload = canonical(parts.by_ref().take(record.width()).collect(), &record);
+                let taken = is_raw(&tag, raw);
+                out.extend(payload.into_iter().zip(record.defaults()).map(
+                    |(part, default)| match (&taken, part) {
+                        (Ir::Const(0), _) => Ir::Const(default),
+                        (Ir::Const(_), part) => part,
+                        (_, Ir::Const(raw)) if raw == default => Ir::Const(raw),
+                        (taken, part) => Ir::If(
+                            Box::new(taken.clone()),
+                            Box::new(part),
+                            Box::new(Ir::Const(default)),
+                        ),
+                    },
+                ));
+            }
+            out
         }
         FieldType::List { capacity, element } => {
             let mut parts = parts.into_iter();
@@ -1279,6 +1471,8 @@ struct Compiler<'a> {
     field_ids: HashMap<String, usize>,
     slots: Vec<Slot>,
     scope: Vec<(String, Ty)>,
+    /// Every enumeration with members, for building one from a case name.
+    variants: Vec<Ty>,
     /// Quantifier variables that stand for a list item: the local holding
     /// the position, and the item read at it.
     views: Vec<(usize, Ir, Ty)>,
@@ -1302,6 +1496,7 @@ impl<'a> Compiler<'a> {
             slots: Vec::new(),
             scope: Vec::new(),
             views: Vec::new(),
+            variants: Vec::new(),
             locals: 0,
             constant_only: false,
             unnamed: HashMap::new(),
@@ -1385,6 +1580,7 @@ impl<'a> Compiler<'a> {
             slots: Vec::new(),
             scope: Vec::new(),
             views: Vec::new(),
+            variants: self.variants,
             locals: model.locals,
             constant_only: false,
             unnamed: HashMap::new(),
@@ -1512,6 +1708,10 @@ impl<'a> Compiler<'a> {
                 line,
                 "a list is only allowed in state; parameters are integers, booleans or enums",
             )),
+            FieldType::Variant { .. } => Err(Error::at(
+                line,
+                "an enum value with members is only allowed in state; parameters are integers, booleans or enums",
+            )),
         }
     }
 
@@ -1547,6 +1747,33 @@ impl<'a> Compiler<'a> {
             }
             TypeExpr::Optional(value) => {
                 return Ok(FieldType::Optional(Box::new(self.resolve(value, line)?)));
+            }
+            TypeExpr::Variant(cases) => {
+                let mut ids = Vec::with_capacity(cases.len());
+                let mut resolved = Vec::with_capacity(cases.len());
+                for (name, members) in cases {
+                    let id = self.intern(name);
+                    if ids.contains(&id) {
+                        return Err(Error::at(line, format!("duplicate enum value {name}")));
+                    }
+                    ids.push(id);
+                    let mut fields = Vec::with_capacity(members.len());
+                    for member in members {
+                        fields.push((
+                            member.name.clone(),
+                            self.resolve(&member.kind, member.line)
+                                .map_err(|e| e.within(member.span))?,
+                        ));
+                    }
+                    resolved.push((name.clone(), fields));
+                }
+                self.enums.push((ids.clone(), line));
+                let kind = FieldType::Variant {
+                    tags: Domain::Enum(ids),
+                    cases: resolved,
+                };
+                self.variants.push(Ty::of_kind(&kind));
+                return Ok(kind);
             }
             TypeExpr::List { capacity, element } => {
                 let element = self.resolve(element, line)?;
@@ -1695,6 +1922,17 @@ impl<'a> Compiler<'a> {
                         domain: Domain::Boolean,
                         label: format!("{label} has {element}"),
                     });
+                }
+            }
+            FieldType::Variant { tags, cases } => {
+                self.slots.push(Slot {
+                    domain: tags.clone(),
+                    label: label.to_string(),
+                });
+                for (_, members) in cases {
+                    for (member, kind) in members {
+                        self.lay_out(kind, &format!("{member} of {label}"));
+                    }
                 }
             }
             FieldType::List { capacity, element } => {
@@ -1930,6 +2168,23 @@ impl<'a> Compiler<'a> {
         let want = Ty::of_kind(&place.kind);
         let (value, ty) = self.expr_as(&assignment.value, Some(&want), line)?;
         if !assignable(&ty, &place.kind) {
+            if let (Ty::Enum(ids), Ty::Variant(cases)) = (&ty, &want)
+                && let Some((tag, members)) = cases
+                    .iter()
+                    .find(|(tag, members)| ids.contains(tag) && !members.is_empty())
+            {
+                let name = self.symbols.get(at(*tag)).cloned().unwrap_or_default();
+                let example = members
+                    .iter()
+                    .map(|(member, _)| format!("{member}: ..."))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(Error::at(
+                    line,
+                    format!("{name} carries members; write '{name} with {{{example}}}'"),
+                )
+                .coded("type.mismatch"));
+            }
             if let (FieldType::Map { key_type, .. }, true) = (&place.kind, ty.is_scalar()) {
                 return Err(Error::at(
                     line,
@@ -1997,6 +2252,28 @@ impl<'a> Compiler<'a> {
                     self.describe_kind(element)
                 )
             }
+            FieldType::Variant { cases, .. } => format!(
+                "one of {}",
+                cases
+                    .iter()
+                    .map(|(name, members)| if members.is_empty() {
+                        name.clone()
+                    } else {
+                        format!(
+                            "{name} with ({})",
+                            members
+                                .iter()
+                                .map(|(member, kind)| format!(
+                                    "{member} is {}",
+                                    self.describe_kind(kind)
+                                ))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
         }
     }
 
@@ -2024,6 +2301,11 @@ impl<'a> Compiler<'a> {
             Ty::List { capacity, element } => {
                 format!("a list of at most {capacity} {}", self.describe_ty(element))
             }
+            Ty::Variant(cases) => cases
+                .iter()
+                .map(|(tag, _)| self.symbols.get(at(*tag)).cloned().unwrap_or_default())
+                .collect::<Vec<_>>()
+                .join(" or "),
             other => other.noun().to_string(),
         }
     }
@@ -2163,6 +2445,21 @@ impl<'a> Compiler<'a> {
             Expr::Literal(Value::Map(_)) => Err(Error::at(line, "map literals are not supported")),
             Expr::Literal(Value::Nothing) => Ok((Ir::Const(0), Ty::Nothing)),
             Expr::Literal(Value::List(_)) => Err(Error::at(line, "list values are written [a, b]")),
+            Expr::Literal(Value::Tagged { .. }) => Err(Error::at(
+                line,
+                "enum values with members are written 'name with {member: value}'",
+            )),
+            Expr::Binary {
+                operator: BinaryOperator::With,
+                left,
+                right,
+            } if matches!(right.as_ref(), Expr::Record(_)) && self.case_name(left).is_some() => {
+                let (Some(tag), Expr::Record(members)) = (self.case_name(left), right.as_ref())
+                else {
+                    return Err(Error::at(line, "internal error: not a case"));
+                };
+                self.construct(&tag, members, want, line)
+            }
             Expr::Name { .. } | Expr::Index { .. } | Expr::Subscript { .. } => {
                 self.expr_as(expr, want, line)
             }
@@ -2390,15 +2687,20 @@ impl<'a> Compiler<'a> {
                     Ok(Operand::Value(ir, ty))
                 }
                 Ok(Operand::Place(place))
-                    if matches!(place.kind, FieldType::Set { .. } | FieldType::List { .. }) =>
+                    if matches!(
+                        place.kind,
+                        FieldType::Set { .. } | FieldType::List { .. } | FieldType::Variant { .. }
+                    ) =>
                 {
                     self.read(&place, line)
                         .map(|(ir, ty)| Operand::Value(ir, ty))
                 }
                 other => other,
             };
-            if let Ok(Operand::Value(ir, ty @ (Ty::Set(_) | Ty::List { .. }))) = &base
+            if let Ok(Operand::Value(ir, ty @ (Ty::Set(_) | Ty::List { .. } | Ty::Variant(_)))) =
+                &base
                 && let Some(result) = collection_property(name, ir, ty, &describe_expr(key), line)
+                    .or_else(|| self.case_member(name, ir, ty, &describe_expr(key), line))
             {
                 return result.map(|(ir, ty)| Operand::Value(ir, ty));
             }
@@ -2706,6 +3008,25 @@ impl<'a> Compiler<'a> {
                 .coded("type.mismatch"));
             }
         };
+        if let (Ty::Variant(_), Ty::Enum(ids)) | (Ty::Enum(ids), Ty::Variant(_)) =
+            (&left_ty, &right_ty)
+        {
+            let tag = if left_ty.is_scalar() { right } else { left };
+            let tag = parts(tag).into_iter().next().unwrap_or(Ir::Const(0));
+            let is_case = ids
+                .iter()
+                .map(|id| is_raw(&tag, i64::from(*id)))
+                .reduce(or)
+                .unwrap_or(Ir::Const(0));
+            return Ok((
+                if negate {
+                    Ir::Not(Box::new(is_case))
+                } else {
+                    is_case
+                },
+                Ty::Bool,
+            ));
+        }
         let Some(joined) = left_ty.join(&right_ty) else {
             return Err(Error::at(
                 line,
@@ -2997,6 +3318,152 @@ impl<'a> Compiler<'a> {
         ))
     }
 
+    /// The case named by `expr` when it is a bare name of a case with members.
+    fn case_name(&self, expr: &Expr) -> Option<String> {
+        let name = match expr {
+            Expr::Name { name, .. } if self.field(name).is_none() => name,
+            Expr::Literal(Value::Symbol(name)) => name,
+            _ => return None,
+        };
+        if self.scope.iter().any(|(local, _)| local == name) {
+            return None;
+        }
+        let id = *self.symbol_ids.get(name)?;
+        self.variants
+            .iter()
+            .any(|ty| matches!(ty, Ty::Variant(cases) if cases.iter().any(|(tag, members)| *tag == id && !members.is_empty())))
+            .then(|| name.clone())
+    }
+
+    /// `running with {attempts: 1}`: a value of the enumeration that has the
+    /// case, the one the context expects when several do.
+    fn construct(
+        &mut self,
+        tag: &str,
+        members: &[(String, Expr)],
+        want: Option<&Ty>,
+        line: usize,
+    ) -> Result<(Ir, Ty)> {
+        let id = self.symbol_ids.get(tag).copied().unwrap_or(u32::MAX);
+        let has =
+            |ty: &Ty| matches!(ty, Ty::Variant(cases) if cases.iter().any(|(case, _)| *case == id));
+        let ty = match want {
+            Some(want) if has(want) => want.clone(),
+            _ => {
+                let mut candidates = self.variants.iter().filter(|ty| has(ty));
+                let (Some(first), None) = (candidates.next(), candidates.next()) else {
+                    return Err(Error::at(
+                        line,
+                        format!(
+                            "several enumerations have the value {tag}; compare or assign it to say which"
+                        ),
+                    ));
+                };
+                first.clone()
+            }
+        };
+        let Ty::Variant(cases) = &ty else {
+            return Err(Error::at(
+                line,
+                "internal error: not an enumeration with members",
+            ));
+        };
+        let mut out = vec![Ir::Const(i64::from(id))];
+        for (case, fields) in cases {
+            let record = Ty::Record(fields.clone());
+            if *case == id {
+                let (ir, value) = self.record(members, Some(&record), line)?;
+                if value.join(&record).is_none() {
+                    return Err(Error::at(
+                        line,
+                        format!(
+                            "{tag} has members {}, but this gives {}",
+                            self.describe_ty(&record),
+                            self.describe_ty(&value)
+                        ),
+                    )
+                    .coded("type.mismatch"));
+                }
+                out.extend(coerce(parts(ir), &value, &record));
+            } else {
+                out.extend(std::iter::repeat_with(|| Ir::Const(0)).take(record.width()));
+            }
+        }
+        Ok((tuple(out), ty))
+    }
+
+    /// `attempts of phase`: a member of the case `phase` holds. Reading it
+    /// while `phase` holds a case without that member is a fault.
+    fn case_member(
+        &self,
+        name: &str,
+        ir: &Ir,
+        ty: &Ty,
+        what: &str,
+        line: usize,
+    ) -> Option<Result<(Ir, Ty)>> {
+        let Ty::Variant(cases) = ty else {
+            return None;
+        };
+        let (tag, payloads) = split_variant(parts(ir.clone()), cases);
+        let mut holders = Vec::new();
+        let mut member_ty: Option<Ty> = None;
+        for ((case, members), payload) in cases.iter().zip(&payloads) {
+            let record = Ty::Record(members.clone());
+            let Some((offset, member)) = record.member(name) else {
+                continue;
+            };
+            member_ty = match member_ty {
+                None => Some(member.clone()),
+                Some(seen) => match seen.join(member) {
+                    Some(joined) => Some(joined),
+                    None => {
+                        return Some(Err(Error::at(
+                            line,
+                            format!("{name} has a different type in different cases of {what}"),
+                        )));
+                    }
+                },
+            };
+            let slice: Vec<Ir> = payload
+                .iter()
+                .skip(offset)
+                .take(member.width())
+                .cloned()
+                .collect();
+            holders.push((*case, slice));
+        }
+        let Some(member_ty) = member_ty else {
+            return Some(Err(Error::at(
+                line,
+                format!("no value of {what} has a member {name}"),
+            )));
+        };
+        let names: Vec<String> = holders
+            .iter()
+            .map(|(case, _)| self.symbols.get(at(*case)).cloned().unwrap_or_default())
+            .collect();
+        let missing = Ir::Fail(format!(
+            "{what} is not {}, so it has no {name}",
+            names.join(" or ")
+        ));
+        let read = (0..member_ty.width())
+            .map(|part| {
+                holders
+                    .iter()
+                    .rev()
+                    .fold(missing.clone(), |otherwise, (case, slice)| {
+                        Ir::If(
+                            Box::new(is_raw(&tag, i64::from(*case))),
+                            Box::new(slice.get(part).cloned().unwrap_or(Ir::Const(0))),
+                            Box::new(otherwise),
+                        )
+                    })
+            })
+            .collect();
+        Some(Ok((tuple(read), member_ty)))
+    }
+
     fn quantified(
         &mut self,
         quantifier: Quantifier,
@@ -3259,6 +3726,21 @@ fn assignable(ty: &Ty, kind: &FieldType) -> bool {
                 element: wanted,
             },
         ) => capacity == wanted_capacity && assignable(element, wanted),
+        (Ty::Variant(cases), FieldType::Variant { cases: wanted, .. }) => {
+            cases.len() == wanted.len()
+                && cases.iter().zip(wanted).all(|((_, members), (_, wanted))| {
+                    assignable(
+                        &Ty::Record(members.clone()),
+                        &FieldType::Record(wanted.clone()),
+                    )
+                })
+        }
+        (Ty::Enum(ids), FieldType::Variant { .. }) => {
+            let Ty::Variant(cases) = Ty::of_kind(kind) else {
+                return false;
+            };
+            bare_tags(&cases, ids)
+        }
         (Ty::Nothing, FieldType::Optional(_)) => true,
         (Ty::Optional(value), FieldType::Optional(wanted)) => assignable(value, wanted),
         (value, FieldType::Optional(wanted)) => assignable(value, wanted),

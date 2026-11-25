@@ -24,8 +24,13 @@
   removes every `x`, `l has x`, `length of l`, `first of l`, `last of l` and
   `rest of l` (faults when empty), and quantifiers over a list field's items.
   Examples: `channel.zin` (a FIFO queue) and `recency.zin` (an LRU order).
+- Enumeration values with members: `one of queued, running with (attempt is
+  an integer from 1 to 3), succeeded`. Write `running with {attempt: 2}`,
+  test the case with `job is running`, and read `attempt of job` (a fault
+  when the job is not running). In plans such a value is `{"running":
+  {"attempt": 2}}`. Example: `retry.zin`.
 - `plan/2`: plans whose state holds records, nested maps, optional values,
-  sets or lists say `plan/2`;
+  sets, lists or enumerations with members say `plan/2`;
   every other plan stays `plan/1`. The Python, JavaScript, Go and JUnit
   runners read both, and compare `null`, lists in order, native sets in any
   order, and records given as dataclasses, Java records or Go structs.

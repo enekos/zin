@@ -856,25 +856,29 @@ impl Tokens {
         }
         if self.eat_word("one") {
             self.expect_word("of")?;
-            let mut values = vec![self.take_name()?.0];
+            let mut cases = vec![self.take_case(name)?];
             loop {
                 if self.peek_word(0) == Some("or") && self.peek_word(1) == Some("nothing") {
                     break;
                 }
                 if self.eat_word("or") {
-                    values.push(self.take_name()?.0);
+                    cases.push(self.take_case(name)?);
                     continue;
                 }
                 if parameter_list && self.parameter_boundary() {
                     break;
                 }
                 if self.eat(&Token::Comma) {
-                    values.push(self.take_name()?.0);
+                    cases.push(self.take_case(name)?);
                     continue;
                 }
                 break;
             }
-            return Ok(TypeExpr::Enum { values });
+            if cases.iter().all(|(_, members)| members.is_empty()) {
+                let values = cases.into_iter().map(|(value, _)| value).collect();
+                return Ok(TypeExpr::Enum { values });
+            }
+            return Ok(TypeExpr::Variant(cases));
         }
         if self.eat_word("list") {
             self.expect_word("of")?;
@@ -899,25 +903,7 @@ impl Tokens {
         }
         if self.eat_word("record") {
             self.expect_word("with")?;
-            self.expect(&Token::LeftParen)?;
-            let mut members: Vec<Field> = Vec::new();
-            loop {
-                let member = self.nested(|tokens| tokens.take_field(true))?;
-                if members.iter().any(|other| other.name == member.name) {
-                    return Err(Error::at(
-                        self.at.line,
-                        format!("{name} has two members named {}", member.name),
-                    )
-                    .spanned(member.span));
-                }
-                members.push(member);
-                if self.eat(&Token::Comma) {
-                    continue;
-                }
-                self.expect(&Token::RightParen)?;
-                break;
-            }
-            return Ok(TypeExpr::Record(members));
+            return Ok(TypeExpr::Record(self.take_members(name)?));
         }
         if self.eat_word("map") {
             self.expect_word("from")?;
@@ -938,6 +924,40 @@ impl Tokens {
                 "expected 'an integer from ... to ...', 'a boolean', 'one of ...', 'a map from ... to ...', 'a record with (...)', or a declared type",
             )),
         }
+    }
+
+    /// `(name is <type>, ...)`: the members of a record or an enumeration case.
+    fn take_members(&mut self, name: &str) -> Result<Vec<Field>> {
+        self.expect(&Token::LeftParen)?;
+        let mut members: Vec<Field> = Vec::new();
+        loop {
+            let member = self.nested(|tokens| tokens.take_field(true))?;
+            if members.iter().any(|other| other.name == member.name) {
+                return Err(Error::at(
+                    self.at.line,
+                    format!("{name} has two members named {}", member.name),
+                )
+                .spanned(member.span));
+            }
+            members.push(member);
+            if self.eat(&Token::Comma) {
+                continue;
+            }
+            self.expect(&Token::RightParen)?;
+            return Ok(members);
+        }
+    }
+
+    /// An enumeration value, with `with (members)` when it carries data.
+    fn take_case(&mut self, name: &str) -> Result<(String, Vec<Field>)> {
+        let (case, _) = self.take_name()?;
+        if self.peek_word(0) == Some("with")
+            && self.values.get(self.index + 1) == Some(&Token::LeftParen)
+        {
+            self.index += 1;
+            return Ok((case, self.take_members(name)?));
+        }
+        Ok((case, Vec::new()))
     }
 
     fn parameter_boundary(&self) -> bool {

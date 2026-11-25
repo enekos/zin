@@ -953,6 +953,10 @@ fn check_safe_integers(model: &Model) -> Result<()> {
             FieldType::Optional(value) => unsafe_kind(value, unsafe_domain),
             FieldType::Set { elements, .. } => unsafe_domain(elements),
             FieldType::List { element, .. } => unsafe_kind(element, unsafe_domain),
+            FieldType::Variant { cases, .. } => cases
+                .iter()
+                .flat_map(|(_, members)| members)
+                .any(|(_, kind)| unsafe_kind(kind, unsafe_domain)),
         }
     }
     let fields = model
@@ -979,6 +983,15 @@ pub(crate) fn value_json(value: &Value) -> Json {
         Value::Symbol(name) => Json::str(name.clone()),
         Value::Nothing => Json::Null,
         Value::List(items) => Json::Array(items.iter().map(value_json).collect()),
+        Value::Tagged { tag, members } => Json::object([(
+            tag.as_str(),
+            Json::Object(
+                members
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value_json(value)))
+                    .collect(),
+            ),
+        )]),
         Value::Map(entries) => Json::Object(
             entries
                 .iter()
@@ -1034,6 +1047,36 @@ fn field_type_json(model: &Model, kind: &FieldType) -> Json {
                 ),
             ),
             ("value", field_type_json(model, value)),
+        ]),
+        FieldType::Variant { cases, .. } => Json::object([
+            ("kind", Json::str("variant")),
+            (
+                "cases",
+                Json::Array(
+                    cases
+                        .iter()
+                        .map(|(name, members)| {
+                            Json::object([
+                                ("name", Json::str(name.clone())),
+                                (
+                                    "members",
+                                    Json::Array(
+                                        members
+                                            .iter()
+                                            .map(|(member, kind)| {
+                                                Json::object([
+                                                    ("name", Json::str(member.clone())),
+                                                    ("type", field_type_json(model, kind)),
+                                                ])
+                                            })
+                                            .collect(),
+                                    ),
+                                ),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
         ]),
         FieldType::List { capacity, element } => Json::object([
             ("kind", Json::str("list")),

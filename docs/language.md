@@ -40,6 +40,7 @@ scenario "Name"                    # worked examples, checked and turned into te
 | Optional | `a worker or nothing`, `an integer from 1 to 3 or nothing` |
 | Set | `a set of worker` |
 | List | `a list of at most 3 message` |
+| Enumeration with members | `one of queued, running with (attempt is an integer from 1 to 3), succeeded` |
 
 Map keys must be a named finite type (an enum, a boolean, or a bounded
 integer); map values may be any type, including maps and records. Every key
@@ -223,6 +224,38 @@ type. It takes a length slot and the slots of every item it could hold.
 Lists compare with `is`, item by item. `queue without m with m` moves `m` to
 the end, which is how `examples/recency.zin` keeps a least recently used
 order. In plans a list is an array.
+
+### Enumeration values with members
+
+```zin
+state
+  job is one of queued, running with (attempt is attempt), succeeded, failed with (reason is one of crashed, timed_out)
+
+action start
+  requires job is queued
+  job becomes running with {attempt: tries + 1}
+
+action crash
+  requires job is running
+  job becomes if attempt of job is 3 then failed with {reason: crashed} else queued
+```
+
+A value of an enumeration may carry members that exist only while it holds:
+the attempt number while running, the reason once failed. A status enum with
+side fields would let those fields hold stale values in every other state;
+here they cannot.
+
+- **Writing a value.** A case without members is its name (`queued`). A case
+  with members is `running with {attempt: 2}`; naming it bare is an error.
+- **Testing the case.** `job is running` is true whatever the attempt;
+  `job is running with {attempt: 3}` also compares the members.
+- **Reading a member.** `attempt of job` reads the member of the case that
+  holds; when the case has no such member it is a model fault, so guard it:
+  `job is running and attempt of job is 3`.
+- Members are assigned with the whole value, never one by one.
+
+In plans a case without members is a string and a case with members an
+object with one key, the case: `{"running": {"attempt": 2}}`.
 
 ## State and initial values
 

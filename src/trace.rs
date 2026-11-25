@@ -77,6 +77,17 @@ fn matches(kind: &FieldType, expected: &Json, observed: &Json) -> bool {
         (FieldType::Optional(value), wanted, observed) if *wanted != Json::Null => {
             matches(value, wanted, observed)
         }
+        (FieldType::Variant { cases, .. }, Json::Object(wanted), Json::Object(observed)) => {
+            match (wanted.first(), observed.as_slice()) {
+                (Some((tag, wanted)), [(other, members)]) if tag == other => cases
+                    .iter()
+                    .find(|(name, _)| name == tag)
+                    .is_some_and(|(_, kinds)| {
+                        matches(&FieldType::Record(kinds.clone()), wanted, members)
+                    }),
+                _ => false,
+            }
+        }
         (FieldType::Set { .. }, Json::Array(wanted), Json::Array(items)) => {
             items.len() == wanted.len() && items.iter().all(|item| wanted.contains(item))
         }

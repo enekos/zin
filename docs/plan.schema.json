@@ -142,7 +142,19 @@
       "type": "object",
       "required": ["kind"],
       "properties": {
-        "kind": { "enum": ["integer", "boolean", "enum", "map", "record", "optional", "set", "list"] },
+        "kind": { "enum": ["integer", "boolean", "enum", "map", "record", "optional", "set", "list", "variant"] },
+        "cases": {
+          "description": "variant: each case's name and members, in declaration order",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "members"],
+            "properties": {
+              "name": { "type": "string" },
+              "members": { "type": "array" }
+            }
+          }
+        },
         "capacity": { "type": "integer", "minimum": 1 },
         "element": { "$ref": "#/$defs/fieldType" },
         "min": { "type": "integer" },
