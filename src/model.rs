@@ -2397,7 +2397,7 @@ impl<'a> Compiler<'a> {
                 }
                 other => other,
             };
-            if let Ok(Operand::Value(ir, ty)) = &base
+            if let Ok(Operand::Value(ir, ty @ (Ty::Set(_) | Ty::List { .. }))) = &base
                 && let Some(result) = collection_property(name, ir, ty, &describe_expr(key), line)
             {
                 return result.map(|(ir, ty)| Operand::Value(ir, ty));
