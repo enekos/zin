@@ -163,6 +163,11 @@ fn json(value: &Value) -> String {
         Value::Integer(n) => n.to_string(),
         Value::Boolean(b) => b.to_string(),
         Value::Symbol(s) => format!("\"{s}\""),
+        Value::Nothing => "null".to_string(),
+        Value::List(items) => format!("[{}]", items.iter().map(json).collect::<Vec<_>>().join(",")),
+        Value::Tagged { tag, members } => {
+            format!("{{\"{tag}\":{}}}", json(&Value::Map(members.clone())))
+        }
         Value::Map(entries) => format!(
             "{{{}}}",
             entries

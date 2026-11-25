@@ -72,3 +72,102 @@ action send(value is a boolean) # fails: action send(value is an integer from 0 
   received becomes value
 always sent is received
 ```
+
+## Records
+
+```zin
+system "Order"
+state
+  order is a record with (status is one of draft, paid, items is an integer from 0 to 2)
+initially
+  order is {items: 0, status: draft}
+action add
+  requires status of order is draft and items of order < 2
+  items of order becomes items of order + 1
+action pay
+  requires items of order > 0
+  order becomes {status: paid, items: items of order}
+scenario "Pay for one"
+  add
+  pay
+  expect order is {status: paid, items: 1} # fails: expect order is {status: paid, items: 0}
+```
+
+## Optional values
+
+```zin
+system "Question"
+state
+  asked is an integer from 1 to 3 or nothing
+initially
+  asked is nothing
+action ask(n is an integer from 1 to 3)
+  requires asked is nothing
+  asked becomes n
+action answer
+  requires asked is not nothing
+  asked becomes nothing
+always asked is nothing or asked > 0 # fails: always asked > 0
+```
+
+## Sets
+
+```zin
+system "Room"
+types
+  worker is one of ann, ben, cid
+state
+  inside is a set of worker
+initially
+  inside is []
+action enter(w is a worker)
+  requires not inside has w and size of inside < 2
+  inside becomes inside with w
+action leave(w is a worker)
+  requires inside has w
+  inside becomes inside without w
+always size of inside <= 2 # fails: always size of inside <= 1
+```
+
+## Lists
+
+```zin
+system "Queue"
+types
+  message is one of ping, pong
+state
+  queue is a list of at most 2 message
+initially
+  queue is []
+action send(m is a message)
+  requires length of queue < 2
+  queue becomes queue with m
+action deliver
+  requires queue is not []
+  queue becomes rest of queue
+scenario "First in, first out"
+  send(ping)
+  send(pong)
+  deliver
+  expect queue is [pong] # fails: expect queue is [ping]
+```
+
+## Enumeration values with members
+
+```zin
+system "Attempts"
+state
+  job is one of idle, running with (attempt is an integer from 1 to 2)
+initially
+  job is idle
+action start
+  requires job is idle
+  job becomes running with {attempt: 1}
+action retry
+  requires job is running and attempt of job < 2
+  job becomes running with {attempt: attempt of job + 1}
+action stop
+  requires job is running
+  job becomes idle
+always job is idle or attempt of job >= 1 # fails: always attempt of job >= 1
+```

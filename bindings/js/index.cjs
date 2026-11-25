@@ -21,9 +21,11 @@ const { basename, dirname, join } = require("node:path");
 const { fileURLToPath } = require("node:url");
 const recorder = require("./recorder.cjs");
 
-const { plain } = recorder;
+const { plain, jsonable } = recorder;
 
 const PLAN_FORMAT = "plan/1";
+// plan/2 carries records, nested maps, optional values, sets and lists.
+const PLAN_FORMATS = [PLAN_FORMAT, "plan/2"];
 // How many of the latest steps a report lists before eliding earlier ones.
 const LISTED_STEPS = 8;
 // Pause between two observations while waiting for the expected state.
@@ -120,8 +122,8 @@ function compatible(plan, requested, explicit) {
 }
 
 function validate(plan, origin) {
-  if (plan === null || typeof plan !== "object" || plan.zin !== PLAN_FORMAT) {
-    throw new PlanError(`${origin} is not a ${PLAN_FORMAT} file`);
+  if (plan === null || typeof plan !== "object" || !PLAN_FORMATS.includes(plan.zin)) {
+    throw new PlanError(`${origin} is not a ${PLAN_FORMATS.join(" or ")} file`);
   }
   try {
     const params = new Map(plan.actions.map((action) => [action.name, action.params.length]));
@@ -242,7 +244,10 @@ function loadPlan(spec, options = {}) {
 }
 
 function show(value) {
-  if (value !== null && typeof value === "object") {
+  if (value === null || value === undefined) return "nothing";
+  if (value instanceof Set) return show(jsonable(value));
+  if (Array.isArray(value)) return `[${value.map(show).join(", ")}]`;
+  if (typeof value === "object") {
     return `{${Object.entries(value)
       .map(([key, item]) => `${key}: ${show(item)}`)
       .join(", ")}}`;
@@ -251,10 +256,23 @@ function show(value) {
 }
 
 function same(expected, observed) {
-  if (expected !== null && typeof expected === "object") {
+  if (expected === null) return observed === null || observed === undefined;
+  if (Array.isArray(expected)) {
+    if (observed instanceof Set) {
+      return observed.size === expected.length && [...observed].every((item) => expected.some((wanted) => same(wanted, item)));
+    }
+    return (
+      Array.isArray(observed) &&
+      observed.length === expected.length &&
+      observed.every((item, index) => same(expected[index], item))
+    );
+  }
+  if (typeof expected === "object") {
     return (
       observed !== null &&
       typeof observed === "object" &&
+      !Array.isArray(observed) &&
+      !(observed instanceof Set) &&
       Object.entries(observed).every(([key, item]) => key in expected && same(expected[key], item))
     );
   }

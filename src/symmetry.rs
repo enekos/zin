@@ -23,6 +23,107 @@ pub(crate) struct Symmetry {
     relabelings: Vec<Relabeling>,
     /// Whether each slot holds a value that relabeling changes.
     relabeled: Vec<bool>,
+    /// What makes each slot hidden, and the value a hidden slot holds.
+    hidden: Hidden,
+}
+
+/// A slot is hidden when the value it belongs to is absent. A hidden slot
+/// holds its first value, so relabeling a state must put that value back
+/// rather than relabel it.
+#[derive(Debug, Clone, Copy)]
+enum Guard {
+    /// The optional with this presence slot holds a value.
+    Present(usize),
+    /// The list with this length slot is longer than the position.
+    Longer(usize, usize),
+    /// The enumeration with this tag slot holds this case.
+    Case(usize, i64),
+}
+
+#[derive(Debug, Clone, Default)]
+struct Hidden {
+    /// For each slot, what must hold for it to show.
+    guards: Vec<Vec<Guard>>,
+    defaults: Vec<i64>,
+    /// Whether any slot can be hidden; most models have none.
+    any: bool,
+}
+
+impl Hidden {
+    fn new(model: &Model) -> Self {
+        let mut hidden = Self {
+            guards: vec![Vec::new(); model.slots.len()],
+            defaults: Vec::with_capacity(model.slots.len()),
+            any: false,
+        };
+        for field in &model.fields {
+            hidden.defaults.extend(field.kind.defaults());
+            hidden.guard(&field.kind, field.offset, &[]);
+        }
+        hidden.any = hidden.guards.iter().any(|guards| !guards.is_empty());
+        hidden
+    }
+
+    fn guard(&mut self, kind: &FieldType, offset: usize, outer: &[Guard]) {
+        match kind {
+            FieldType::Scalar(_) => {
+                if let Some(cell) = self.guards.get_mut(offset) {
+                    *cell = outer.to_vec();
+                }
+            }
+            FieldType::Set { elements, .. } => {
+                for position in 0..elements.size() {
+                    if let Some(cell) = self.guards.get_mut(offset + position) {
+                        *cell = outer.to_vec();
+                    }
+                }
+            }
+            FieldType::Map { keys, value, .. } => {
+                for position in 0..keys.size() {
+                    self.guard(value, offset + position * value.width(), outer);
+                }
+            }
+            FieldType::Record(members) => {
+                let mut start = offset;
+                for (_, member) in members {
+                    self.guard(member, start, outer);
+                    start += member.width();
+                }
+            }
+            FieldType::Optional(value) => {
+                if let Some(cell) = self.guards.get_mut(offset) {
+                    *cell = outer.to_vec();
+                }
+                let mut inner = outer.to_vec();
+                inner.push(Guard::Present(offset));
+                self.guard(value, offset + 1, &inner);
+            }
+            FieldType::Variant { tags, cases } => {
+                if let Some(cell) = self.guards.get_mut(offset) {
+                    *cell = outer.to_vec();
+                }
+                let mut start = offset + 1;
+                for (raw, (_, members)) in tags.raws().into_iter().zip(cases) {
+                    let mut inner = outer.to_vec();
+                    inner.push(Guard::Case(offset, raw));
+                    for (_, member) in members {
+                        self.guard(member, start, &inner);
+                        start += member.width();
+                    }
+                }
+            }
+            FieldType::List { capacity, element } => {
+                if let Some(cell) = self.guards.get_mut(offset) {
+                    *cell = outer.to_vec();
+                }
+                for position in 0..*capacity {
+                    let mut inner = outer.to_vec();
+                    inner.push(Guard::Longer(offset, position));
+                    self.guard(element, offset + 1 + position * element.width(), &inner);
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +144,165 @@ impl Relabeling {
     }
 }
 
+/// Whether relabeling `groups` changes a value of `domain`.
+fn moved(domain: &Domain, groups: &[Vec<i64>]) -> bool {
+    match domain {
+        Domain::Enum(ids) => ids
+            .iter()
+            .any(|id| groups.iter().any(|group| group.contains(&i64::from(*id)))),
+        Domain::Integer { .. } | Domain::Boolean => false,
+    }
+}
+
+/// Where each slot of a relabeled value of type `kind` comes from: slot `j`
+/// of the image is slot `sources[j]` of the original, both counted from the
+/// value's first slot. Entries of a map keyed by a relabeled type move.
+fn sources(kind: &FieldType, relabel: &impl Fn(i64) -> i64, groups: &[Vec<i64>]) -> Vec<usize> {
+    match kind {
+        FieldType::Scalar(_) => vec![0],
+        FieldType::Variant { cases, .. } => {
+            let mut out = vec![0];
+            for (_, members) in cases {
+                for (_, member) in members {
+                    let base = out.len();
+                    out.extend(
+                        sources(member, relabel, groups)
+                            .into_iter()
+                            .map(|from| base + from),
+                    );
+                }
+            }
+            out
+        }
+        FieldType::List { capacity, element } => {
+            let inner = sources(element, relabel, groups);
+            let mut out = vec![0];
+            for position in 0..*capacity {
+                let base = 1 + position * inner.len();
+                out.extend(inner.iter().map(|from| base + from));
+            }
+            out
+        }
+        FieldType::Set { elements, .. } => {
+            let mut out: Vec<usize> = (0..elements.size()).collect();
+            if moved(elements, groups) {
+                for (position, raw) in elements.raws().into_iter().enumerate() {
+                    if let Some(cell) = elements
+                        .position(relabel(raw))
+                        .and_then(|target| out.get_mut(target))
+                    {
+                        *cell = position;
+                    }
+                }
+            }
+            out
+        }
+        FieldType::Optional(value) => {
+            let mut out = vec![0];
+            out.extend(
+                sources(value, relabel, groups)
+                    .into_iter()
+                    .map(|from| from + 1),
+            );
+            out
+        }
+        FieldType::Record(members) => {
+            let mut out = Vec::with_capacity(kind.width());
+            for (_, member) in members {
+                let base = out.len();
+                out.extend(
+                    sources(member, relabel, groups)
+                        .into_iter()
+                        .map(|from| base + from),
+                );
+            }
+            out
+        }
+        FieldType::Map { keys, value, .. } => {
+            let inner = sources(value, relabel, groups);
+            let width = inner.len();
+            let moves = moved(keys, groups);
+            let mut out = vec![0; keys.size().saturating_mul(width)];
+            for (position, key) in keys.raws().into_iter().enumerate() {
+                let target = if moves {
+                    keys.position(relabel(key)).unwrap_or(position)
+                } else {
+                    position
+                };
+                for (offset, from) in inner.iter().enumerate() {
+                    if let Some(cell) = out.get_mut(target * width + offset) {
+                        *cell = position * width + from;
+                    }
+                }
+            }
+            out
+        }
+    }
+}
+
+/// Every adjacent transposition of each group, as a table of raw values.
+fn swaps(model: &Model, groups: &[Vec<i64>]) -> Vec<Vec<i64>> {
+    let mut out = Vec::new();
+    for group in groups {
+        for pair in group.windows(2) {
+            let mut values: Vec<i64> = (0..symbol_count(model)).collect();
+            let (first, second) = (at_raw(pair[0]), at_raw(pair[1]));
+            if first < values.len() && second < values.len() {
+                values.swap(first, second);
+            }
+            out.push(values);
+        }
+    }
+    out
+}
+
+/// The fields whose slots some relabeling moves: a map keyed by, or a set
+/// of, an interchangeable type, possibly nested. The swaps generate every
+/// relabeling, so a field none of them moves never moves.
+fn moving_fields(model: &Model, groups: &[Vec<i64>]) -> Vec<usize> {
+    let swaps = swaps(model, groups);
+    (0..model.fields.len())
+        .filter(|index| {
+            let kind = &model.fields[*index].kind;
+            swaps.iter().any(|values| {
+                let relabel = |raw: i64| {
+                    usize::try_from(raw)
+                        .ok()
+                        .and_then(|index| values.get(index))
+                        .copied()
+                        .unwrap_or(raw)
+                };
+                sources(kind, &relabel, groups)
+                    .into_iter()
+                    .enumerate()
+                    .any(|(offset, from)| offset != from)
+            })
+        })
+        .collect()
+}
+
+fn relabeling(
+    model: &Model,
+    values: Vec<i64>,
+    groups: &[Vec<i64>],
+    moving: &[usize],
+) -> Relabeling {
+    let mut relabeling = Relabeling {
+        values,
+        source: (0..model.slots.len()).collect(),
+    };
+    for field in moving.iter().filter_map(|index| model.fields.get(*index)) {
+        let relabel = |raw: i64| relabeling.value(raw);
+        let moved = sources(&field.kind, &relabel, groups);
+        for (offset, from) in moved.into_iter().enumerate() {
+            if let Some(cell) = relabeling.source.get_mut(field.offset + offset) {
+                *cell = field.offset + from;
+            }
+        }
+    }
+    relabeling
+}
+
 /// Adjacent transpositions generate the permutation group. Checking these
 /// generators validates the initial state without constructing a factorial table.
 pub(crate) fn validate(model: &Model) -> Result<()> {
@@ -56,45 +316,30 @@ pub(crate) fn validate(model: &Model) -> Result<()> {
                 )));
             }
         }
-        for pair in group.windows(2) {
-            let swap = |raw: i64| {
-                if raw == pair[0] {
-                    pair[1]
-                } else if raw == pair[1] {
-                    pair[0]
-                } else {
-                    raw
-                }
-            };
-            for field in &model.fields {
-                let (keys, domain) = match &field.kind {
-                    FieldType::Scalar(d) => (None, d),
-                    FieldType::Map { keys, value, .. } => (Some(keys), value),
-                };
-                for index in 0..keys.map_or(1, Domain::size) {
-                    let target = match keys {
-                        Some(keys @ Domain::Enum(_)) => keys
-                            .raw_at(index)
-                            .and_then(|key| keys.position(swap(key)))
-                            .expect("validated interchangeable domain"),
-                        _ => index,
-                    };
-                    let raw = model.initial[field.offset + index];
-                    let image = if matches!(domain, Domain::Enum(_)) {
-                        swap(raw)
-                    } else {
-                        raw
-                    };
-                    if image != model.initial[field.offset + target] {
-                        return Err(Error::new(
-                            "the initial state treats interchangeable values differently",
-                        ));
-                    }
-                }
-            }
+    }
+    let symmetry = Symmetry {
+        relabelings: Vec::new(),
+        relabeled: relabeled(model, &model.interchangeable),
+        hidden: Hidden::new(model),
+    };
+    let moving = moving_fields(model, &model.interchangeable);
+    for values in swaps(model, &model.interchangeable) {
+        let swap = relabeling(model, values, &model.interchangeable, &moving);
+        if *symmetry.apply(&swap, &model.initial) != *model.initial {
+            return Err(Error::new(
+                "the initial state treats interchangeable values differently",
+            ));
         }
     }
     Ok(())
+}
+
+fn relabeled(model: &Model, groups: &[Vec<i64>]) -> Vec<bool> {
+    model
+        .slots
+        .iter()
+        .map(|slot| moved(&slot.domain, groups))
+        .collect()
 }
 
 impl Symmetry {
@@ -128,47 +373,39 @@ impl Symmetry {
             }
             maps = extended;
         }
-        let slots = model.slots.len();
-        let moved = |domain: &Domain| match domain {
-            Domain::Enum(ids) => ids
-                .iter()
-                .any(|id| groups.iter().any(|group| group.contains(&i64::from(*id)))),
-            Domain::Integer { .. } | Domain::Boolean => false,
-        };
-        let relabeled = model.slots.iter().map(|slot| moved(&slot.domain)).collect();
+        let moving = moving_fields(model, groups);
         let relabelings = maps
             .into_iter()
-            .map(|values| {
-                let mut relabeling = Relabeling {
-                    values,
-                    source: (0..slots).collect(),
-                };
-                for field in &model.fields {
-                    let FieldType::Map { keys, .. } = &field.kind else {
-                        continue;
-                    };
-                    if !moved(keys) {
-                        continue;
-                    }
-                    for (position, key) in keys.raws().into_iter().enumerate() {
-                        let Some(target) = keys.position(relabeling.value(key)) else {
-                            continue;
-                        };
-                        if let Some(cell) = relabeling.source.get_mut(field.offset + target) {
-                            *cell = field.offset + position;
-                        }
-                    }
-                }
-                relabeling
-            })
+            .map(|values| relabeling(model, values, groups, &moving))
             .collect();
         Ok(Self {
             relabelings,
-            relabeled,
+            relabeled: relabeled(model, groups),
+            hidden: Hidden::new(model),
         })
     }
 
+    #[inline]
     fn image_at(&self, relabeling: &Relabeling, state: &[i64], slot: usize) -> i64 {
+        if !self.hidden.any {
+            return self.shown_at(relabeling, state, slot);
+        }
+        let guards = self.hidden.guards.get(slot).map_or(&[][..], Vec::as_slice);
+        if guards.iter().any(|guard| match *guard {
+            Guard::Present(tag) => self.shown_at(relabeling, state, tag) == 0,
+            Guard::Case(tag, raw) => self.shown_at(relabeling, state, tag) != raw,
+            Guard::Longer(length, position) => {
+                usize::try_from(self.shown_at(relabeling, state, length)).unwrap_or(0) <= position
+            }
+        }) {
+            return self.hidden.defaults.get(slot).copied().unwrap_or(0);
+        }
+        self.shown_at(relabeling, state, slot)
+    }
+
+    /// The image of `slot` ignoring whether it is hidden.
+    #[inline]
+    fn shown_at(&self, relabeling: &Relabeling, state: &[i64], slot: usize) -> i64 {
         let raw = relabeling
             .source
             .get(slot)

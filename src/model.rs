@@ -1,7 +1,7 @@
 use crate::ast::{
     Action, ActionCall, Assignment, BinaryOperator, CallArguments, Condition, Expr, Fairness,
-    PropertyKind, Quantifier, ScenarioStep, Spec, TargetKey, TypeDecl, TypeExpr, UnaryOperator,
-    Value, display_call,
+    PropertyKind, Quantifier, ScenarioStep, Spec, TypeDecl, TypeExpr, UnaryOperator, Value,
+    display_call,
 };
 use crate::{Error, Result, State};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -68,8 +68,113 @@ pub enum FieldType {
     Map {
         key_type: String,
         keys: Domain,
-        value: Domain,
+        value: Box<FieldType>,
     },
+    /// Named members, laid out one after another in declaration order.
+    Record(Vec<(String, FieldType)>),
+    /// A presence slot (0 for nothing, 1 for a value), then the value's
+    /// slots. When the value is nothing they hold each slot's first value.
+    Optional(Box<FieldType>),
+    /// One boolean slot per value of the element type: whether the set holds it.
+    Set {
+        element_type: String,
+        elements: Domain,
+    },
+    /// A length slot from 0 to `capacity`, then `capacity` items. Items at
+    /// or past the length hold their first values.
+    List {
+        capacity: usize,
+        element: Box<FieldType>,
+    },
+    /// A tag slot holding the case, then each case's members in turn. The
+    /// members of the cases not taken hold their first values.
+    Variant {
+        tags: Domain,
+        cases: Vec<(String, Vec<(String, FieldType)>)>,
+    },
+}
+
+impl FieldType {
+    /// How many state slots a value of this type occupies.
+    #[must_use]
+    pub fn width(&self) -> usize {
+        match self {
+            Self::Scalar(_) => 1,
+            Self::Map { keys, value, .. } => keys.size().saturating_mul(value.width()),
+            Self::Record(members) => members
+                .iter()
+                .fold(0, |width, (_, kind)| width.saturating_add(kind.width())),
+            Self::Optional(value) => value.width().saturating_add(1),
+            Self::Set { elements, .. } => elements.size(),
+            Self::List { capacity, element } => {
+                capacity.saturating_mul(element.width()).saturating_add(1)
+            }
+            Self::Variant { cases, .. } => cases
+                .iter()
+                .flat_map(|(_, members)| members)
+                .fold(1, |width, (_, kind)| width.saturating_add(kind.width())),
+        }
+    }
+
+    /// The slot values of a value of this type that nothing has set: the
+    /// first value of every slot. A value that is nothing holds these.
+    pub(crate) fn defaults(&self) -> Vec<i64> {
+        match self {
+            Self::Scalar(domain) => vec![domain.raw_at(0).unwrap_or(0)],
+            Self::Map { keys, value, .. } => value.defaults().repeat(keys.size()),
+            Self::Record(members) => members
+                .iter()
+                .flat_map(|(_, kind)| kind.defaults())
+                .collect(),
+            Self::Optional(value) => {
+                let mut out = vec![0];
+                out.extend(value.defaults());
+                out
+            }
+            Self::Set { elements, .. } => vec![0; elements.size()],
+            Self::List { capacity, element } => {
+                let mut out = vec![0];
+                out.extend(element.defaults().repeat(*capacity));
+                out
+            }
+            Self::Variant { tags, cases } => {
+                let mut out = vec![tags.raw_at(0).unwrap_or(0)];
+                for (_, members) in cases {
+                    out.extend(members.iter().flat_map(|(_, kind)| kind.defaults()));
+                }
+                out
+            }
+        }
+    }
+
+    /// Whether `plan/1` can carry this type: a scalar, or a map of scalars.
+    pub(crate) fn is_classic(&self) -> bool {
+        match self {
+            Self::Scalar(_) => true,
+            Self::Map { value, .. } => matches!(value.as_ref(), Self::Scalar(_)),
+            Self::Record(_)
+            | Self::Optional(_)
+            | Self::Set { .. }
+            | Self::List { .. }
+            | Self::Variant { .. } => false,
+        }
+    }
+
+    /// The member `name` of a record: its first slot, counted from the
+    /// record's, and its type.
+    pub(crate) fn member(&self, name: &str) -> Option<(usize, &FieldType)> {
+        let Self::Record(members) = self else {
+            return None;
+        };
+        let mut offset = 0;
+        for (member, kind) in members {
+            if member == name {
+                return Some((offset, kind));
+            }
+            offset += kind.width();
+        }
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +200,16 @@ pub struct ActionInfo {
     pub(crate) assignments: Vec<CompiledAssignment>,
 }
 
+/// One dynamic map key on the way to a slot: the key's position in `keys`,
+/// times `stride`, is added to the slot.
+#[derive(Debug, Clone)]
+pub(crate) struct KeyStep {
+    pub key: Ir,
+    pub keys: Domain,
+    pub stride: usize,
+    pub field: String,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum Ir {
     Const(i64),
@@ -102,9 +217,20 @@ pub(crate) enum Ir {
     Local(usize),
     Index {
         offset: usize,
-        keys: Domain,
+        steps: Box<[KeyStep]>,
+    },
+    /// A compound value, one expression per slot. Compiled code takes it
+    /// apart; it is never evaluated as a whole.
+    Tuple(Vec<Ir>),
+    /// A model fault with this message, such as reading the value of nothing.
+    Fail(String),
+    /// The option at `key`'s position in `keys`; `what` names the keys in
+    /// the fault when `key` is not one of them.
+    Select {
         key: Box<Ir>,
-        field: String,
+        keys: Domain,
+        options: Vec<Ir>,
+        what: String,
     },
     Not(Box<Ir>),
     Negate(Box<Ir>),
@@ -139,13 +265,12 @@ pub(crate) enum Target {
     Slot(usize),
     Indexed {
         offset: usize,
-        keys: Domain,
-        key: Ir,
-        field: String,
+        steps: Box<[KeyStep]>,
     },
     Every {
         offset: usize,
         count: usize,
+        stride: usize,
     },
 }
 
@@ -280,24 +405,96 @@ impl Model {
     pub(crate) fn decode(&self, state: &[i64]) -> State {
         let mut decoded = State::new();
         for field in &self.fields {
-            let value = match &field.kind {
-                FieldType::Scalar(domain) => {
-                    self.value(domain, state.get(field.offset).copied().unwrap_or(0))
+            let slots = state
+                .get(field.offset..field.offset + field.kind.width())
+                .unwrap_or_default();
+            decoded.insert(field.name.clone(), self.decode_value(&field.kind, slots));
+        }
+        decoded
+    }
+
+    /// The value held in `slots`, laid out as `kind` lays it out.
+    pub(crate) fn decode_value(&self, kind: &FieldType, slots: &[i64]) -> Value {
+        match kind {
+            FieldType::Scalar(domain) => self.value(domain, slots.first().copied().unwrap_or(0)),
+            FieldType::Set { elements, .. } => Value::List(
+                elements
+                    .raws()
+                    .into_iter()
+                    .zip(slots)
+                    .filter(|(_, held)| **held != 0)
+                    .map(|(raw, _)| self.value(elements, raw))
+                    .collect(),
+            ),
+            FieldType::Variant { tags, cases } => {
+                let (tag, mut rest) = slots.split_first().unwrap_or((&0, &[]));
+                let taken = tags.position(*tag).unwrap_or(0);
+                for (_, members) in cases.iter().take(taken) {
+                    let width: usize = members.iter().map(|(_, kind)| kind.width()).sum();
+                    rest = rest.get(width..).unwrap_or_default();
                 }
-                FieldType::Map { keys, value, .. } => Value::Map(
+                let Some((name, members)) = cases.get(taken) else {
+                    return Value::Nothing;
+                };
+                if members.is_empty() {
+                    return Value::Symbol(name.clone());
+                }
+                let record = FieldType::Record(members.clone());
+                let Value::Map(members) = self.decode_value(&record, rest) else {
+                    return Value::Nothing;
+                };
+                Value::Tagged {
+                    tag: name.clone(),
+                    members,
+                }
+            }
+            FieldType::List { element, .. } => {
+                let width = element.width();
+                let (length, items) = slots.split_first().unwrap_or((&0, &[]));
+                Value::List(
+                    items
+                        .chunks(width.max(1))
+                        .take(usize::try_from(*length).unwrap_or(0))
+                        .map(|item| self.decode_value(element, item))
+                        .collect(),
+                )
+            }
+            FieldType::Optional(value) => match slots.split_first() {
+                Some((1, rest)) => self.decode_value(value, rest),
+                _ => Value::Nothing,
+            },
+            FieldType::Record(members) => {
+                let mut offset = 0;
+                Value::Map(
+                    members
+                        .iter()
+                        .map(|(name, kind)| {
+                            let width = kind.width();
+                            let entry = slots.get(offset..offset + width).unwrap_or_default();
+                            offset += width;
+                            (name.clone(), self.decode_value(kind, entry))
+                        })
+                        .collect(),
+                )
+            }
+            FieldType::Map { keys, value, .. } => {
+                let width = value.width();
+                Value::Map(
                     keys.raws()
                         .into_iter()
                         .enumerate()
                         .map(|(position, key)| {
-                            let raw = state.get(field.offset + position).copied().unwrap_or(0);
-                            (self.value(keys, key).to_string(), self.value(value, raw))
+                            let start = position * width;
+                            let entry = slots.get(start..start + width).unwrap_or_default();
+                            (
+                                self.value(keys, key).to_string(),
+                                self.decode_value(value, entry),
+                            )
                         })
                         .collect(),
-                ),
-            };
-            decoded.insert(field.name.clone(), value);
+                )
+            }
         }
-        decoded
     }
 
     #[must_use]
@@ -397,6 +594,64 @@ impl Model {
     }
 }
 
+/// Whether an observed value agrees with the specification's value of type
+/// `kind`. Maps and records may list a subset of their keys; a set matches
+/// in any order.
+pub(crate) fn observation_matches(kind: &FieldType, expected: &Value, actual: &Value) -> bool {
+    match (kind, expected, actual) {
+        (FieldType::Map { value, .. }, Value::Map(wanted), Value::Map(observed)) => {
+            observed.iter().all(|(key, item)| {
+                wanted
+                    .get(key)
+                    .is_some_and(|wanted| observation_matches(value, wanted, item))
+            })
+        }
+        (FieldType::Record(members), Value::Map(wanted), Value::Map(observed)) => {
+            observed.iter().all(|(key, item)| {
+                members
+                    .iter()
+                    .find(|(member, _)| member == key)
+                    .zip(wanted.get(key))
+                    .is_some_and(|((_, kind), wanted)| observation_matches(kind, wanted, item))
+            })
+        }
+        (FieldType::Optional(value), wanted, observed) if *wanted != Value::Nothing => {
+            observation_matches(value, wanted, observed)
+        }
+        (
+            FieldType::Variant { cases, .. },
+            Value::Tagged {
+                tag: wanted_tag,
+                members: wanted,
+            },
+            Value::Tagged { tag, members },
+        ) => {
+            wanted_tag == tag
+                && cases
+                    .iter()
+                    .find(|(name, _)| name == tag)
+                    .is_some_and(|(_, kinds)| {
+                        observation_matches(
+                            &FieldType::Record(kinds.clone()),
+                            &Value::Map(wanted.clone()),
+                            &Value::Map(members.clone()),
+                        )
+                    })
+        }
+        (FieldType::Set { .. }, Value::List(wanted), Value::List(observed)) => {
+            observed.len() == wanted.len() && observed.iter().all(|item| wanted.contains(item))
+        }
+        (FieldType::List { element, .. }, Value::List(wanted), Value::List(observed)) => {
+            observed.len() == wanted.len()
+                && wanted
+                    .iter()
+                    .zip(observed)
+                    .all(|(wanted, item)| observation_matches(element, wanted, item))
+        }
+        _ => expected == actual,
+    }
+}
+
 pub(crate) struct Write {
     pub slot: usize,
     pub raw: i64,
@@ -406,12 +661,28 @@ pub(crate) struct Write {
 fn key_slot(
     offset: usize,
     keys: &Domain,
+    stride: usize,
     raw: i64,
     field: &str,
 ) -> std::result::Result<usize, String> {
     keys.position(raw)
-        .map(|position| offset + position)
+        .map(|position| offset + position * stride)
         .ok_or_else(|| format!("{raw} is not a key of {field}"))
+}
+
+/// The slot `offset` plus each key step, evaluated in order.
+fn locate(
+    offset: usize,
+    steps: &[KeyStep],
+    state: &[i64],
+    locals: &mut [i64],
+) -> std::result::Result<usize, String> {
+    let mut slot = offset;
+    for step in steps {
+        let key = eval(&step.key, state, locals)?;
+        slot = key_slot(slot, &step.keys, step.stride, key, &step.field)?;
+    }
+    Ok(slot)
 }
 
 pub(crate) fn collect_writes(
@@ -422,13 +693,18 @@ pub(crate) fn collect_writes(
 ) -> std::result::Result<Vec<Write>, Fault> {
     let mut writes = Vec::new();
     for assignment in assignments {
-        if let Target::Every { offset, count } = &assignment.target {
+        if let Target::Every {
+            offset,
+            count,
+            stride,
+        } = &assignment.target
+        {
             let raw = eval(&assignment.value, state, locals).map_err(|message| Fault {
                 line: assignment.line,
                 message,
             })?;
             writes.extend((0..*count).map(|position| Write {
-                slot: offset + position,
+                slot: offset + position * stride,
                 raw,
                 line: assignment.line,
             }));
@@ -443,14 +719,8 @@ pub(crate) fn collect_writes(
         let slot = match &assignment.target {
             Target::Every { .. } => continue,
             Target::Slot(slot) => *slot,
-            Target::Indexed {
-                offset,
-                keys,
-                key,
-                field,
-            } => {
-                let key = eval(key, state, locals).map_err(fault)?;
-                key_slot(*offset, keys, key, field).map_err(fault)?
+            Target::Indexed { offset, steps } => {
+                locate(*offset, steps, state, locals).map_err(fault)?
             }
         };
         if writes.iter().skip(broad).any(|write| write.slot == slot) {
@@ -481,14 +751,21 @@ pub(crate) fn eval(ir: &Ir, state: &[i64], locals: &mut [i64]) -> std::result::R
         Ir::Const(raw) => *raw,
         Ir::Slot(slot) => fetch(state, *slot)?,
         Ir::Local(local) => fetch(locals, *local)?,
-        Ir::Index {
-            offset,
-            keys,
+        Ir::Index { offset, steps } => fetch(state, locate(*offset, steps, state, locals)?)?,
+        Ir::Tuple(_) => return Err("internal error: a compound value was evaluated".to_string()),
+        Ir::Fail(message) => return Err(message.clone()),
+        Ir::Select {
             key,
-            field,
+            keys,
+            options,
+            what,
         } => {
             let key = eval(key, state, locals)?;
-            fetch(state, key_slot(*offset, keys, key, field)?)?
+            let option = keys
+                .position(key)
+                .and_then(|position| options.get(position))
+                .ok_or_else(|| format!("{key} is not {what}"))?;
+            eval(option, state, locals)?
         }
         Ir::Not(value) => i64::from(eval(value, state, locals)? == 0),
         Ir::Negate(value) => eval(value, state, locals)?
@@ -553,16 +830,36 @@ pub(crate) fn eval(ir: &Ir, state: &[i64], locals: &mut [i64]) -> std::result::R
                     }
                     left.checked_div(right).ok_or("integer overflow")?
                 }
+                BinaryOperator::Has | BinaryOperator::With | BinaryOperator::Without => {
+                    return Err("internal error: a set operator was evaluated".to_string());
+                }
             }
         }
     })
 }
 
+/// The static type of an expression. Compound types are structural: two
+/// records agree when their members agree name by name, in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Ty {
     Int,
     Bool,
     Enum(BTreeSet<u32>),
+    Record(Vec<(String, Ty)>),
+    Map {
+        keys: Domain,
+        value: Box<Ty>,
+    },
+    Optional(Box<Ty>),
+    /// The literal `nothing`, before the context says what it is nothing of.
+    Nothing,
+    Set(Domain),
+    List {
+        capacity: usize,
+        element: Box<Ty>,
+    },
+    /// Each case's tag and members, in declaration order.
+    Variant(Vec<(u32, Vec<(String, Ty)>)>),
 }
 
 impl Ty {
@@ -574,33 +871,611 @@ impl Ty {
         }
     }
 
+    fn of_kind(kind: &FieldType) -> Self {
+        match kind {
+            FieldType::Scalar(domain) => Self::of(domain),
+            FieldType::Map { keys, value, .. } => Self::Map {
+                keys: keys.clone(),
+                value: Box::new(Self::of_kind(value)),
+            },
+            FieldType::Record(members) => Self::Record(
+                members
+                    .iter()
+                    .map(|(name, kind)| (name.clone(), Self::of_kind(kind)))
+                    .collect(),
+            ),
+            FieldType::Optional(value) => Self::Optional(Box::new(Self::of_kind(value))),
+            FieldType::Set { elements, .. } => Self::Set(elements.clone()),
+            FieldType::List { capacity, element } => Self::List {
+                capacity: *capacity,
+                element: Box::new(Self::of_kind(element)),
+            },
+            FieldType::Variant { tags, cases } => Self::Variant(
+                tags.raws()
+                    .into_iter()
+                    .zip(cases)
+                    .map(|(tag, (_, members))| {
+                        (
+                            u32::try_from(tag).unwrap_or(u32::MAX),
+                            members
+                                .iter()
+                                .map(|(name, kind)| (name.clone(), Self::of_kind(kind)))
+                                .collect(),
+                        )
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
     fn noun(&self) -> &'static str {
         match self {
             Self::Int => "a number",
             Self::Bool => "a true/false value",
             Self::Enum(_) => "an enum value",
+            Self::Record(_) => "a record",
+            Self::Map { .. } => "a map",
+            Self::Optional(_) => "a value that may be nothing",
+            Self::Nothing => "nothing",
+            Self::Set(_) => "a set",
+            Self::List { .. } => "a list",
+            Self::Variant(_) => "an enum value with members",
+        }
+    }
+
+    fn is_scalar(&self) -> bool {
+        matches!(self, Self::Int | Self::Bool | Self::Enum(_))
+    }
+
+    /// The type of a value that may be either `self` or `other`, if they agree.
+    fn join(&self, other: &Self) -> Option<Self> {
+        Some(match (self, other) {
+            (Self::Int, Self::Int) => Self::Int,
+            (Self::Bool, Self::Bool) => Self::Bool,
+            (Self::Enum(left), Self::Enum(right)) => Self::Enum(left | right),
+            (Self::Record(left), Self::Record(right)) if left.len() == right.len() => {
+                let mut members = Vec::with_capacity(left.len());
+                for ((name, left), (other, right)) in left.iter().zip(right) {
+                    if name != other {
+                        return None;
+                    }
+                    members.push((name.clone(), left.join(right)?));
+                }
+                Self::Record(members)
+            }
+            (
+                Self::Map { keys, value },
+                Self::Map {
+                    keys: other_keys,
+                    value: other_value,
+                },
+            ) if keys == other_keys => Self::Map {
+                keys: keys.clone(),
+                value: Box::new(value.join(other_value)?),
+            },
+            (Self::Set(left), Self::Set(right)) if left == right => Self::Set(left.clone()),
+            (Self::Variant(left), Self::Variant(right)) if left.len() == right.len() => {
+                let mut cases = Vec::with_capacity(left.len());
+                for ((tag, left), (other, right)) in left.iter().zip(right) {
+                    if tag != other {
+                        return None;
+                    }
+                    let Self::Record(members) =
+                        Self::Record(left.clone()).join(&Self::Record(right.clone()))?
+                    else {
+                        return None;
+                    };
+                    cases.push((*tag, members));
+                }
+                Self::Variant(cases)
+            }
+            (Self::Variant(cases), Self::Enum(ids)) | (Self::Enum(ids), Self::Variant(cases))
+                if bare_tags(cases, ids) =>
+            {
+                Self::Variant(cases.clone())
+            }
+            (
+                Self::List { capacity, element },
+                Self::List {
+                    capacity: other,
+                    element: other_element,
+                },
+            ) if capacity == other => Self::List {
+                capacity: *capacity,
+                element: Box::new(element.join(other_element)?),
+            },
+            (Self::Nothing, Self::Nothing) => Self::Nothing,
+            (Self::Nothing, Self::Optional(value)) | (Self::Optional(value), Self::Nothing) => {
+                Self::Optional(value.clone())
+            }
+            (Self::Nothing, value) | (value, Self::Nothing) => {
+                Self::Optional(Box::new(value.clone()))
+            }
+            (Self::Optional(left), Self::Optional(right)) => {
+                Self::Optional(Box::new(left.join(right)?))
+            }
+            (Self::Optional(left), right) | (right, Self::Optional(left)) => {
+                Self::Optional(Box::new(left.join(right)?))
+            }
+            _ => return None,
+        })
+    }
+
+    fn member(&self, name: &str) -> Option<(usize, &Ty)> {
+        let Self::Record(members) = self else {
+            return None;
+        };
+        let mut offset = 0;
+        for (member, ty) in members {
+            if member == name {
+                return Some((offset, ty));
+            }
+            offset += ty.width();
+        }
+        None
+    }
+
+    fn width(&self) -> usize {
+        match self {
+            Self::Int | Self::Bool | Self::Enum(_) => 1,
+            Self::Record(members) => members.iter().map(|(_, ty)| ty.width()).sum(),
+            Self::Map { keys, value } => keys.size().saturating_mul(value.width()),
+            Self::Optional(value) => value.width() + 1,
+            Self::Nothing => 1,
+            Self::Set(elements) => elements.size(),
+            Self::List { capacity, element } => capacity * element.width() + 1,
+            Self::Variant(cases) => {
+                1 + cases
+                    .iter()
+                    .flat_map(|(_, members)| members)
+                    .map(|(_, ty)| ty.width())
+                    .sum::<usize>()
+            }
         }
     }
 }
 
-enum Resolved {
-    Scalar(Domain),
-    Map {
-        key_type: String,
-        keys: Domain,
-        value: Domain,
-    },
+/// Whether every id in `ids` is the tag of a case without members.
+fn bare_tags(cases: &[(u32, Vec<(String, Ty)>)], ids: &BTreeSet<u32>) -> bool {
+    ids.iter().all(|id| {
+        cases
+            .iter()
+            .any(|(tag, members)| tag == id && members.is_empty())
+    })
+}
+
+/// The parts of a variant value: its tag, then each case's members.
+fn split_variant(parts: Vec<Ir>, cases: &[(u32, Vec<(String, Ty)>)]) -> (Ir, Vec<Vec<Ir>>) {
+    let mut parts = parts.into_iter();
+    let tag = parts.next().unwrap_or(Ir::Const(0));
+    let payloads = cases
+        .iter()
+        .map(|(_, members)| {
+            let width = members.iter().map(|(_, ty)| ty.width()).sum();
+            parts.by_ref().take(width).collect()
+        })
+        .collect();
+    (tag, payloads)
+}
+
+/// `parts` of a value of type `from`, laid out as the wider type `to`: a value
+/// becomes present, `nothing` becomes an absent value of the right width.
+fn coerce(parts: Vec<Ir>, from: &Ty, to: &Ty) -> Vec<Ir> {
+    match (from, to) {
+        (Ty::Nothing, Ty::Optional(value)) => std::iter::repeat_with(|| Ir::Const(0))
+            .take(1 + value.width())
+            .collect(),
+        (Ty::Optional(from), Ty::Optional(to)) => {
+            let mut parts = parts.into_iter();
+            let tag = parts.next().unwrap_or(Ir::Const(0));
+            let mut out = vec![tag];
+            out.extend(coerce(parts.collect(), from, to));
+            out
+        }
+        (from, Ty::Optional(to)) => {
+            let mut out = vec![Ir::Const(1)];
+            out.extend(coerce(parts, from, to));
+            out
+        }
+        (Ty::Record(from), Ty::Record(to)) => {
+            let mut parts = parts.into_iter();
+            let mut out = Vec::new();
+            for ((_, from), (_, to)) in from.iter().zip(to) {
+                let member = parts.by_ref().take(from.width()).collect();
+                out.extend(coerce(member, from, to));
+            }
+            out
+        }
+        (
+            Ty::List { element: from, .. },
+            Ty::List {
+                capacity,
+                element: to,
+            },
+        ) => {
+            let mut parts = parts.into_iter();
+            let mut out = vec![parts.next().unwrap_or(Ir::Const(0))];
+            for _ in 0..*capacity {
+                let item = parts.by_ref().take(from.width()).collect();
+                out.extend(coerce(item, from, to));
+            }
+            out
+        }
+        (Ty::Enum(_), Ty::Variant(cases)) => {
+            let mut parts = parts;
+            let width = Ty::Variant(cases.clone()).width();
+            parts.extend(std::iter::repeat_with(|| Ir::Const(0)).take(width - 1));
+            parts
+        }
+        (Ty::Variant(from), Ty::Variant(to)) => {
+            let (tag, payloads) = split_variant(parts, from);
+            let mut out = vec![tag];
+            for (payload, ((_, from), (_, to))) in payloads.into_iter().zip(from.iter().zip(to)) {
+                out.extend(coerce(
+                    payload,
+                    &Ty::Record(from.clone()),
+                    &Ty::Record(to.clone()),
+                ));
+            }
+            out
+        }
+        (Ty::Map { value: from, .. }, Ty::Map { keys, value: to }) => {
+            let mut parts = parts.into_iter();
+            let mut out = Vec::new();
+            for _ in 0..keys.size() {
+                let entry = parts.by_ref().take(from.width()).collect();
+                out.extend(coerce(entry, from, to));
+            }
+            out
+        }
+        _ => parts,
+    }
+}
+
+/// Whether two values laid out as `ty` are equal. An absent optional equals
+/// another absent one whatever its slots hold.
+fn equal_as(left: Vec<Ir>, right: Vec<Ir>, ty: &Ty) -> Ir {
+    let all = |checks: Vec<Ir>| {
+        checks
+            .into_iter()
+            .reduce(|all, next| Ir::Binary(BinaryOperator::And, Box::new(all), Box::new(next)))
+            .unwrap_or(Ir::Const(1))
+    };
+    match ty {
+        Ty::Int | Ty::Bool | Ty::Enum(_) => {
+            match (left.into_iter().next(), right.into_iter().next()) {
+                (Some(left), Some(right)) => {
+                    Ir::Binary(BinaryOperator::Equal, Box::new(left), Box::new(right))
+                }
+                _ => Ir::Const(1),
+            }
+        }
+        Ty::Nothing => Ir::Const(1),
+        Ty::Variant(cases) => {
+            let (left_tag, left) = split_variant(left, cases);
+            let (right_tag, right) = split_variant(right, cases);
+            let mut checks = vec![Ir::Binary(
+                BinaryOperator::Equal,
+                Box::new(left_tag.clone()),
+                Box::new(right_tag),
+            )];
+            for (((tag, members), left), right) in cases.iter().zip(left).zip(right) {
+                if members.is_empty() {
+                    continue;
+                }
+                checks.push(Ir::Binary(
+                    BinaryOperator::Implies,
+                    Box::new(is_raw(&left_tag, i64::from(*tag))),
+                    Box::new(equal_as(left, right, &Ty::Record(members.clone()))),
+                ));
+            }
+            all(checks)
+        }
+        Ty::List { capacity, element } => {
+            let (mut left, mut right) = (left.into_iter(), right.into_iter());
+            let (Some(length), Some(other)) = (left.next(), right.next()) else {
+                return Ir::Const(1);
+            };
+            let width = element.width();
+            let mut checks = vec![Ir::Binary(
+                BinaryOperator::Equal,
+                Box::new(length.clone()),
+                Box::new(other),
+            )];
+            for position in 0..*capacity {
+                let same = equal_as(
+                    left.by_ref().take(width).collect(),
+                    right.by_ref().take(width).collect(),
+                    element,
+                );
+                checks.push(Ir::Binary(
+                    BinaryOperator::Implies,
+                    Box::new(longer(&length, position)),
+                    Box::new(same),
+                ));
+            }
+            all(checks)
+        }
+        Ty::Set(_) => all(left
+            .into_iter()
+            .zip(right)
+            .map(|(left, right)| Ir::Binary(BinaryOperator::Equal, Box::new(left), Box::new(right)))
+            .collect()),
+        Ty::Optional(value) => {
+            let (mut left, mut right) = (left.into_iter(), right.into_iter());
+            let (Some(left_tag), Some(right_tag)) = (left.next(), right.next()) else {
+                return Ir::Const(1);
+            };
+            let same_tag = Ir::Binary(
+                BinaryOperator::Equal,
+                Box::new(left_tag.clone()),
+                Box::new(right_tag),
+            );
+            let values = equal_as(left.collect(), right.collect(), value);
+            let absent_or_equal = Ir::Binary(
+                BinaryOperator::Or,
+                Box::new(Ir::Not(Box::new(left_tag))),
+                Box::new(values),
+            );
+            Ir::Binary(
+                BinaryOperator::And,
+                Box::new(same_tag),
+                Box::new(absent_or_equal),
+            )
+        }
+        Ty::Record(members) => {
+            let (mut left, mut right) = (left.into_iter(), right.into_iter());
+            all(members
+                .iter()
+                .map(|(_, member)| {
+                    let width = member.width();
+                    equal_as(
+                        left.by_ref().take(width).collect(),
+                        right.by_ref().take(width).collect(),
+                        member,
+                    )
+                })
+                .collect())
+        }
+        Ty::Map { keys, value } => {
+            let (mut left, mut right) = (left.into_iter(), right.into_iter());
+            let width = value.width();
+            all((0..keys.size())
+                .map(|_| {
+                    equal_as(
+                        left.by_ref().take(width).collect(),
+                        right.by_ref().take(width).collect(),
+                        value,
+                    )
+                })
+                .collect())
+        }
+    }
+}
+
+/// `parts`, to be written to a place of type `kind`, with every absent
+/// optional's slots set to their first values, so each value has one encoding.
+fn canonical(parts: Vec<Ir>, kind: &FieldType) -> Vec<Ir> {
+    match kind {
+        FieldType::Scalar(_) | FieldType::Set { .. } => parts,
+        FieldType::Optional(value) => {
+            let mut parts = parts.into_iter();
+            let tag = parts.next().unwrap_or(Ir::Const(0));
+            let inner = canonical(parts.collect(), value);
+            let mut out = vec![tag.clone()];
+            out.extend(
+                inner
+                    .into_iter()
+                    .zip(value.defaults())
+                    .map(|(part, default)| match part {
+                        Ir::Const(raw) if raw == default => part,
+                        part => Ir::If(
+                            Box::new(tag.clone()),
+                            Box::new(part),
+                            Box::new(Ir::Const(default)),
+                        ),
+                    }),
+            );
+            out
+        }
+        FieldType::Record(members) => {
+            let mut parts = parts.into_iter();
+            members
+                .iter()
+                .flat_map(|(_, member)| {
+                    canonical(parts.by_ref().take(member.width()).collect(), member)
+                })
+                .collect()
+        }
+        FieldType::Map { keys, value, .. } => {
+            let mut parts = parts.into_iter();
+            (0..keys.size())
+                .flat_map(|_| canonical(parts.by_ref().take(value.width()).collect(), value))
+                .collect()
+        }
+        FieldType::Variant { tags, cases } => {
+            let mut parts = parts.into_iter();
+            let tag = parts.next().unwrap_or(Ir::Const(0));
+            let mut out = vec![tag.clone()];
+            for (raw, (_, members)) in tags.raws().into_iter().zip(cases) {
+                let record = FieldType::Record(members.clone());
+                let payload = canonical(parts.by_ref().take(record.width()).collect(), &record);
+                let taken = is_raw(&tag, raw);
+                out.extend(payload.into_iter().zip(record.defaults()).map(
+                    |(part, default)| match (&taken, part) {
+                        (Ir::Const(0), _) => Ir::Const(default),
+                        (Ir::Const(_), part) => part,
+                        (_, Ir::Const(raw)) if raw == default => Ir::Const(raw),
+                        (taken, part) => Ir::If(
+                            Box::new(taken.clone()),
+                            Box::new(part),
+                            Box::new(Ir::Const(default)),
+                        ),
+                    },
+                ));
+            }
+            out
+        }
+        FieldType::List { capacity, element } => {
+            let mut parts = parts.into_iter();
+            let length = parts.next().unwrap_or(Ir::Const(0));
+            let mut out = vec![length.clone()];
+            for position in 0..*capacity {
+                let item = canonical(parts.by_ref().take(element.width()).collect(), element);
+                let shown = longer(&length, position);
+                out.extend(
+                    item.into_iter()
+                        .zip(element.defaults())
+                        .map(|(part, default)| match (&shown, part) {
+                            (Ir::Const(0), _) => Ir::Const(default),
+                            (Ir::Const(_), part) => part,
+                            (_, Ir::Const(raw)) if raw == default => Ir::Const(raw),
+                            (shown, part) => Ir::If(
+                                Box::new(shown.clone()),
+                                Box::new(part),
+                                Box::new(Ir::Const(default)),
+                            ),
+                        }),
+                );
+            }
+            out
+        }
+    }
+}
+
+/// Whether a list of length `length` has an item at `position`.
+fn longer(length: &Ir, position: usize) -> Ir {
+    let position = i64::try_from(position).unwrap_or(i64::MAX);
+    match length {
+        Ir::Const(length) => Ir::Const(i64::from(*length > position)),
+        length => Ir::Binary(
+            BinaryOperator::Greater,
+            Box::new(length.clone()),
+            Box::new(Ir::Const(position)),
+        ),
+    }
+}
+
+/// The value inside an optional, faulting with `message` when it is nothing.
+fn unwrap(ir: Ir, ty: Ty, message: &str) -> (Ir, Ty) {
+    let Ty::Optional(value) = ty else {
+        return (ir, ty);
+    };
+    let mut parts = parts(ir).into_iter();
+    let tag = parts.next().unwrap_or(Ir::Const(0));
+    let inner = parts
+        .map(|part| {
+            Ir::If(
+                Box::new(tag.clone()),
+                Box::new(part),
+                Box::new(Ir::Fail(message.to_string())),
+            )
+        })
+        .collect();
+    unwrap(tuple(inner), *value, message)
+}
+
+/// How a fault message names the value `expr` reads.
+fn describe_expr(expr: &Expr) -> String {
+    match expr {
+        Expr::Name { name, .. } => name.clone(),
+        Expr::Index { map, key, .. } => format!("{map} of {}", describe_expr(key)),
+        Expr::Subscript { base, key } => format!("{}[{}]", describe_expr(base), describe_expr(key)),
+        Expr::Literal(value) => value.source(),
+        _ => "a value".to_string(),
+    }
+}
+
+/// A state location: a first slot, the dynamic keys that move it, and the
+/// type found there.
+#[derive(Debug, Clone)]
+struct Place {
+    offset: usize,
+    steps: Vec<KeyStep>,
+    /// Set by `of every <type>`: the number of entries and the slots between them.
+    every: Option<(usize, usize)>,
+    kind: FieldType,
+    label: String,
+}
+
+impl Place {
+    fn targets(&self) -> Vec<Target> {
+        (0..self.kind.width())
+            .map(|position| {
+                let offset = self.offset + position;
+                match self.every {
+                    Some((count, stride)) => Target::Every {
+                        offset,
+                        count,
+                        stride,
+                    },
+                    None if self.steps.is_empty() => Target::Slot(offset),
+                    None => Target::Indexed {
+                        offset,
+                        steps: self.steps.clone().into(),
+                    },
+                }
+            })
+            .collect()
+    }
+
+    fn member(&self, name: &str) -> Option<Self> {
+        let (offset, kind) = self.kind.member(name)?;
+        Some(Self {
+            offset: self.offset + offset,
+            steps: self.steps.clone(),
+            every: self.every,
+            kind: kind.clone(),
+            label: format!("{name} of {}", self.label),
+        })
+    }
+}
+
+/// A compiled expression: a state location, which can still be indexed,
+/// assigned or read, or a value.
+enum Operand {
+    Place(Place),
+    Value(Ir, Ty),
+}
+
+/// The per-slot expressions of a compiled value.
+fn parts(ir: Ir) -> Vec<Ir> {
+    match ir {
+        Ir::Tuple(parts) => parts,
+        ir => vec![ir],
+    }
+}
+
+fn tuple(mut parts: Vec<Ir>) -> Ir {
+    if parts.len() == 1 {
+        parts.pop().unwrap_or(Ir::Const(0))
+    } else {
+        Ir::Tuple(parts)
+    }
+}
+
+/// Whether `expr` is a literal that takes its type from the other side.
+fn record_literal(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Record(_) | Expr::Items(_) | Expr::Literal(Value::Nothing)
+    )
 }
 
 struct Compiler<'a> {
     spec: &'a Spec,
     symbols: Vec<String>,
     symbol_ids: HashMap<String, u32>,
-    types: HashMap<String, Domain>,
+    types: HashMap<String, FieldType>,
     fields: Vec<FieldInfo>,
     field_ids: HashMap<String, usize>,
     slots: Vec<Slot>,
     scope: Vec<(String, Ty)>,
+    /// Every enumeration with members, for building one from a case name.
+    variants: Vec<Ty>,
+    /// Quantifier variables that stand for a list item: the local holding
+    /// the position, and the item read at it.
+    views: Vec<(usize, Ir, Ty)>,
     locals: usize,
     constant_only: bool,
     /// Interchangeable values, which the specification may not name, and their type.
@@ -620,6 +1495,8 @@ impl<'a> Compiler<'a> {
             field_ids: HashMap::new(),
             slots: Vec::new(),
             scope: Vec::new(),
+            views: Vec::new(),
+            variants: Vec::new(),
             locals: 0,
             constant_only: false,
             unnamed: HashMap::new(),
@@ -702,6 +1579,8 @@ impl<'a> Compiler<'a> {
             field_ids: self.field_ids,
             slots: Vec::new(),
             scope: Vec::new(),
+            views: Vec::new(),
+            variants: self.variants,
             locals: model.locals,
             constant_only: false,
             unnamed: HashMap::new(),
@@ -752,7 +1631,8 @@ impl<'a> Compiler<'a> {
     fn interchangeable(&mut self) -> Result<Vec<(String, Vec<u32>, usize)>> {
         let mut groups = Vec::new();
         for declaration in self.spec.types.iter().filter(|type_| type_.interchangeable) {
-            let Some(Domain::Enum(ids)) = self.types.get(&declaration.name) else {
+            let Some(FieldType::Scalar(Domain::Enum(ids))) = self.types.get(&declaration.name)
+            else {
                 return Err(Error::at(
                     declaration.line,
                     format!(
@@ -810,13 +1690,33 @@ impl<'a> Compiler<'a> {
 
     fn scalar(&mut self, kind: &TypeExpr, line: usize) -> Result<Domain> {
         match self.resolve(kind, line)? {
-            Resolved::Scalar(domain) => Ok(domain),
-            Resolved::Map { .. } => Err(Error::at(line, "a map is only allowed as a state field")),
+            FieldType::Scalar(domain) => Ok(domain),
+            FieldType::Map { .. } => Err(Error::at(line, "a map is only allowed as a state field")),
+            FieldType::Record(_) => Err(Error::at(
+                line,
+                "a record is only allowed in state; parameters are integers, booleans or enums",
+            )),
+            FieldType::Optional(_) => Err(Error::at(
+                line,
+                "'or nothing' is only allowed in state; parameters are integers, booleans or enums",
+            )),
+            FieldType::Set { .. } => Err(Error::at(
+                line,
+                "a set is only allowed in state; parameters are integers, booleans or enums",
+            )),
+            FieldType::List { .. } => Err(Error::at(
+                line,
+                "a list is only allowed in state; parameters are integers, booleans or enums",
+            )),
+            FieldType::Variant { .. } => Err(Error::at(
+                line,
+                "an enum value with members is only allowed in state; parameters are integers, booleans or enums",
+            )),
         }
     }
 
-    fn resolve(&mut self, kind: &TypeExpr, line: usize) -> Result<Resolved> {
-        Ok(Resolved::Scalar(match kind {
+    fn resolve(&mut self, kind: &TypeExpr, line: usize) -> Result<FieldType> {
+        Ok(FieldType::Scalar(match kind {
             TypeExpr::Integer { min, max } => Domain::Integer {
                 min: *min,
                 max: *max,
@@ -837,36 +1737,126 @@ impl<'a> Compiler<'a> {
                 self.enums.push((ids.clone(), line));
                 Domain::Enum(ids)
             }
-            TypeExpr::Named(name) => self.types.get(name).cloned().ok_or_else(|| {
-                Error::at(
-                    line,
-                    format!("unknown type {name}; declare it in a types block"),
-                )
-            })?,
-            TypeExpr::Map { key, value } => {
-                let keys = self.types.get(key).cloned().ok_or_else(|| {
+            TypeExpr::Named(name) => {
+                return self.types.get(name).cloned().ok_or_else(|| {
                     Error::at(
                         line,
-                        format!("unknown key type {key}; declare it in a types block"),
+                        format!("unknown type {name}; declare it in a types block"),
                     )
-                })?;
+                });
+            }
+            TypeExpr::Optional(value) => {
+                return Ok(FieldType::Optional(Box::new(self.resolve(value, line)?)));
+            }
+            TypeExpr::Variant(cases) => {
+                let mut ids = Vec::with_capacity(cases.len());
+                let mut resolved = Vec::with_capacity(cases.len());
+                for (name, members) in cases {
+                    let id = self.intern(name);
+                    if ids.contains(&id) {
+                        return Err(Error::at(line, format!("duplicate enum value {name}")));
+                    }
+                    ids.push(id);
+                    let mut fields = Vec::with_capacity(members.len());
+                    for member in members {
+                        fields.push((
+                            member.name.clone(),
+                            self.resolve(&member.kind, member.line)
+                                .map_err(|e| e.within(member.span))?,
+                        ));
+                    }
+                    resolved.push((name.clone(), fields));
+                }
+                self.enums.push((ids.clone(), line));
+                let kind = FieldType::Variant {
+                    tags: Domain::Enum(ids),
+                    cases: resolved,
+                };
+                self.variants.push(Ty::of_kind(&kind));
+                return Ok(kind);
+            }
+            TypeExpr::List { capacity, element } => {
+                let element = self.resolve(element, line)?;
+                if capacity.saturating_mul(element.width()) > MAX_SLOTS {
+                    return Err(Error::at(
+                        line,
+                        format!("a list may hold at most {MAX_SLOTS} values"),
+                    ));
+                }
+                return Ok(FieldType::List {
+                    capacity: *capacity,
+                    element: Box::new(element),
+                });
+            }
+            TypeExpr::Set(element) => {
+                let elements = match self.types.get(element) {
+                    Some(FieldType::Scalar(domain)) => domain.clone(),
+                    Some(_) => {
+                        return Err(Error::at(
+                            line,
+                            format!(
+                                "set elements must be integers, booleans or enums, and {element} is not"
+                            ),
+                        ));
+                    }
+                    None => {
+                        return Err(Error::at(
+                            line,
+                            format!("unknown element type {element}; declare it in a types block"),
+                        ));
+                    }
+                };
+                if elements.size() > MAX_SLOTS {
+                    return Err(Error::at(
+                        line,
+                        format!("a set may hold at most {MAX_SLOTS} values"),
+                    ));
+                }
+                return Ok(FieldType::Set {
+                    element_type: element.clone(),
+                    elements,
+                });
+            }
+            TypeExpr::Record(members) => {
+                let mut resolved = Vec::with_capacity(members.len());
+                for member in members {
+                    resolved.push((
+                        member.name.clone(),
+                        self.resolve(&member.kind, member.line)
+                            .map_err(|e| e.within(member.span))?,
+                    ));
+                }
+                return Ok(FieldType::Record(resolved));
+            }
+            TypeExpr::Map { key, value } => {
+                let keys = match self.types.get(key) {
+                    Some(FieldType::Scalar(domain)) => domain.clone(),
+                    Some(_) => {
+                        return Err(Error::at(
+                            line,
+                            format!(
+                                "map keys must be integers, booleans or enums, and {key} is not"
+                            ),
+                        ));
+                    }
+                    None => {
+                        return Err(Error::at(
+                            line,
+                            format!("unknown key type {key}; declare it in a types block"),
+                        ));
+                    }
+                };
                 if keys.size() > MAX_SLOTS {
                     return Err(Error::at(
                         line,
                         format!("a map may have at most {MAX_SLOTS} keys"),
                     ));
                 }
-                let value = self.scalar(value, line).map_err(|error| {
-                    if error.message.starts_with("a map is only") {
-                        Error::at(line, "map values must be integers, booleans, or enums")
-                    } else {
-                        error
-                    }
-                })?;
-                return Ok(Resolved::Map {
+                let value = self.resolve(value, line)?;
+                return Ok(FieldType::Map {
                     key_type: key.clone(),
                     keys,
-                    value,
+                    value: Box::new(value),
                 });
             }
         }))
@@ -877,33 +1867,14 @@ impl<'a> Compiler<'a> {
             return Err(Error::at(line, format!("duplicate state field {name}")));
         }
         let offset = self.slots.len();
-        let kind = match self.resolve(kind, line)? {
-            Resolved::Scalar(domain) => {
-                self.slots.push(Slot {
-                    domain: domain.clone(),
-                    label: name.to_string(),
-                });
-                FieldType::Scalar(domain)
-            }
-            Resolved::Map {
-                key_type,
-                keys,
-                value,
-            } => {
-                for key in keys.raws() {
-                    let key = self.raw_value(&keys, key);
-                    self.slots.push(Slot {
-                        domain: value.clone(),
-                        label: format!("{name} of {key}"),
-                    });
-                }
-                FieldType::Map {
-                    key_type,
-                    keys,
-                    value,
-                }
-            }
-        };
+        let kind = self.resolve(kind, line)?;
+        if offset.saturating_add(kind.width()) > MAX_SLOTS {
+            return Err(Error::at(
+                line,
+                format!("the state may hold at most {MAX_SLOTS} values"),
+            ));
+        }
+        self.lay_out(&kind, name);
         if self.slots.len() > MAX_SLOTS {
             return Err(Error::at(
                 line,
@@ -917,6 +1888,66 @@ impl<'a> Compiler<'a> {
             offset,
         });
         Ok(())
+    }
+
+    /// Appends the slots of a value of type `kind`, labeled from `label`.
+    fn lay_out(&mut self, kind: &FieldType, label: &str) {
+        match kind {
+            FieldType::Scalar(domain) => self.slots.push(Slot {
+                domain: domain.clone(),
+                label: label.to_string(),
+            }),
+            FieldType::Map { keys, value, .. } => {
+                for key in keys.raws() {
+                    let key = self.raw_value(keys, key);
+                    self.lay_out(value, &format!("{label} of {key}"));
+                }
+            }
+            FieldType::Record(members) => {
+                for (name, kind) in members {
+                    self.lay_out(kind, &format!("{name} of {label}"));
+                }
+            }
+            FieldType::Optional(value) => {
+                self.slots.push(Slot {
+                    domain: Domain::Boolean,
+                    label: label.to_string(),
+                });
+                self.lay_out(value, label);
+            }
+            FieldType::Set { elements, .. } => {
+                for element in elements.raws() {
+                    let element = self.raw_value(elements, element);
+                    self.slots.push(Slot {
+                        domain: Domain::Boolean,
+                        label: format!("{label} has {element}"),
+                    });
+                }
+            }
+            FieldType::Variant { tags, cases } => {
+                self.slots.push(Slot {
+                    domain: tags.clone(),
+                    label: label.to_string(),
+                });
+                for (_, members) in cases {
+                    for (member, kind) in members {
+                        self.lay_out(kind, &format!("{member} of {label}"));
+                    }
+                }
+            }
+            FieldType::List { capacity, element } => {
+                self.slots.push(Slot {
+                    domain: Domain::Integer {
+                        min: 0,
+                        max: i64::try_from(*capacity).unwrap_or(i64::MAX),
+                    },
+                    label: format!("length of {label}"),
+                });
+                for position in 0..*capacity {
+                    self.lay_out(element, &format!("item {} of {label}", position + 1));
+                }
+            }
+        }
     }
 
     fn raw_value(&self, domain: &Domain, raw: i64) -> Value {
@@ -934,12 +1965,13 @@ impl<'a> Compiler<'a> {
     }
 
     fn declare_type(&mut self, declaration: &TypeDecl) -> Result<()> {
-        let Resolved::Scalar(domain) = self.resolve(&declaration.kind, declaration.line)? else {
+        let domain = self.resolve(&declaration.kind, declaration.line)?;
+        if matches!(domain, FieldType::Map { .. }) {
             return Err(Error::at(
                 declaration.line,
                 "a named type cannot be a map; declare the map in state",
             ));
-        };
+        }
         if self
             .types
             .insert(declaration.name.clone(), domain)
@@ -998,7 +2030,7 @@ impl<'a> Compiler<'a> {
         self.constant_only = true;
         let mut assignments = Vec::new();
         for assignment in &spec.initially {
-            assignments.push(self.assignment(assignment)?);
+            assignments.extend(self.assignment(assignment)?);
         }
         self.constant_only = false;
         check_duplicate_targets(&assignments)?;
@@ -1061,7 +2093,7 @@ impl<'a> Compiler<'a> {
         let mut assignments = Vec::new();
         for assignment in &action.assignments {
             self.enter_action(&params, assignment.params.as_deref());
-            assignments.push(self.assignment(assignment)?);
+            assignments.extend(self.assignment(assignment)?);
         }
         check_duplicate_targets(&assignments)?;
         self.scope.clear();
@@ -1113,96 +2145,136 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    fn assignment(&mut self, assignment: &Assignment) -> Result<CompiledAssignment> {
+    fn assignment(&mut self, assignment: &Assignment) -> Result<Vec<CompiledAssignment>> {
         self.assignment_at(assignment)
             .map_err(|e| e.within(assignment.target))
     }
 
-    fn assignment_at(&mut self, assignment: &Assignment) -> Result<CompiledAssignment> {
+    fn assignment_at(&mut self, assignment: &Assignment) -> Result<Vec<CompiledAssignment>> {
         let line = assignment.line;
-        let field = self
-            .field_ids
-            .get(&assignment.field)
-            .and_then(|index| self.fields.get(*index))
-            .cloned()
-            .ok_or_else(|| {
-                Error::at(line, format!("unknown state field {}", assignment.field))
-                    .coded("name.unknown")
-            })?;
-        let (target, domain) = match (&field.kind, &assignment.key) {
-            (FieldType::Scalar(domain), TargetKey::Whole) => {
-                (Target::Slot(field.offset), domain.clone())
+        if let Some((Ir::Slot(slot), Ty::Int | Ty::Bool | Ty::Enum(_))) =
+            self.scalar_field_at(&assignment.place)
+        {
+            let (value, ty) = self.expr_as(&assignment.value, None, line)?;
+            if ty.is_scalar() && assignable(&ty, &self.slot_kind(slot)) {
+                return Ok(vec![CompiledAssignment {
+                    target: Target::Slot(slot),
+                    value,
+                    line,
+                }]);
             }
-            (FieldType::Scalar(_), _) => {
-                return Err(Error::at(line, format!("{} is not a map", field.name)));
+        }
+        let place = self.target(&assignment.place, line)?;
+        let want = Ty::of_kind(&place.kind);
+        let (value, ty) = self.expr_as(&assignment.value, Some(&want), line)?;
+        if !assignable(&ty, &place.kind) {
+            if let (Ty::Enum(ids), Ty::Variant(cases)) = (&ty, &want)
+                && let Some((tag, members)) = cases
+                    .iter()
+                    .find(|(tag, members)| ids.contains(tag) && !members.is_empty())
+            {
+                let name = self.symbols.get(at(*tag)).cloned().unwrap_or_default();
+                let example = members
+                    .iter()
+                    .map(|(member, _)| format!("{member}: ..."))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(Error::at(
+                    line,
+                    format!("{name} carries members; write '{name} with {{{example}}}'"),
+                )
+                .coded("type.mismatch"));
             }
-            (FieldType::Map { key_type, .. }, TargetKey::Whole) => {
+            if let (FieldType::Map { key_type, .. }, true) = (&place.kind, ty.is_scalar()) {
                 return Err(Error::at(
                     line,
                     format!(
                         "{name} is a map; assign '{name} of <{key_type}>' or '{name} of every {key_type}'",
-                        name = field.name
+                        name = place.label
                     ),
                 ));
             }
-            (
-                FieldType::Map {
-                    key_type,
-                    keys,
-                    value,
-                },
-                TargetKey::Every(named),
-            ) => {
-                if named != key_type {
-                    return Err(Error::at(
-                        line,
-                        format!("{} is keyed by {key_type}, not {named}", field.name),
-                    ));
-                }
-                (
-                    Target::Every {
-                        offset: field.offset,
-                        count: keys.size(),
-                    },
-                    value.clone(),
-                )
-            }
-            (FieldType::Map { keys, value, .. }, TargetKey::At(key)) => {
-                let key = self.key(key, keys, &field.name, line)?;
-                let target = match key {
-                    Ir::Const(raw) => Target::Slot(
-                        key_slot(field.offset, keys, raw, &field.name)
-                            .map_err(|message| Error::at(line, message))?,
-                    ),
-                    key => Target::Indexed {
-                        offset: field.offset,
-                        keys: keys.clone(),
-                        key,
-                        field: field.name.clone(),
-                    },
-                };
-                (target, value.clone())
-            }
-        };
-        let (value, ty) = self.expr(&assignment.value, line)?;
-        if !assignable(&ty, &domain) {
             return Err(Error::at(
                 line,
                 format!(
                     "{} is {}, but '{}' assigns {}",
-                    assignment.field,
-                    self.describe(&domain),
+                    place.label,
+                    self.describe_kind(&place.kind),
                     assignment.source,
                     self.describe_ty(&ty)
                 ),
             )
             .coded("type.mismatch"));
         }
-        Ok(CompiledAssignment {
-            target,
-            value,
-            line,
-        })
+        let value = canonical(coerce(parts(value), &ty, &want), &place.kind);
+        Ok(place
+            .targets()
+            .into_iter()
+            .zip(value)
+            .map(|(target, value)| CompiledAssignment {
+                target,
+                value,
+                line,
+            })
+            .collect())
+    }
+
+    /// The place an assignment writes.
+    fn target(&mut self, expr: &Expr, line: usize) -> Result<Place> {
+        match self.operand(expr, None, line)? {
+            Operand::Place(place) => Ok(place),
+            Operand::Value(..) => Err(Error::at(
+                line,
+                "only a state field, or an entry or member of one, can be assigned",
+            )),
+        }
+    }
+
+    fn describe_kind(&self, kind: &FieldType) -> String {
+        match kind {
+            FieldType::Scalar(domain) => self.describe(domain),
+            FieldType::Map {
+                key_type, value, ..
+            } => format!("a map from {key_type} to {}", self.describe_kind(value)),
+            FieldType::Record(members) => format!(
+                "a record with ({})",
+                members
+                    .iter()
+                    .map(|(name, kind)| format!("{name} is {}", self.describe_kind(kind)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            FieldType::Optional(value) => format!("{} or nothing", self.describe_kind(value)),
+            FieldType::Set { element_type, .. } => format!("a set of {element_type}"),
+            FieldType::List { capacity, element } => {
+                format!(
+                    "a list of at most {capacity} {}",
+                    self.describe_kind(element)
+                )
+            }
+            FieldType::Variant { cases, .. } => format!(
+                "one of {}",
+                cases
+                    .iter()
+                    .map(|(name, members)| if members.is_empty() {
+                        name.clone()
+                    } else {
+                        format!(
+                            "{name} with ({})",
+                            members
+                                .iter()
+                                .map(|(member, kind)| format!(
+                                    "{member} is {}",
+                                    self.describe_kind(kind)
+                                ))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
     }
 
     fn describe_ty(&self, ty: &Ty) -> String {
@@ -1216,13 +2288,31 @@ impl<'a> Compiler<'a> {
                 })
                 .collect::<Vec<_>>()
                 .join(" or "),
+            Ty::Record(members) => format!(
+                "{{{}}}",
+                members
+                    .iter()
+                    .map(|(name, ty)| format!("{name}: {}", self.describe_ty(ty)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Ty::Optional(value) => format!("{} or nothing", self.describe_ty(value)),
+            Ty::Set(elements) => format!("a set of {}", self.describe(elements)),
+            Ty::List { capacity, element } => {
+                format!("a list of at most {capacity} {}", self.describe_ty(element))
+            }
+            Ty::Variant(cases) => cases
+                .iter()
+                .map(|(tag, _)| self.symbols.get(at(*tag)).cloned().unwrap_or_default())
+                .collect::<Vec<_>>()
+                .join(" or "),
             other => other.noun().to_string(),
         }
     }
 
     fn key(&mut self, key: &Expr, keys: &Domain, field: &str, line: usize) -> Result<Ir> {
         let (ir, ty) = self.expr(key, line)?;
-        if !assignable(&ty, keys) {
+        if !assignable(&ty, &FieldType::Scalar(keys.clone())) {
             return Err(Error::at(
                 line,
                 format!(
@@ -1236,7 +2326,115 @@ impl<'a> Compiler<'a> {
         Ok(ir)
     }
 
+    /// Compiles `expr` where an integer, boolean or enum is needed: the value
+    /// of an optional is read, and reading it when it is nothing is a fault.
     fn expr(&mut self, expr: &Expr, line: usize) -> Result<(Ir, Ty)> {
+        let (ir, ty) = self.expr_as(expr, None, line)?;
+        if !matches!(ty, Ty::Optional(_)) {
+            return Ok((ir, ty));
+        }
+        Ok(unwrap(
+            ir,
+            ty,
+            &format!("{} is nothing", describe_expr(expr)),
+        ))
+    }
+
+    /// Compiles `expr` to a value. `want` is the type the context expects,
+    /// which a record literal needs to order its members.
+    fn expr_as(&mut self, expr: &Expr, want: Option<&Ty>, line: usize) -> Result<(Ir, Ty)> {
+        if let Some(read) = self.scalar_field(expr) {
+            return Ok(read);
+        }
+        match self.operand(expr, want, line)? {
+            Operand::Place(place) => self.read(&place, line),
+            Operand::Value(ir, ty) => Ok((ir, ty)),
+        }
+    }
+
+    /// A read of a scalar state field named by `expr`, without building a
+    /// place: the common case, kept as cheap as before compound types.
+    fn scalar_field(&self, expr: &Expr) -> Option<(Ir, Ty)> {
+        if self.constant_only {
+            return None;
+        }
+        self.scalar_field_at(expr)
+    }
+
+    /// The slot and type of the scalar state field named by `expr`.
+    fn scalar_field_at(&self, expr: &Expr) -> Option<(Ir, Ty)> {
+        let Expr::Name { name, .. } = expr else {
+            return None;
+        };
+        if self.scope.iter().any(|(local, _)| local == name) {
+            return None;
+        }
+        let field = self.fields.get(*self.field_ids.get(name)?)?;
+        let FieldType::Scalar(domain) = &field.kind else {
+            return None;
+        };
+        Some((Ir::Slot(field.offset), Ty::of(domain)))
+    }
+
+    fn slot_kind(&self, slot: usize) -> FieldType {
+        FieldType::Scalar(
+            self.slots
+                .get(slot)
+                .map_or(Domain::Boolean, |slot| slot.domain.clone()),
+        )
+    }
+
+    fn read(&self, place: &Place, line: usize) -> Result<(Ir, Ty)> {
+        if self.constant_only {
+            return Err(Error::at(
+                line,
+                format!(
+                    "initial values must be constants, but this reads {}",
+                    place.label
+                ),
+            ));
+        }
+        if place.every.is_some() {
+            return Err(Error::at(
+                line,
+                "'of every' names all entries at once, so it can only be assigned",
+            ));
+        }
+        let read = (0..place.kind.width())
+            .map(|position| {
+                let offset = place.offset + position;
+                if place.steps.is_empty() {
+                    Ir::Slot(offset)
+                } else {
+                    Ir::Index {
+                        offset,
+                        steps: place.steps.clone().into(),
+                    }
+                }
+            })
+            .collect();
+        Ok((tuple(read), Ty::of_kind(&place.kind)))
+    }
+
+    fn operand(&mut self, expr: &Expr, want: Option<&Ty>, line: usize) -> Result<Operand> {
+        match expr {
+            Expr::Name { name, span } => self.name(name, line).map_err(|e| e.within(*span)),
+            Expr::Index { map, key, span } => self.of(map, key, line).map_err(|e| e.within(*span)),
+            Expr::Subscript { base, key } => match self.operand(base, None, line)? {
+                Operand::Place(place) => Ok(Operand::Place(self.index(place, key, line)?)),
+                Operand::Value(_, ty) => Err(Error::at(
+                    line,
+                    format!("only a map in the state can be indexed, not {}", ty.noun()),
+                )),
+            },
+            other => {
+                let (ir, ty) = self.value(other, want, line)?;
+                Ok(Operand::Value(ir, ty))
+            }
+        }
+    }
+
+    fn value(&mut self, expr: &Expr, want: Option<&Ty>, line: usize) -> Result<(Ir, Ty)> {
         match expr {
             Expr::Literal(Value::Integer(raw)) => Ok((Ir::Const(*raw), Ty::Int)),
             Expr::Literal(Value::Boolean(flag)) => Ok((Ir::Const(i64::from(*flag)), Ty::Bool)),
@@ -1245,10 +2443,32 @@ impl<'a> Compiler<'a> {
                 None => Err(Error::at(line, format!("unknown enum value \"{name}\""))),
             },
             Expr::Literal(Value::Map(_)) => Err(Error::at(line, "map literals are not supported")),
-            Expr::Name { name, span } => self.name(name, line).map_err(|e| e.within(*span)),
-            Expr::Index { map, key, span } => {
-                self.index(map, key, line).map_err(|e| e.within(*span))
+            Expr::Literal(Value::Nothing) => Ok((Ir::Const(0), Ty::Nothing)),
+            Expr::Literal(Value::List(_)) => Err(Error::at(line, "list values are written [a, b]")),
+            Expr::Literal(Value::Tagged { .. }) => Err(Error::at(
+                line,
+                "enum values with members are written 'name with {member: value}'",
+            )),
+            Expr::Binary {
+                operator: BinaryOperator::With,
+                left,
+                right,
+            } if matches!(right.as_ref(), Expr::Record(_)) && self.case_name(left).is_some() => {
+                let (Some(tag), Expr::Record(members)) = (self.case_name(left), right.as_ref())
+                else {
+                    return Err(Error::at(line, "internal error: not a case"));
+                };
+                self.construct(&tag, members, want, line)
             }
+            Expr::Name { .. } | Expr::Index { .. } | Expr::Subscript { .. } => {
+                self.expr_as(expr, want, line)
+            }
+            Expr::Every(domain) => Err(Error::at(
+                line,
+                format!("'every {domain}' names all keys at once, so it can only be assigned to"),
+            )),
+            Expr::Record(members) => self.record(members, want, line),
+            Expr::Items(items) => self.items(items, want, line),
             Expr::Unary { operator, value } => {
                 let (value, ty) = self.expr(value, line)?;
                 match operator {
@@ -1274,29 +2494,32 @@ impl<'a> Compiler<'a> {
             } => {
                 let (condition, ty) = self.expr(condition, line)?;
                 expect(&ty, &Ty::Bool, "the condition of 'if'", line)?;
-                let (then, then_ty) = self.expr(then, line)?;
-                let (otherwise, otherwise_ty) = self.expr(otherwise, line)?;
-                let ty = match (then_ty, otherwise_ty) {
-                    (Ty::Enum(mut left), Ty::Enum(right)) => {
-                        left.extend(right);
-                        Ty::Enum(left)
-                    }
-                    (left, right) if left == right => left,
-                    (left, right) => {
-                        return Err(Error::at(
-                            line,
-                            format!(
-                                "both branches of 'if' must have the same kind of value, but one is {} and the other {}",
-                                left.noun(),
-                                right.noun()
-                            ),
-                        ));
-                    }
+                let ((then, then_ty), (otherwise, otherwise_ty)) =
+                    self.pair(then, otherwise, want, line)?;
+                let Some(ty) = then_ty.join(&otherwise_ty) else {
+                    return Err(Error::at(
+                        line,
+                        format!(
+                            "both branches of 'if' must have the same kind of value, but one is {} and the other {}",
+                            then_ty.noun(),
+                            otherwise_ty.noun()
+                        ),
+                    ));
                 };
-                Ok((
-                    Ir::If(Box::new(condition), Box::new(then), Box::new(otherwise)),
-                    ty,
-                ))
+                let then = coerce(parts(then), &then_ty, &ty);
+                let otherwise = coerce(parts(otherwise), &otherwise_ty, &ty);
+                let branches = then
+                    .into_iter()
+                    .zip(otherwise)
+                    .map(|(then, otherwise)| {
+                        Ir::If(
+                            Box::new(condition.clone()),
+                            Box::new(then),
+                            Box::new(otherwise),
+                        )
+                    })
+                    .collect();
+                Ok((tuple(branches), ty))
             }
             Expr::Quantified {
                 quantifier,
@@ -1307,32 +2530,124 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn name(&mut self, name: &str, line: usize) -> Result<(Ir, Ty)> {
-        if let Some(local) = self.scope.iter().rposition(|(local, _)| local == name) {
-            let ty = self.scope.get(local).map_or(Ty::Int, |(_, ty)| ty.clone());
-            return Ok((Ir::Local(local), ty));
+    /// Two operands that must agree in type: a record literal on one side
+    /// takes its member order from the other.
+    fn pair(
+        &mut self,
+        left: &Expr,
+        right: &Expr,
+        want: Option<&Ty>,
+        line: usize,
+    ) -> Result<((Ir, Ty), (Ir, Ty))> {
+        if record_literal(left) && !record_literal(right) {
+            let right = self.expr_as(right, want, line)?;
+            let left = self.expr_as(left, Some(&right.1), line)?;
+            Ok((left, right))
+        } else {
+            let left = self.expr_as(left, want, line)?;
+            let right = self.expr_as(right, want.or(Some(&left.1)), line)?;
+            Ok((left, right))
         }
-        if let Some(field) = self
-            .field_ids
-            .get(name)
-            .and_then(|index| self.fields.get(*index))
-        {
-            if self.constant_only {
+    }
+
+    fn record(
+        &mut self,
+        members: &[(String, Expr)],
+        want: Option<&Ty>,
+        line: usize,
+    ) -> Result<(Ir, Ty)> {
+        if let Some(Ty::Map { keys, value }) = want {
+            return self.map_literal(members, keys, value, line);
+        }
+        let order: Vec<(String, Option<Ty>)> = match want {
+            Some(Ty::Record(wanted)) => {
+                if let Some((extra, _)) = members
+                    .iter()
+                    .find(|(name, _)| !wanted.iter().any(|(member, _)| member == name))
+                {
+                    return Err(Error::at(
+                        line,
+                        format!("this record has no member {extra}"),
+                    ));
+                }
+                wanted
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), Some(ty.clone())))
+                    .collect()
+            }
+            _ => members
+                .iter()
+                .map(|(name, _)| (name.clone(), None))
+                .collect(),
+        };
+        let mut irs = Vec::new();
+        let mut tys = Vec::with_capacity(order.len());
+        for (name, want) in order {
+            let Some((_, value)) = members.iter().find(|(member, _)| *member == name) else {
                 return Err(Error::at(
                     line,
-                    format!("initial values must be constants, but this reads {name}"),
+                    format!("this record needs a value for {name}"),
                 ));
-            }
-            return match &field.kind {
-                FieldType::Scalar(domain) => Ok((Ir::Slot(field.offset), Ty::of(domain))),
-                FieldType::Map { key_type, .. } => Err(Error::at(
-                    line,
-                    format!("{name} is a map; read one entry with '{name} of <{key_type}>'"),
-                )),
             };
+            let (ir, ty) = self.expr_as(value, want.as_ref(), line)?;
+            irs.extend(parts(ir));
+            tys.push((name, ty));
+        }
+        Ok((tuple(irs), Ty::Record(tys)))
+    }
+
+    /// `{key: value, ...}` where a map is expected: one value for every key.
+    fn map_literal(
+        &mut self,
+        members: &[(String, Expr)],
+        keys: &Domain,
+        value: &Ty,
+        line: usize,
+    ) -> Result<(Ir, Ty)> {
+        let names: Vec<String> = keys
+            .raws()
+            .into_iter()
+            .map(|raw| self.raw_value(keys, raw).to_string())
+            .collect();
+        if let Some((extra, _)) = members.iter().find(|(name, _)| !names.contains(name)) {
+            return Err(Error::at(line, format!("{extra} is not a key of this map")));
+        }
+        let mut irs = Vec::new();
+        let mut joined = value.clone();
+        for name in names {
+            let Some((_, entry)) = members.iter().find(|(member, _)| *member == name) else {
+                return Err(Error::at(
+                    line,
+                    format!("this map needs a value for every key, and {name} has none"),
+                ));
+            };
+            let (ir, ty) = self.expr_as(entry, Some(value), line)?;
+            joined = joined.join(&ty).unwrap_or(ty);
+            irs.extend(parts(ir));
+        }
+        Ok((
+            tuple(irs),
+            Ty::Map {
+                keys: keys.clone(),
+                value: Box::new(joined),
+            },
+        ))
+    }
+
+    fn name(&mut self, name: &str, line: usize) -> Result<Operand> {
+        if let Some(local) = self.scope.iter().rposition(|(local, _)| local == name) {
+            if let Some((_, item, ty)) = self.views.iter().rev().find(|(at, ..)| *at == local) {
+                return Ok(Operand::Value(item.clone(), ty.clone()));
+            }
+            let ty = self.scope.get(local).map_or(Ty::Int, |(_, ty)| ty.clone());
+            return Ok(Operand::Value(Ir::Local(local), ty));
+        }
+        if let Some(place) = self.field(name) {
+            return Ok(Operand::Place(place));
         }
         if let Some(id) = self.symbol_ids.get(name).copied() {
-            return self.symbol(id, line);
+            let (ir, ty) = self.symbol(id, line)?;
+            return Ok(Operand::Value(ir, ty));
         }
         Err(Error::at(
             line,
@@ -1341,35 +2656,247 @@ impl<'a> Compiler<'a> {
         .coded("name.unknown"))
     }
 
-    fn index(&mut self, map: &str, key: &Expr, line: usize) -> Result<(Ir, Ty)> {
+    fn field(&self, name: &str) -> Option<Place> {
         let field = self
             .field_ids
-            .get(map)
-            .and_then(|index| self.fields.get(*index))
-            .cloned()
-            .ok_or_else(|| Error::at(line, format!("unknown map {map}")).coded("name.unknown"))?;
-        let FieldType::Map { keys, value, .. } = &field.kind else {
-            return Err(Error::at(line, format!("{map} is not a map")));
+            .get(name)
+            .and_then(|index| self.fields.get(*index))?;
+        Some(Place {
+            offset: field.offset,
+            steps: Vec::new(),
+            every: None,
+            kind: field.kind.clone(),
+            label: field.name.clone(),
+        })
+    }
+
+    /// `name of key`: the member `name` of the record `key`, or else the
+    /// entry `key` of the map field `name`. A record that may be nothing is
+    /// read first; reading a member of nothing is a fault.
+    fn of(&mut self, name: &str, key: &Expr, line: usize) -> Result<Operand> {
+        if !matches!(key, Expr::Every(_)) {
+            let base = match self.operand(key, None, line) {
+                Ok(Operand::Place(place)) if matches!(place.kind, FieldType::Optional(_)) => self
+                    .read(&place, line)
+                    .map(|(ir, ty)| Operand::Value(ir, ty)),
+                other => other,
+            };
+            let base = match base {
+                Ok(Operand::Value(ir, ty @ Ty::Optional(_))) => {
+                    let (ir, ty) = unwrap(ir, ty, &format!("{} is nothing", describe_expr(key)));
+                    Ok(Operand::Value(ir, ty))
+                }
+                Ok(Operand::Place(place))
+                    if matches!(
+                        place.kind,
+                        FieldType::Set { .. } | FieldType::List { .. } | FieldType::Variant { .. }
+                    ) =>
+                {
+                    self.read(&place, line)
+                        .map(|(ir, ty)| Operand::Value(ir, ty))
+                }
+                other => other,
+            };
+            if let Ok(Operand::Value(ir, ty @ (Ty::Set(_) | Ty::List { .. } | Ty::Variant(_)))) =
+                &base
+                && let Some(result) = collection_property(name, ir, ty, &describe_expr(key), line)
+                    .or_else(|| self.case_member(name, ir, ty, &describe_expr(key), line))
+            {
+                return result.map(|(ir, ty)| Operand::Value(ir, ty));
+            }
+            match base {
+                Ok(Operand::Place(place)) if place.kind.member(name).is_some() => {
+                    return Ok(Operand::Place(place.member(name).unwrap_or(place)));
+                }
+                Ok(Operand::Value(ir, ty)) if ty.member(name).is_some() => {
+                    let (offset, member) = ty.member(name).unwrap_or((0, &ty));
+                    let member = member.clone();
+                    let width = member.width();
+                    let slice = parts(ir).into_iter().skip(offset).take(width).collect();
+                    return Ok(Operand::Value(tuple(slice), member));
+                }
+                Ok(Operand::Place(place)) if self.field(name).is_none() => {
+                    return Err(Error::at(
+                        line,
+                        match place.kind {
+                            FieldType::Record(_) => format!("{} has no member {name}", place.label),
+                            _ => format!("unknown map {name}"),
+                        },
+                    )
+                    .coded("name.unknown"));
+                }
+                Err(error) if self.field(name).is_none() => return Err(error),
+                _ => {}
+            }
+        }
+        let place = self
+            .field(name)
+            .ok_or_else(|| Error::at(line, format!("unknown map {name}")).coded("name.unknown"))?;
+        Ok(Operand::Place(self.index(place, key, line)?))
+    }
+
+    /// The entry `key` of the map at `place`.
+    fn index(&mut self, place: Place, key: &Expr, line: usize) -> Result<Place> {
+        let FieldType::Map {
+            key_type,
+            keys,
+            value,
+        } = &place.kind
+        else {
+            return Err(Error::at(line, format!("{} is not a map", place.label)));
         };
-        if self.constant_only {
+        let stride = value.width();
+        let mut entry = Place {
+            kind: value.as_ref().clone(),
+            ..place.clone()
+        };
+        if let Expr::Every(named) = key {
+            if named != key_type {
+                return Err(Error::at(
+                    line,
+                    format!("{} is keyed by {key_type}, not {named}", place.label),
+                ));
+            }
+            if place.every.is_some() || !place.steps.is_empty() {
+                return Err(Error::at(
+                    line,
+                    "'of every' cannot follow a key that is not a constant, or another 'of every'",
+                ));
+            }
+            entry.every = Some((keys.size(), stride));
+            return Ok(entry);
+        }
+        match self.key(key, keys, &place.label, line)? {
+            Ir::Const(raw) => {
+                entry.offset = key_slot(place.offset, keys, stride, raw, &place.label)
+                    .map_err(|message| Error::at(line, message))?;
+            }
+            key => {
+                if place.every.is_some() {
+                    return Err(Error::at(
+                        line,
+                        "after 'of every', every key must be a constant",
+                    ));
+                }
+                entry.steps.push(KeyStep {
+                    key,
+                    keys: keys.clone(),
+                    stride,
+                    field: place.label.clone(),
+                });
+            }
+        }
+        Ok(entry)
+    }
+
+    /// `[a, b]` where a set is expected.
+    fn items(&mut self, items: &[Expr], want: Option<&Ty>, line: usize) -> Result<(Ir, Ty)> {
+        if let Some(Ty::List { capacity, element }) = want {
+            return self.list_literal(items, *capacity, element, line);
+        }
+        let Some(Ty::Set(elements)) = want else {
             return Err(Error::at(
                 line,
-                format!("initial values must be constants, but this reads {map}"),
+                "a [...] literal needs a set on the other side of 'is' or 'becomes'",
             ));
-        }
-        let ir = match self.key(key, keys, map, line)? {
-            Ir::Const(raw) => Ir::Slot(
-                key_slot(field.offset, keys, raw, map)
-                    .map_err(|message| Error::at(line, message))?,
-            ),
-            key => Ir::Index {
-                offset: field.offset,
-                keys: keys.clone(),
-                key: Box::new(key),
-                field: field.name.clone(),
-            },
         };
-        Ok((ir, Ty::of(value)))
+        let elements = elements.clone();
+        let mut members = Vec::with_capacity(items.len());
+        for item in items {
+            members.push(self.element(item, &elements, line)?);
+        }
+        let held = elements
+            .raws()
+            .into_iter()
+            .map(|raw| {
+                members
+                    .iter()
+                    .map(|member| is_raw(member, raw))
+                    .reduce(or)
+                    .unwrap_or(Ir::Const(0))
+            })
+            .collect();
+        Ok((tuple(held), Ty::Set(elements)))
+    }
+
+    /// `expr` as a value of `elements`, the element type of a set.
+    fn element(&mut self, expr: &Expr, elements: &Domain, line: usize) -> Result<Ir> {
+        let (ir, ty) = self.expr(expr, line)?;
+        if !assignable(&ty, &FieldType::Scalar(elements.clone())) {
+            return Err(Error::at(
+                line,
+                format!(
+                    "this set holds {}, not {}",
+                    self.describe(elements),
+                    self.describe_ty(&ty)
+                ),
+            )
+            .coded("type.mismatch"));
+        }
+        Ok(ir)
+    }
+
+    /// `s has x`, `s with x` and `s without x`, where `x` is a value or a set.
+    fn set_operator(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expr,
+        right: &Expr,
+        line: usize,
+    ) -> Result<(Ir, Ty)> {
+        let (set, set_ty) = self.expr_as(left, None, line)?;
+        if let Ty::List { capacity, element } = &set_ty {
+            let what = describe_expr(left);
+            return self.list_operator(operator, set, *capacity, element, right, &what, line);
+        }
+        let Ty::Set(elements) = set_ty.clone() else {
+            let word = match operator {
+                BinaryOperator::Has => "'has'",
+                BinaryOperator::With => "'with'",
+                _ => "'without'",
+            };
+            return Err(Error::at(
+                line,
+                format!("{word} needs a set on its left, found {}", set_ty.noun()),
+            )
+            .coded("type.mismatch"));
+        };
+        let held = parts(set);
+        if operator == BinaryOperator::Has {
+            let element = self.element(right, &elements, line)?;
+            let what = format!("one of {}", self.describe(&elements));
+            return Ok((select(element, &elements, held, what), Ty::Bool));
+        }
+        let with = operator == BinaryOperator::With;
+        let (other, other_ty) = self.expr_as(right, Some(&set_ty), line)?;
+        let combined = if other_ty == set_ty {
+            held.into_iter()
+                .zip(parts(other))
+                .map(|(mine, theirs)| {
+                    if with {
+                        or(mine, theirs)
+                    } else {
+                        and(mine, Ir::Not(Box::new(theirs)))
+                    }
+                })
+                .collect()
+        } else {
+            let element = self.element(right, &elements, line)?;
+            held.into_iter()
+                .zip(elements.raws())
+                .map(|(mine, raw)| {
+                    let hit = is_raw(&element, raw);
+                    match (hit, with) {
+                        (Ir::Const(0), _) => mine,
+                        (Ir::Const(_), true) => Ir::Const(1),
+                        (Ir::Const(_), false) => Ir::Const(0),
+                        (hit, true) => or(hit, mine),
+                        (hit, false) => and(Ir::Not(Box::new(hit)), mine),
+                    }
+                })
+                .collect()
+        };
+        Ok((tuple(combined), set_ty))
     }
 
     fn binary(
@@ -1379,8 +2906,21 @@ impl<'a> Compiler<'a> {
         right: &Expr,
         line: usize,
     ) -> Result<(Ir, Ty)> {
-        let (left, left_ty) = self.expr(left, line)?;
-        let (right, right_ty) = self.expr(right, line)?;
+        if matches!(
+            operator,
+            BinaryOperator::Has | BinaryOperator::With | BinaryOperator::Without
+        ) {
+            return self.set_operator(operator, left, right, line);
+        }
+        let ((left, left_ty), (right, right_ty)) =
+            if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
+                self.pair(left, right, None, line)?
+            } else {
+                (self.expr(left, line)?, self.expr(right, line)?)
+            };
+        if !left_ty.is_scalar() || !right_ty.is_scalar() {
+            return self.compare_compound(operator, (left, left_ty), (right, right_ty), line);
+        }
         let ty = match operator {
             BinaryOperator::And | BinaryOperator::Or | BinaryOperator::Implies => {
                 let word = match operator {
@@ -1433,8 +2973,495 @@ impl<'a> Compiler<'a> {
                 expect(&right_ty, &Ty::Int, "arithmetic", line)?;
                 Ty::Int
             }
+            BinaryOperator::Has | BinaryOperator::With | BinaryOperator::Without => {
+                return Err(Error::at(
+                    line,
+                    "internal error: a set operator was not compiled",
+                ));
+            }
         };
         Ok((Ir::Binary(operator, Box::new(left), Box::new(right)), ty))
+    }
+
+    /// `=` and `!=` on records and maps: every slot equal. Encodings are
+    /// canonical, so equal values have equal slots.
+    fn compare_compound(
+        &self,
+        operator: BinaryOperator,
+        (left, left_ty): (Ir, Ty),
+        (right, right_ty): (Ir, Ty),
+        line: usize,
+    ) -> Result<(Ir, Ty)> {
+        let negate = match operator {
+            BinaryOperator::Equal => false,
+            BinaryOperator::NotEqual => true,
+            _ => {
+                let culprit = if left_ty.is_scalar() {
+                    &right_ty
+                } else {
+                    &left_ty
+                };
+                return Err(Error::at(
+                    line,
+                    format!("{} cannot be used with this operator", culprit.noun()),
+                )
+                .coded("type.mismatch"));
+            }
+        };
+        if let (Ty::Variant(_), Ty::Enum(ids)) | (Ty::Enum(ids), Ty::Variant(_)) =
+            (&left_ty, &right_ty)
+        {
+            let tag = if left_ty.is_scalar() { right } else { left };
+            let tag = parts(tag).into_iter().next().unwrap_or(Ir::Const(0));
+            let is_case = ids
+                .iter()
+                .map(|id| is_raw(&tag, i64::from(*id)))
+                .reduce(or)
+                .unwrap_or(Ir::Const(0));
+            return Ok((
+                if negate {
+                    Ir::Not(Box::new(is_case))
+                } else {
+                    is_case
+                },
+                Ty::Bool,
+            ));
+        }
+        let Some(joined) = left_ty.join(&right_ty) else {
+            return Err(Error::at(
+                line,
+                format!(
+                    "cannot compare {} with {}",
+                    self.describe_ty(&left_ty),
+                    self.describe_ty(&right_ty)
+                ),
+            )
+            .coded("type.mismatch"));
+        };
+        let equal = equal_as(
+            coerce(parts(left), &left_ty, &joined),
+            coerce(parts(right), &right_ty, &joined),
+            &joined,
+        );
+        let ir = if negate {
+            Ir::Not(Box::new(equal))
+        } else {
+            equal
+        };
+        Ok((ir, Ty::Bool))
+    }
+
+    /// `every x in s satisfies ...` over the members of the set field `s`.
+    fn over_set(
+        &mut self,
+        quantifier: Quantifier,
+        variable: &str,
+        place: &Place,
+        body: &Expr,
+        line: usize,
+    ) -> Result<(Ir, Ty)> {
+        let FieldType::Set { elements, .. } = &place.kind else {
+            return Err(Error::at(
+                line,
+                format!(
+                    "a quantifier ranges over a type or a set, and {} is neither",
+                    place.label
+                ),
+            ));
+        };
+        let elements = elements.clone();
+        let (held, _) = self.read(place, line)?;
+        let local = self.scope.len();
+        self.scope.push((variable.to_string(), Ty::of(&elements)));
+        self.locals = self.locals.max(self.scope.len());
+        let body = self.expr(body, line);
+        self.scope.pop();
+        let (body, ty) = body?;
+        expect(&ty, &Ty::Bool, "the condition of a quantifier", line)?;
+        let what = format!("one of {}", self.describe(&elements));
+        let member = select(Ir::Local(local), &elements, parts(held), what);
+        let body = match quantifier {
+            Quantifier::Every => {
+                Ir::Binary(BinaryOperator::Implies, Box::new(member), Box::new(body))
+            }
+            Quantifier::Some | Quantifier::Count => and(member, body),
+        };
+        Ok((
+            Ir::Quantified {
+                quantifier,
+                local,
+                values: elements.raws(),
+                body: Box::new(body),
+            },
+            if quantifier == Quantifier::Count {
+                Ty::Int
+            } else {
+                Ty::Bool
+            },
+        ))
+    }
+
+    /// `[a, b]` where a list is expected.
+    fn list_literal(
+        &mut self,
+        items: &[Expr],
+        capacity: usize,
+        element: &Ty,
+        line: usize,
+    ) -> Result<(Ir, Ty)> {
+        if items.len() > capacity {
+            return Err(Error::at(
+                line,
+                format!(
+                    "this list holds at most {capacity} items, and {} are given",
+                    items.len()
+                ),
+            ));
+        }
+        let mut out = vec![Ir::Const(i64::try_from(items.len()).unwrap_or(i64::MAX))];
+        for item in items {
+            out.extend(self.item(item, element, line)?);
+        }
+        out.extend(
+            std::iter::repeat_with(|| Ir::Const(0))
+                .take((capacity - items.len()) * element.width()),
+        );
+        Ok((
+            tuple(out),
+            Ty::List {
+                capacity,
+                element: Box::new(element.clone()),
+            },
+        ))
+    }
+
+    /// `expr` laid out as an item of type `element`.
+    fn item(&mut self, expr: &Expr, element: &Ty, line: usize) -> Result<Vec<Ir>> {
+        let (ir, ty) = self.expr_as(expr, Some(element), line)?;
+        if ty.join(element).as_ref() != Some(element) {
+            return Err(Error::at(
+                line,
+                format!(
+                    "this list holds {}, not {}",
+                    self.describe_ty(element),
+                    self.describe_ty(&ty)
+                ),
+            )
+            .coded("type.mismatch"));
+        }
+        Ok(coerce(parts(ir), &ty, element))
+    }
+
+    /// `l has x`, `l with x` (append) and `l without x` (remove every `x`).
+    #[allow(clippy::too_many_arguments)]
+    fn list_operator(
+        &mut self,
+        operator: BinaryOperator,
+        list: Ir,
+        capacity: usize,
+        element: &Ty,
+        right: &Expr,
+        what: &str,
+        line: usize,
+    ) -> Result<(Ir, Ty)> {
+        let list_ty = Ty::List {
+            capacity,
+            element: Box::new(element.clone()),
+        };
+        let (length, items) = split_list(list, element.width());
+        let value = self.item(right, element, line)?;
+        let same = |item: &[Ir]| equal_as(item.to_vec(), value.clone(), element);
+        match operator {
+            BinaryOperator::Has => Ok((
+                items
+                    .iter()
+                    .enumerate()
+                    .map(|(position, item)| and(longer(&length, position), same(item)))
+                    .reduce(or)
+                    .unwrap_or(Ir::Const(0)),
+                Ty::Bool,
+            )),
+            BinaryOperator::With => {
+                let room = Ir::Binary(
+                    BinaryOperator::Less,
+                    Box::new(length.clone()),
+                    Box::new(Ir::Const(i64::try_from(capacity).unwrap_or(i64::MAX))),
+                );
+                let grown = Ir::Binary(
+                    BinaryOperator::Add,
+                    Box::new(length.clone()),
+                    Box::new(Ir::Const(1)),
+                );
+                let full = Ir::Fail(format!("{what} is full"));
+                let mut out = vec![Ir::If(Box::new(room), Box::new(grown), Box::new(full))];
+                for (position, item) in items.into_iter().enumerate() {
+                    let here = is_raw(&length, i64::try_from(position).unwrap_or(i64::MAX));
+                    out.extend(item.into_iter().zip(&value).map(|(old, new)| match &here {
+                        Ir::Const(0) => old,
+                        Ir::Const(_) => new.clone(),
+                        here => {
+                            Ir::If(Box::new(here.clone()), Box::new(new.clone()), Box::new(old))
+                        }
+                    }));
+                }
+                Ok((tuple(out), list_ty))
+            }
+            _ => {
+                if capacity
+                    .saturating_mul(capacity)
+                    .saturating_mul(element.width())
+                    > MAX_SLOTS
+                {
+                    return Err(Error::at(
+                        line,
+                        format!("'without' needs a smaller list than {what}"),
+                    ));
+                }
+                let kept: Vec<Ir> = items
+                    .iter()
+                    .enumerate()
+                    .map(|(position, item)| {
+                        and(longer(&length, position), Ir::Not(Box::new(same(item))))
+                    })
+                    .collect();
+                let add = |left: Ir, right: Ir| {
+                    Ir::Binary(BinaryOperator::Add, Box::new(left), Box::new(right))
+                };
+                let before: Vec<Ir> = (0..capacity)
+                    .map(|position| {
+                        kept.iter()
+                            .take(position)
+                            .cloned()
+                            .reduce(add)
+                            .unwrap_or(Ir::Const(0))
+                    })
+                    .collect();
+                let mut out = vec![kept.iter().cloned().reduce(add).unwrap_or(Ir::Const(0))];
+                for target in 0..capacity {
+                    let target_raw = i64::try_from(target).unwrap_or(i64::MAX);
+                    let mut chosen = vec![Ir::Const(0); element.width()];
+                    for source in (target..capacity).rev() {
+                        let lands = and(kept[source].clone(), is_raw(&before[source], target_raw));
+                        for (slot, part) in chosen.iter_mut().zip(&items[source]) {
+                            *slot = Ir::If(
+                                Box::new(lands.clone()),
+                                Box::new(part.clone()),
+                                Box::new(std::mem::replace(slot, Ir::Const(0))),
+                            );
+                        }
+                    }
+                    out.extend(chosen);
+                }
+                Ok((tuple(out), list_ty))
+            }
+        }
+    }
+
+    /// `every m in l satisfies ...` over the items of the list field `l`.
+    fn over_list(
+        &mut self,
+        quantifier: Quantifier,
+        variable: &str,
+        place: &Place,
+        body: &Expr,
+        line: usize,
+    ) -> Result<(Ir, Ty)> {
+        let FieldType::List { capacity, element } = &place.kind else {
+            return Err(Error::at(line, "internal error: not a list"));
+        };
+        let (capacity, element) = (*capacity, Ty::of_kind(element));
+        let (list, _) = self.read(place, line)?;
+        let (length, items) = split_list(list, element.width());
+        let local = self.scope.len();
+        let at = positions(capacity);
+        let item = (0..element.width())
+            .map(|part| {
+                select(
+                    Ir::Local(local),
+                    &at,
+                    items.iter().map(|item| item[part].clone()).collect(),
+                    format!("a position in {}", place.label),
+                )
+            })
+            .collect();
+        self.scope.push((variable.to_string(), element.clone()));
+        self.views.push((local, tuple(item), element));
+        self.locals = self.locals.max(self.scope.len());
+        let body = self.expr(body, line);
+        self.views.pop();
+        self.scope.pop();
+        let (body, ty) = body?;
+        expect(&ty, &Ty::Bool, "the condition of a quantifier", line)?;
+        let present = Ir::Binary(
+            BinaryOperator::Greater,
+            Box::new(length),
+            Box::new(Ir::Local(local)),
+        );
+        let body = match quantifier {
+            Quantifier::Every => {
+                Ir::Binary(BinaryOperator::Implies, Box::new(present), Box::new(body))
+            }
+            Quantifier::Some | Quantifier::Count => and(present, body),
+        };
+        Ok((
+            Ir::Quantified {
+                quantifier,
+                local,
+                values: at.raws(),
+                body: Box::new(body),
+            },
+            if quantifier == Quantifier::Count {
+                Ty::Int
+            } else {
+                Ty::Bool
+            },
+        ))
+    }
+
+    /// The case named by `expr` when it is a bare name of a case with members.
+    fn case_name(&self, expr: &Expr) -> Option<String> {
+        let name = match expr {
+            Expr::Name { name, .. } if self.field(name).is_none() => name,
+            Expr::Literal(Value::Symbol(name)) => name,
+            _ => return None,
+        };
+        if self.scope.iter().any(|(local, _)| local == name) {
+            return None;
+        }
+        let id = *self.symbol_ids.get(name)?;
+        self.variants
+            .iter()
+            .any(|ty| matches!(ty, Ty::Variant(cases) if cases.iter().any(|(tag, members)| *tag == id && !members.is_empty())))
+            .then(|| name.clone())
+    }
+
+    /// `running with {attempts: 1}`: a value of the enumeration that has the
+    /// case, the one the context expects when several do.
+    fn construct(
+        &mut self,
+        tag: &str,
+        members: &[(String, Expr)],
+        want: Option<&Ty>,
+        line: usize,
+    ) -> Result<(Ir, Ty)> {
+        let id = self.symbol_ids.get(tag).copied().unwrap_or(u32::MAX);
+        let has =
+            |ty: &Ty| matches!(ty, Ty::Variant(cases) if cases.iter().any(|(case, _)| *case == id));
+        let ty = match want {
+            Some(want) if has(want) => want.clone(),
+            _ => {
+                let mut candidates = self.variants.iter().filter(|ty| has(ty));
+                let (Some(first), None) = (candidates.next(), candidates.next()) else {
+                    return Err(Error::at(
+                        line,
+                        format!(
+                            "several enumerations have the value {tag}; compare or assign it to say which"
+                        ),
+                    ));
+                };
+                first.clone()
+            }
+        };
+        let Ty::Variant(cases) = &ty else {
+            return Err(Error::at(
+                line,
+                "internal error: not an enumeration with members",
+            ));
+        };
+        let mut out = vec![Ir::Const(i64::from(id))];
+        for (case, fields) in cases {
+            let record = Ty::Record(fields.clone());
+            if *case == id {
+                let (ir, value) = self.record(members, Some(&record), line)?;
+                if value.join(&record).is_none() {
+                    return Err(Error::at(
+                        line,
+                        format!(
+                            "{tag} has members {}, but this gives {}",
+                            self.describe_ty(&record),
+                            self.describe_ty(&value)
+                        ),
+                    )
+                    .coded("type.mismatch"));
+                }
+                out.extend(coerce(parts(ir), &value, &record));
+            } else {
+                out.extend(std::iter::repeat_with(|| Ir::Const(0)).take(record.width()));
+            }
+        }
+        Ok((tuple(out), ty))
+    }
+
+    /// `attempts of phase`: a member of the case `phase` holds. Reading it
+    /// while `phase` holds a case without that member is a fault.
+    fn case_member(
+        &self,
+        name: &str,
+        ir: &Ir,
+        ty: &Ty,
+        what: &str,
+        line: usize,
+    ) -> Option<Result<(Ir, Ty)>> {
+        let Ty::Variant(cases) = ty else {
+            return None;
+        };
+        let (tag, payloads) = split_variant(parts(ir.clone()), cases);
+        let mut holders = Vec::new();
+        let mut member_ty: Option<Ty> = None;
+        for ((case, members), payload) in cases.iter().zip(&payloads) {
+            let record = Ty::Record(members.clone());
+            let Some((offset, member)) = record.member(name) else {
+                continue;
+            };
+            member_ty = match member_ty {
+                None => Some(member.clone()),
+                Some(seen) => match seen.join(member) {
+                    Some(joined) => Some(joined),
+                    None => {
+                        return Some(Err(Error::at(
+                            line,
+                            format!("{name} has a different type in different cases of {what}"),
+                        )));
+                    }
+                },
+            };
+            let slice: Vec<Ir> = payload
+                .iter()
+                .skip(offset)
+                .take(member.width())
+                .cloned()
+                .collect();
+            holders.push((*case, slice));
+        }
+        let Some(member_ty) = member_ty else {
+            return Some(Err(Error::at(
+                line,
+                format!("no value of {what} has a member {name}"),
+            )));
+        };
+        let names: Vec<String> = holders
+            .iter()
+            .map(|(case, _)| self.symbols.get(at(*case)).cloned().unwrap_or_default())
+            .collect();
+        let missing = Ir::Fail(format!(
+            "{what} is not {}, so it has no {name}",
+            names.join(" or ")
+        ));
+        let read = (0..member_ty.width())
+            .map(|part| {
+                holders
+                    .iter()
+                    .rev()
+                    .fold(missing.clone(), |otherwise, (case, slice)| {
+                        Ir::If(
+                            Box::new(is_raw(&tag, i64::from(*case))),
+                            Box::new(slice.get(part).cloned().unwrap_or(Ir::Const(0))),
+                            Box::new(otherwise),
+                        )
+                    })
+            })
+            .collect();
+        Some(Ok((tuple(read), member_ty)))
     }
 
     fn quantified(
@@ -1445,13 +3472,32 @@ impl<'a> Compiler<'a> {
         body: &Expr,
         line: usize,
     ) -> Result<(Ir, Ty)> {
-        let domain = self.types.get(domain).cloned().ok_or_else(|| {
-            Error::at(
-                line,
-                format!("unknown type {domain}; declare it in a types block"),
-            )
-            .coded("name.unknown")
-        })?;
+        if !self.types.contains_key(domain)
+            && let Some(place) = self.field(domain)
+        {
+            if matches!(place.kind, FieldType::List { .. }) {
+                return self.over_list(quantifier, variable, &place, body, line);
+            }
+            return self.over_set(quantifier, variable, &place, body, line);
+        }
+        let domain = match self.types.get(domain) {
+            Some(FieldType::Scalar(domain)) => domain.clone(),
+            Some(_) => {
+                return Err(Error::at(
+                    line,
+                    format!(
+                        "a quantifier ranges over integers, booleans or enums, and {domain} is not one"
+                    ),
+                ));
+            }
+            None => {
+                return Err(Error::at(
+                    line,
+                    format!("unknown type {domain}; declare it in a types block"),
+                )
+                .coded("name.unknown"));
+            }
+        };
         if domain.size() > MAX_QUANTIFIER_VALUES {
             return Err(Error::at(
                 line,
@@ -1487,6 +3533,150 @@ impl<'a> Compiler<'a> {
     }
 }
 
+fn or(left: Ir, right: Ir) -> Ir {
+    Ir::Binary(BinaryOperator::Or, Box::new(left), Box::new(right))
+}
+
+fn and(left: Ir, right: Ir) -> Ir {
+    Ir::Binary(BinaryOperator::And, Box::new(left), Box::new(right))
+}
+
+/// Whether `value` is `raw`, folded when `value` is a constant.
+fn is_raw(value: &Ir, raw: i64) -> Ir {
+    match value {
+        Ir::Const(constant) => Ir::Const(i64::from(*constant == raw)),
+        value => Ir::Binary(
+            BinaryOperator::Equal,
+            Box::new(value.clone()),
+            Box::new(Ir::Const(raw)),
+        ),
+    }
+}
+
+/// The option for `key`, chosen while compiling when `key` is a constant.
+fn select(key: Ir, keys: &Domain, mut options: Vec<Ir>, what: String) -> Ir {
+    if let Ir::Const(raw) = key
+        && let Some(position) = keys.position(raw)
+    {
+        return options.swap_remove(position);
+    }
+    Ir::Select {
+        key: Box::new(key),
+        keys: keys.clone(),
+        options,
+        what,
+    }
+}
+
+/// `size of s`, and `length`, `first`, `last` and `rest of` a list. `None`
+/// when `ty` is not a collection. `what` names the collection in faults.
+fn collection_property(
+    name: &str,
+    ir: &Ir,
+    ty: &Ty,
+    what: &str,
+    line: usize,
+) -> Option<Result<(Ir, Ty)>> {
+    match ty {
+        Ty::Set(_) => Some(match name {
+            "size" => Ok((
+                parts(ir.clone())
+                    .into_iter()
+                    .reduce(|sum, next| {
+                        Ir::Binary(BinaryOperator::Add, Box::new(sum), Box::new(next))
+                    })
+                    .unwrap_or(Ir::Const(0)),
+                Ty::Int,
+            )),
+            _ => Err(Error::at(
+                line,
+                format!("a set has no {name}; 'size of' counts its members"),
+            )),
+        }),
+        Ty::List { capacity, element } => {
+            let (length, items) = split_list(ir.clone(), element.width());
+            let empty = format!("{what} is empty");
+            let guarded = |part: Ir| {
+                Ir::If(
+                    Box::new(longer(&length, 0)),
+                    Box::new(part),
+                    Box::new(Ir::Fail(empty.clone())),
+                )
+            };
+            Some(match name {
+                "length" => Ok((length.clone(), Ty::Int)),
+                "first" => Ok((
+                    tuple(
+                        items
+                            .first()
+                            .cloned()
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(guarded)
+                            .collect(),
+                    ),
+                    (**element).clone(),
+                )),
+                "last" => {
+                    let at = positions(*capacity);
+                    let last = Ir::Binary(
+                        BinaryOperator::Subtract,
+                        Box::new(length.clone()),
+                        Box::new(Ir::Const(1)),
+                    );
+                    let item = (0..element.width())
+                        .map(|part| {
+                            guarded(select(
+                                last.clone(),
+                                &at,
+                                items.iter().map(|item| item[part].clone()).collect(),
+                                format!("a position in {what}"),
+                            ))
+                        })
+                        .collect();
+                    Ok((tuple(item), (**element).clone()))
+                }
+                "rest" => {
+                    let mut out = vec![guarded(Ir::Binary(
+                        BinaryOperator::Subtract,
+                        Box::new(length.clone()),
+                        Box::new(Ir::Const(1)),
+                    ))];
+                    for item in items.iter().skip(1) {
+                        out.extend(item.iter().cloned());
+                    }
+                    out.extend(std::iter::repeat_with(|| Ir::Const(0)).take(element.width()));
+                    Ok((tuple(out), ty.clone()))
+                }
+                _ => Err(Error::at(
+                    line,
+                    format!("a list has no {name}; use length, first, last or rest"),
+                )),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The positions of a list: 0 up to `capacity - 1`.
+fn positions(capacity: usize) -> Domain {
+    Domain::Integer {
+        min: 0,
+        max: i64::try_from(capacity).unwrap_or(i64::MAX) - 1,
+    }
+}
+
+/// A list value's length and the parts of each item.
+fn split_list(ir: Ir, width: usize) -> (Ir, Vec<Vec<Ir>>) {
+    let mut parts = parts(ir).into_iter();
+    let length = parts.next().unwrap_or(Ir::Const(0));
+    let rest: Vec<Ir> = parts.collect();
+    (
+        length,
+        rest.chunks(width.max(1)).map(<[Ir]>::to_vec).collect(),
+    )
+}
+
 fn expect(actual: &Ty, wanted: &Ty, what: &str, line: usize) -> Result<()> {
     if actual == wanted {
         Ok(())
@@ -1499,10 +3689,61 @@ fn expect(actual: &Ty, wanted: &Ty, what: &str, line: usize) -> Result<()> {
     }
 }
 
-fn assignable(ty: &Ty, domain: &Domain) -> bool {
-    match (ty, domain) {
-        (Ty::Int, Domain::Integer { .. }) | (Ty::Bool, Domain::Boolean) => true,
-        (Ty::Enum(ids), Domain::Enum(allowed)) => ids.iter().all(|id| allowed.contains(id)),
+/// Whether a value of type `ty` can be stored as `kind`. Integer ranges are
+/// checked when the value is written.
+fn assignable(ty: &Ty, kind: &FieldType) -> bool {
+    match (ty, kind) {
+        (Ty::Int, FieldType::Scalar(Domain::Integer { .. }))
+        | (Ty::Bool, FieldType::Scalar(Domain::Boolean)) => true,
+        (Ty::Enum(ids), FieldType::Scalar(Domain::Enum(allowed))) => {
+            ids.iter().all(|id| allowed.contains(id))
+        }
+        (Ty::Record(members), FieldType::Record(wanted)) => {
+            members.len() == wanted.len()
+                && members
+                    .iter()
+                    .zip(wanted)
+                    .all(|((name, ty), (other, kind))| name == other && assignable(ty, kind))
+        }
+        (
+            Ty::Map { keys, value },
+            FieldType::Map {
+                keys: wanted_keys,
+                value: wanted,
+                ..
+            },
+        ) => keys == wanted_keys && assignable(value, wanted),
+        (
+            Ty::Set(elements),
+            FieldType::Set {
+                elements: wanted, ..
+            },
+        ) => elements == wanted,
+        (
+            Ty::List { capacity, element },
+            FieldType::List {
+                capacity: wanted_capacity,
+                element: wanted,
+            },
+        ) => capacity == wanted_capacity && assignable(element, wanted),
+        (Ty::Variant(cases), FieldType::Variant { cases: wanted, .. }) => {
+            cases.len() == wanted.len()
+                && cases.iter().zip(wanted).all(|((_, members), (_, wanted))| {
+                    assignable(
+                        &Ty::Record(members.clone()),
+                        &FieldType::Record(wanted.clone()),
+                    )
+                })
+        }
+        (Ty::Enum(ids), FieldType::Variant { .. }) => {
+            let Ty::Variant(cases) = Ty::of_kind(kind) else {
+                return false;
+            };
+            bare_tags(&cases, ids)
+        }
+        (Ty::Nothing, FieldType::Optional(_)) => true,
+        (Ty::Optional(value), FieldType::Optional(wanted)) => assignable(value, wanted),
+        (value, FieldType::Optional(wanted)) => assignable(value, wanted),
         _ => false,
     }
 }

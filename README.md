@@ -287,8 +287,9 @@ MIT — see [LICENSE](LICENSE).
 
 ## Scope
 
-Zin models finite-state systems: bounded integers, booleans, enums, and maps
-over them. It does not model unbounded data, real time, probabilities or
+Zin models finite-state systems: bounded integers, booleans and enums, and
+records, maps, optional values, sets, bounded lists and enumerations with
+members built from them. It does not model unbounded data, real time, probabilities or
 floating point. Conformance testing shows that an implementation agrees with
 the model on every modeled transition; it is exhaustive over the model, not a
 proof about the implementation's code.

@@ -17,6 +17,8 @@ fn value(json: &Json) -> Value {
         Json::Bool(b) => Value::Boolean(*b),
         Json::Str(s) => Value::Symbol(s.clone()),
         Json::Object(_) => Value::Map(state(json)),
+        Json::Null => Value::Nothing,
+        Json::Array(items) => Value::List(items.iter().map(value).collect()),
         _ => panic!("unexpected fixture value {json:?}"),
     }
 }
@@ -31,29 +33,49 @@ fn state(json: &Json) -> State {
         .collect()
 }
 
-fn model(expected: &State) -> String {
-    let (mut types, mut fields, mut initial) = (String::new(), String::new(), String::new());
-    for (name, item) in expected {
-        let kind = match item {
-            Value::Boolean(_) => "a boolean",
-            Value::Integer(_) => "an integer from 0 to 1",
-            Value::Symbol(_) => "one of open, closed",
-            Value::Map(entries) => {
-                let keys = entries.keys().cloned().collect::<Vec<_>>().join(", ");
-                types = format!("types\n  key is one of {keys}\n");
-                for (key, v) in entries {
-                    initial.push_str(&format!("  {name} of {key} is {}\n", v.source()));
-                }
-                "a map from key to a boolean"
-            }
-        };
-        fields.push_str(&format!("  {name} is {kind}\n"));
-        if !matches!(item, Value::Map(_)) {
-            initial.push_str(&format!("  {name} is {}\n", item.source()));
+/// The declared type of a fixture value. Objects become records, which match
+/// observations the way maps do: a subset of the keys, every key known.
+fn kind(item: &Value) -> String {
+    match item {
+        Value::Boolean(_) => "a boolean".into(),
+        Value::Integer(_) => "an integer from 0 to 2".into(),
+        Value::Nothing => "an integer from 0 to 2 or nothing".into(),
+        Value::Tagged { .. } => unreachable!("fixtures write cases as objects"),
+        Value::List(items) => {
+            let symbols: Vec<String> = items
+                .iter()
+                .filter_map(|item| match item {
+                    Value::Symbol(_) => Some(item.source()),
+                    _ => None,
+                })
+                .collect();
+            let element = match items.first() {
+                Some(Value::Symbol(_)) => format!("one of {}, other", symbols.join(", ")),
+                Some(item) => kind(item),
+                None => "an integer from 0 to 2".into(),
+            };
+            format!("a list of at most 3 {element}")
         }
+        Value::Symbol(_) => format!("one of {}, other", item.source()),
+        Value::Map(entries) => format!(
+            "a record with ({})",
+            entries
+                .iter()
+                .map(|(member, value)| format!("{member} is {}", kind(value)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn model(expected: &State) -> String {
+    let (mut fields, mut initial) = (String::new(), String::new());
+    for (name, item) in expected {
+        fields.push_str(&format!("  {name} is {}\n", kind(item)));
+        initial.push_str(&format!("  {name} is {}\n", item.source()));
     }
     format!(
-        "system \"Observer\"\n{types}state\n{fields}initially\n{initial}action tick\n  requires true\n"
+        "system \"Observer\"\nstate\n{fields}initially\n{initial}action tick\n  requires true\n"
     )
 }
 

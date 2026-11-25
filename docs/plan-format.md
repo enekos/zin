@@ -5,7 +5,7 @@ language or framework is a few hundred lines with no parser and no model
 checker. The three shipped bindings are reference implementations
 (`bindings/python/zin/__init__.py` is the shortest).
 
-## `plan/1`
+## `plan/1` and `plan/2`
 
 Written by `zin plan`. Compact JSON, one line.
 
@@ -48,15 +48,27 @@ Written by `zin plan`. Compact JSON, one line.
 | `max_steps`, `step_budget`, `pair_limit` | the soft tour target, the hard total step ceiling and the pair sample size (null unless a sampled `pairs` plan) the plan was derived with. Absent from plans written before 0.3. |
 | `observe` | only in plans from `zin plan --observe`: the fields the adapter's `observe` is taken to return, in declaration order (empty for an adapter without `observe`). The plan's `identify` tests rule out states that look alike under these fields. |
 | `summary` | full-model `states`, `transitions` and `refusals`, plus the emitted `tests`, `accepted_steps` and `rejected_steps`. `eligible_pairs` and `covered_pairs` are numbers for `pairs` plans and null otherwise. |
-| `fields` | the state variables. Types: `integer` (`min`, `max`), `boolean`, `enum` (`values`), `map` (`keys` as strings, `value` type) |
+| `fields` | the state variables. Types: `integer` (`min`, `max`), `boolean`, `enum` (`values`), `map` (`keys` as strings, `value` type), and in `plan/2` `record` (`members`, each a `name` and a `type`) `optional` (`value` type) `set` (`values`, the element type's values as strings) `list` (`capacity`, `element` type) and `variant` (`cases`, each a `name` and its `members`) |
 | `actions` | actions and their parameters, in declaration order |
-| `states` | the model states the plan refers to, as objects. Integers are JSON numbers, booleans JSON booleans, enum values strings, maps objects keyed by the key's text. State `0` is the initial state. Only states the plan uses are listed. |
+| `states` | the model states the plan refers to, as objects. Integers are JSON numbers, booleans JSON booleans, enum values strings, maps objects keyed by the key's text, records objects keyed by member name, an optional that is nothing `null`, a set an array of its members in the element type's order, a list an array of its items, an enumeration case with members an object whose one key is the case. State `0` is the initial state. Only states the plan uses are listed. |
 | `parents` | for each state, `[parent state, call]` on a shortest path from the initial state; `null` for state 0. Used to build the shortest reproduction. |
 | `calls` | every call the plan uses: action name, positional `args` (same order as the action's `params`), and display `text` |
 | `tests` | each test starts from a fresh implementation in the initial state. A step is `[call, to]`: perform `calls[call]`; if `to >= 0` it must be accepted and the model moves to `states[to]`; if `to` is `-1` it must be rejected and the model state is unchanged. `kind` is `scenario`, `witness`, `tour` or `identify` and does not change how a test is run. |
 
 All integers fit in a JavaScript safe integer; `zin plan` refuses a
 specification whose values do not.
+
+A plan is `plan/2` exactly when some field's type is neither a scalar nor a map
+of scalars: it holds a record, a nested map, an optional value, a set, a list or an enumeration whose values carry members. Every other plan is `plan/1`,
+byte for byte as before, so a runner that reads only `plan/1` keeps working on
+specifications that do not use the newer types. `plan/2` adds these values to
+the vocabulary, and a runner that reads it compares all of them:
+
+| JSON | Meaning |
+| --- | --- |
+| object | a map (keys as text) or a record (keys are member names) |
+| `null` | an optional value that is nothing |
+| array | a list, in order, or a set, in the order its element type declares its values |
 
 ### What a binding must do
 
@@ -103,10 +115,14 @@ runner passes those cases before it ships.
 **Replaying.** For each test build a fresh implementation, then for each step
 perform the call, classify the result as accepted or rejected, compare with
 `to`, and compare any observed fields with the current model state (after a
-rejection: the unchanged state). Observed maps may list a subset of the keys,
-but every key must exist; types compare strictly (`false` is not `0`).
-Native values are normalized first: enum members to their name, map keys to
-their text. Anything that is neither an acceptance nor a recognized rejection
+rejection: the unchanged state). Observed maps and records may list a subset
+of the keys, but every key must exist; types compare strictly (`false` is not
+`0`, nothing is not `0`). An observed list matches an array of the same
+length element by element; an observed native set (a Python `set`, a
+JavaScript `Set`, a Java `Set`, a Go `zin.Set`) matches an array with the
+same elements in any order. Native values are normalized first: enum members
+to their name, map keys to their text, records (a Python dataclass or named
+tuple, a Java record, a Go struct) to an object of their members. Anything that is neither an acceptance nor a recognized rejection
 fails the test with that error.
 
 **Reporting.** A divergence at step *n* (0 when the initial state differs) is

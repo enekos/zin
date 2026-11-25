@@ -11,8 +11,10 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -134,6 +136,12 @@ class ContractTest {
 
     private static Object nativeValue(JsonNode value) {
         if (value.has("$enum")) return Token.valueOf(value.get("$enum").asText());
+        if (value.has("$set")) {
+            Set<Object> set = new LinkedHashSet<>();
+            for (JsonNode item : value.get("$set")) set.add(nativeValue(item));
+            return set;
+        }
+        if (value.has("$record")) return nativeValue(value.get("$record"));
         if (value.has("$map")) {
             Map<Object, Object> map = new LinkedHashMap<>();
             for (JsonNode entry : value.get("$map")) map.put(nativeValue(entry.get(0)), nativeValue(entry.get(1)));

@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+- Records: `a record with (status is one of draft, paid, items is an integer
+  from 0 to 2)` as a state field, a named type or a map value. Members read
+  right to left (`status of orders of c`), literals are `{status: paid, items:
+  2}`, and `is` compares whole records. Any path can be assigned, including
+  `status of orders of every customer`.
+- Nested maps: a map value may be a map. Index one with brackets
+  (`paid_on[c][tue]`) and write a whole map as `{mon: false, tue: false}`.
+- Optional values: `<type> or nothing`. `nothing` is the absent value; `is
+  nothing` and `is w` compare without reading the value, and reading the value
+  of nothing (`left of lease`, `asked + 1`) is a model fault. In plans an
+  absent value is `null`. **Breaking:** `nothing` is now a reserved word, so
+  it can no longer name an enum value or a field.
+- Sets: `a set of worker`, written `[ann, ben]` or `[]`. `s has w`, `s with
+  w`, `s without w` (also union and difference with another set), `size of
+  s`, and quantifiers over a set field's members. Symmetry reduction moves
+  set members with the relabeled values. Rust conformance and `zin trace`
+  match a set in any order.
+- Lists: `a list of at most 3 message`, written `[ping, pong]` or `[]`, of
+  any item type. `l with x` appends (a fault when full), `l without x`
+  removes every `x`, `l has x`, `length of l`, `first of l`, `last of l` and
+  `rest of l` (faults when empty), and quantifiers over a list field's items.
+  Examples: `channel.zin` (a FIFO queue) and `recency.zin` (an LRU order).
+- Enumeration values with members: `one of queued, running with (attempt is
+  an integer from 1 to 3), succeeded`. Write `running with {attempt: 2}`,
+  test the case with `job is running`, and read `attempt of job` (a fault
+  when the job is not running). In plans such a value is `{"running":
+  {"attempt": 2}}`. Example: `retry.zin`.
+- `plan/2`: plans whose state holds records, nested maps, optional values,
+  sets, lists or enumerations with members say `plan/2`;
+  every other plan stays `plan/1`. The Python, JavaScript, Go and JUnit
+  runners read both, and compare `null`, lists in order, native sets in any
+  order, and records given as dataclasses, Java records or Go structs.
+- Rust API: `FieldType::Map` holds its value type as `Box<FieldType>`, and
+  `FieldType::width` gives the number of state slots a type occupies. Map
+  reads and writes address slots through key steps with a stride, so nested
+  types can share one layout. Checking, plans and diagrams are unchanged.
 - `zin observe <spec> [--fields a,b]` reports what an adapter observing those
   fields (none: accepted and rejected calls only) lets a test run tell apart:
   states no sequence of calls separates (exit 1, with the fields to observe),

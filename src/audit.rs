@@ -88,8 +88,13 @@ fn swapped(operator: BinaryOperator) -> Option<(BinaryOperator, &'static str)> {
         BinaryOperator::And => (BinaryOperator::Or, "'and' becomes 'or'"),
         BinaryOperator::Or => (BinaryOperator::And, "'or' becomes 'and'"),
         BinaryOperator::Add => (BinaryOperator::Subtract, "'+' becomes '-'"),
+        BinaryOperator::With => (BinaryOperator::Without, "'with' becomes 'without'"),
+        BinaryOperator::Without => (BinaryOperator::With, "'without' becomes 'with'"),
         BinaryOperator::Subtract => (BinaryOperator::Add, "'-' becomes '+'"),
-        BinaryOperator::Implies | BinaryOperator::Multiply | BinaryOperator::Divide => return None,
+        BinaryOperator::Implies
+        | BinaryOperator::Multiply
+        | BinaryOperator::Divide
+        | BinaryOperator::Has => return None,
     })
 }
 
@@ -112,7 +117,46 @@ fn variants(expr: &Expr) -> Vec<(String, Expr)> {
                 )
             })
             .collect(),
-        Expr::Literal(_) | Expr::Name { .. } => Vec::new(),
+        Expr::Literal(_) | Expr::Name { .. } | Expr::Every(_) => Vec::new(),
+        Expr::Subscript { base, key } => {
+            let mut all = boxed(variants(base), |base| Expr::Subscript {
+                base,
+                key: key.clone(),
+            });
+            all.extend(boxed(variants(key), |key| Expr::Subscript {
+                base: base.clone(),
+                key,
+            }));
+            all
+        }
+        Expr::Items(items) => items
+            .iter()
+            .enumerate()
+            .flat_map(|(index, item)| {
+                variants(item).into_iter().map(move |(description, item)| {
+                    let mut changed = items.clone();
+                    if let Some(slot) = changed.get_mut(index) {
+                        *slot = item;
+                    }
+                    (description, Expr::Items(changed))
+                })
+            })
+            .collect(),
+        Expr::Record(members) => members
+            .iter()
+            .enumerate()
+            .flat_map(|(index, (_, value))| {
+                variants(value)
+                    .into_iter()
+                    .map(move |(description, value)| {
+                        let mut changed = members.clone();
+                        if let Some(member) = changed.get_mut(index) {
+                            member.1 = value;
+                        }
+                        (description, Expr::Record(changed))
+                    })
+            })
+            .collect(),
         Expr::Index { map, key, span } => boxed(variants(key), |key| Expr::Index {
             map: map.clone(),
             key,

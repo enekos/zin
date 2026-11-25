@@ -36,9 +36,15 @@ scenario "Name"                    # worked examples, checked and turned into te
 | Enumeration | `one of open, closed` or `one of open, closed or frozen` |
 | Named type | `a worker` / `worker` (declared under `types`) |
 | Map | `a map from worker to a boolean` |
+| Record | `a record with (status is one of draft, paid, items is an integer from 0 to 2)` |
+| Optional | `a worker or nothing`, `an integer from 1 to 3 or nothing` |
+| Set | `a set of worker` |
+| List | `a list of at most 3 message` |
+| Enumeration with members | `one of queued, running with (attempt is an integer from 1 to 3), succeeded` |
 
-Map keys must be finite (an enum, a boolean, or a bounded integer); map values
-are any non-map type. Every key always has a value.
+Map keys must be a named finite type (an enum, a boolean, or a bounded
+integer); map values may be any type, including maps and records. Every key
+always has a value.
 
 Enum values are plain words. Quote one (`"on"`) when it would otherwise read as
 a keyword or as another name. An enum value may belong to several enums; where
@@ -82,6 +88,175 @@ from the declared ranges, so `load of w + 1` over a bounded map keeps the
 reduction. `zin check` notes why it explored the full state space. `zin check
 --symmetry off` turns the reduction off.
 
+### Records and nested maps
+
+```zin
+types
+  order is a record with (status is one of draft, paid, shipped, items is an integer from 0 to 2)
+
+state
+  orders is a map from customer to order
+  paid_on is a map from customer to a map from day to a boolean
+
+initially
+  orders of every customer is {status: draft, items: 0}
+  paid_on of every customer is {mon: false, tue: false}
+```
+
+A record groups values that belong together, so they cannot drift apart the
+way two parallel maps can. Members are separated by commas, as action
+parameters are, and may have any type.
+
+- **Reading.** `status of orders of c` reads right to left: the entry `c` of
+  `orders`, then its member `status`. `name of x` is a member when `x` is a
+  record and a map entry when `name` is a map; the types decide. Index a map
+  that is itself a map value with brackets: `paid_on[c][tue]`.
+- **Literals.** `{status: paid, items: 2}` is a record; members may come in
+  any order. The same braces write a whole map with one value per key:
+  `{mon: false, tue: false}`. A literal takes its type from the other side of
+  `is` or `becomes`.
+- **Comparison.** `is` and `is not` compare whole records and maps, member by
+  member; the other operators take integers.
+- **Assignment.** Any path can be assigned: `items of orders of c becomes 1`,
+  `orders of c becomes {status: shipped, items: 2}`,
+  `status of orders of every customer becomes draft`. A path may use `of every`
+  once, and every other key on it must then be a constant.
+- **Limits.** Action parameters, quantifiers and map keys stay integers,
+  booleans and enums.
+
+Every slot of a record is part of the state: an order with two members takes
+two slots, a map from two customers to orders takes four. Plans for a
+specification with records or nested maps are [`plan/2`](plan-format.md).
+
+### Optional values
+
+```zin
+state
+  lease is a record with (holder is a worker, left is ticks) or nothing
+  last is a worker or nothing
+
+action acquire(w is a worker)
+  requires lease is nothing
+  lease becomes {holder: w, left: 2}
+  last becomes w
+```
+
+`<type> or nothing` holds a value of the type or no value, so an absent
+holder needs no made-up worker and an unasked question no made-up number 0.
+`nothing` is the absent value.
+
+- **Comparison.** `lease is nothing`, `last is not nothing`, and `last is w`,
+  which is false when `last` is nothing.
+- **Assignment.** Assign a value or `nothing`; `if` may mix the two.
+- **Reading the value.** Where an integer, boolean or enum is needed
+  (arithmetic, ordering, a condition, a map key) and wherever a member is read
+  (`left of lease`), the value is used, and reading it when it is nothing is a
+  model fault. Guard the read: `lease is not nothing and left of lease is 1`.
+- An optional record is assigned whole; its members cannot be assigned one by
+  one.
+
+### Sets
+
+```zin
+state
+  inside is a set of worker
+
+initially
+  inside is []
+
+always
+  every w in inside satisfies visited has w
+  size of inside <= 2
+
+action enter(w is a worker)
+  requires not inside has w
+  inside becomes inside with w
+```
+
+A set holds any selection of a named finite type's values, one slot per value.
+
+| | |
+| --- | --- |
+| `[ann, ben]`, `[]` | a set; it takes its type from the other side of `is` or `becomes` |
+| `inside has w` | membership, a comparison |
+| `inside with w`, `inside without w` | the set plus or minus a value; with another set, union and difference |
+| `size of inside` | the number of members |
+| `every w in inside satisfies ...` | quantifiers range over a set field's members as well as over a type |
+
+`with` and `without` bind more loosely than arithmetic and more tightly than
+comparisons. Sets compare with `is`. In plans a set is an array of its members
+in the order the element type declares them; runners and `zin trace` match it
+in any order.
+
+### Lists
+
+```zin
+state
+  queue is a list of at most 2 message
+
+initially
+  queue is []
+
+action send(m is a message)
+  requires length of queue < 2
+  queue becomes queue with m
+
+action deliver
+  requires queue is not []
+  received becomes received with first of queue
+  queue becomes rest of queue
+```
+
+A list holds up to its capacity of items in order; an item may be of any
+type. It takes a length slot and the slots of every item it could hold.
+
+| | |
+| --- | --- |
+| `[ping, pong]`, `[]` | a list; it takes its type from the other side of `is` or `becomes` |
+| `queue with m` | `m` appended at the end; appending to a full list is a model fault |
+| `queue without m` | every item equal to `m` removed, the rest kept in order |
+| `queue has m` | whether some item equals `m` |
+| `length of queue` | the number of items |
+| `first of queue`, `last of queue` | an item; reading one from an empty list is a model fault |
+| `rest of queue` | all but the first item; a fault when the list is empty |
+| `every m in queue satisfies ...` | quantifiers range over a list field's items, in order |
+
+Lists compare with `is`, item by item. `queue without m with m` moves `m` to
+the end, which is how `examples/recency.zin` keeps a least recently used
+order. In plans a list is an array.
+
+### Enumeration values with members
+
+```zin
+state
+  job is one of queued, running with (attempt is attempt), succeeded, failed with (reason is one of crashed, timed_out)
+
+action start
+  requires job is queued
+  job becomes running with {attempt: tries + 1}
+
+action crash
+  requires job is running
+  job becomes if attempt of job is 3 then failed with {reason: crashed} else queued
+```
+
+A value of an enumeration may carry members that exist only while it holds:
+the attempt number while running, the reason once failed. A status enum with
+side fields would let those fields hold stale values in every other state;
+here they cannot.
+
+- **Writing a value.** A case without members is its name (`queued`). A case
+  with members is `running with {attempt: 2}`; naming it bare is an error.
+- **Testing the case.** `job is running` is true whatever the attempt;
+  `job is running with {attempt: 3}` also compares the members.
+- **Reading a member.** `attempt of job` reads the member of the case that
+  holds; when the case has no such member it is a model fault, so guard it:
+  `job is running and attempt of job is 3`.
+- Members are assigned with the whole value, never one by one.
+
+In plans a case without members is a string and a case with members an
+object with one key, the case: `{"running": {"attempt": 2}}`.
+
 ## State and initial values
 
 ```zin
@@ -95,7 +270,8 @@ initially
   at of alice is holding         # single entries refine 'of every'
 ```
 
-Every variable, and every key of every map, must receive an initial value.
+Every variable, every key of every map and every member of every record must
+receive an initial value.
 
 ## Expressions
 
@@ -128,7 +304,7 @@ number of w in worker where at of w is done
 ```
 
 Quantifiers range over a named type (declare `small is an integer from 1 to 3`
-under `types` to range over numbers) and extend as far to the right as
+under `types` to range over numbers) or over the members of a set field or the items of a list field and extend as far to the right as
 possible; parenthesize them inside larger expressions.
 
 Expressions are statically typed. Integers, booleans and each enum are
@@ -163,7 +339,8 @@ fair action deposit(amount is an integer from 1 to 5, w is a worker)
   Otherwise it is **rejected** and the state does not change.
 - All assignments read the state **before** the action: `a becomes b` and
   `b becomes a` in one action swap the two.
-- Assigning the same variable or map entry twice in one action is an error.
+- Assigning the same variable, map entry or record member twice in one action
+  is an error, including through a whole record and one of its members.
   The one exception: `m of every <type>` sets a default that assignments to
   single entries refine.
 - A variable not assigned keeps its value.

@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/enekos/zin/blob/main/docs/plan.schema.json",
-  "title": "Zin test plan (plan/1)",
-  "description": "The single definition of the plan file that `zin plan` writes and every runner reads. Keys marked optional are absent from plans written before 0.3; runners must accept both. See docs/plan-format.md for the meaning of each key and the runner contract.",
+  "title": "Zin test plan (plan/1 and plan/2)",
+  "description": "The single definition of the plan file that `zin plan` writes and every runner reads. Keys marked optional are absent from plans written before 0.3; runners must accept both. A plan is plan/2 exactly when some field type is not a scalar or a map of scalars. See docs/plan-format.md for the meaning of each key and the runner contract.",
   "type": "object",
   "required": ["zin", "system", "fingerprint", "cover", "fields", "actions", "states", "parents", "calls", "tests", "summary"],
   "properties": {
-    "zin": { "enum": ["plan/1"] },
+    "zin": { "enum": ["plan/1", "plan/2"] },
     "system": { "type": "string" },
     "fingerprint": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
     "sources": {
@@ -142,12 +142,38 @@
       "type": "object",
       "required": ["kind"],
       "properties": {
-        "kind": { "enum": ["integer", "boolean", "enum", "map"] },
+        "kind": { "enum": ["integer", "boolean", "enum", "map", "record", "optional", "set", "list", "variant"] },
+        "cases": {
+          "description": "variant: each case's name and members, in declaration order",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "members"],
+            "properties": {
+              "name": { "type": "string" },
+              "members": { "type": "array" }
+            }
+          }
+        },
+        "capacity": { "type": "integer", "minimum": 1 },
+        "element": { "$ref": "#/$defs/fieldType" },
         "min": { "type": "integer" },
         "max": { "type": "integer" },
         "values": { "type": "array", "items": { "type": "string" } },
         "keys": { "type": "array", "items": { "type": "string" } },
-        "value": { "$ref": "#/$defs/domain" }
+        "value": { "$ref": "#/$defs/fieldType" },
+        "members": {
+          "description": "record: the members in declaration order",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "type"],
+            "properties": {
+              "name": { "type": "string" },
+              "type": { "$ref": "#/$defs/fieldType" }
+            }
+          }
+        }
       }
     }
   }

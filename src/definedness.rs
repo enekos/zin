@@ -7,7 +7,7 @@
 //! happens. Symmetry reduction is sound only when no such quantifier exists.
 
 use crate::ast::{BinaryOperator, Quantifier};
-use crate::model::{Domain, FieldType, Ir, Model, Target};
+use crate::model::{Domain, Ir, Model, Target};
 
 /// The values an expression can take.
 #[derive(Debug, Clone)]
@@ -123,38 +123,65 @@ impl Analysis<'_> {
             .any(|group| group.contains(&raw))
     }
 
-    fn map_values(&self, offset: usize) -> Values {
+    /// Every slot an index can reach has the domain of the first one.
+    fn slot_values(&self, slot: usize) -> Values {
         self.model
-            .fields
-            .iter()
-            .find(|field| field.offset == offset)
-            .map_or(ANY, |field| match &field.kind {
-                FieldType::Map { value, .. } => Values::of(value),
-                FieldType::Scalar(domain) => Values::of(domain),
-            })
+            .slots
+            .get(slot)
+            .map_or(ANY, |slot| Values::of(&slot.domain))
     }
 
     fn facts(&mut self, ir: &Ir) -> Facts {
         match ir {
             Ir::Const(raw) => Facts::total(Values::Range(i128::from(*raw), i128::from(*raw))),
-            Ir::Slot(slot) => Facts::total(
-                self.model
-                    .slots
-                    .get(*slot)
-                    .map_or(ANY, |slot| Values::of(&slot.domain)),
-            ),
+            Ir::Slot(slot) => Facts::total(self.slot_values(*slot)),
             Ir::Local(local) => {
                 Facts::total(self.locals.get(*local).cloned().flatten().unwrap_or(ANY))
             }
-            Ir::Index {
-                offset, keys, key, ..
+            Ir::Index { offset, steps } => {
+                let mut facts = Facts::total(self.slot_values(*offset));
+                for step in steps {
+                    let key = self.facts(&step.key);
+                    facts.can_fault |= key.can_fault || !key.values.within(&step.keys);
+                    facts.order_sensitive |= key.order_sensitive;
+                }
+                facts
+            }
+            Ir::Select {
+                key, keys, options, ..
             } => {
                 let key = self.facts(key);
-                Facts {
-                    values: self.map_values(*offset),
+                let mut facts = Facts {
+                    values: BOOLEAN,
                     can_fault: key.can_fault || !key.values.within(keys),
                     order_sensitive: key.order_sensitive,
+                };
+                for (index, option) in options.iter().enumerate() {
+                    let option = self.facts(option);
+                    facts.values = if index == 0 {
+                        option.values
+                    } else {
+                        facts.values.union(option.values)
+                    };
+                    facts.can_fault |= option.can_fault;
+                    facts.order_sensitive |= option.order_sensitive;
                 }
+                facts
+            }
+            Ir::Fail(_) => Facts {
+                values: Values::Range(0, 0),
+                can_fault: true,
+                order_sensitive: false,
+            },
+            Ir::Tuple(parts) => {
+                let mut facts = Facts::total(BOOLEAN);
+                for part in parts {
+                    let part = self.facts(part);
+                    facts.values = facts.values.union(part.values);
+                    facts.can_fault |= part.can_fault;
+                    facts.order_sensitive |= part.order_sensitive;
+                }
+                facts
             }
             Ir::Not(value) => {
                 let value = self.facts(value);
@@ -296,7 +323,8 @@ pub(crate) fn order_sensitive(model: &Model) -> bool {
                 .any(|condition| analysis.order_sensitive(&condition.ir))
                 || action.assignments.iter().any(|assignment| {
                     analysis.order_sensitive(&assignment.value)
-                        || matches!(&assignment.target, Target::Indexed { key, .. } if analysis.order_sensitive(key))
+                        || matches!(&assignment.target, Target::Indexed { steps, .. }
+                            if steps.iter().any(|step| analysis.order_sensitive(&step.key)))
                 })
         })
 }

@@ -21,6 +21,7 @@ test, so pytest and unittest both collect and report it natively.
 
 from __future__ import annotations
 
+import dataclasses
 import enum
 import inspect
 import json
@@ -48,6 +49,8 @@ __all__ = [
 __version__ = "0.4.0"
 
 PLAN_FORMAT = "plan/1"
+# plan/2 carries records, nested maps, optional values, sets and lists.
+PLAN_FORMATS = (PLAN_FORMAT, "plan/2")
 # How many of the latest steps a report lists before eliding earlier ones.
 LISTED_STEPS = 8
 PathLike = Union[str, "os.PathLike[str]"]
@@ -137,8 +140,8 @@ def _compatible(plan: dict, options: dict, explicit: bool) -> bool:
 
 
 def _validate(plan: Any, origin: Any) -> dict:
-    if not isinstance(plan, dict) or plan.get("zin") != PLAN_FORMAT:
-        raise PlanError(f"{origin} is not a {PLAN_FORMAT} file")
+    if not isinstance(plan, dict) or plan.get("zin") not in PLAN_FORMATS:
+        raise PlanError(f"{origin} is not a {' or '.join(PLAN_FORMATS)} file")
     try:
         params = {action["name"]: len(action["params"]) for action in plan["actions"]}
         for index, call in enumerate(plan["calls"]):
@@ -260,11 +263,31 @@ def load_plan(
 
 
 def _plain(value: Any) -> Any:
-    """An observed value in the plan's JSON vocabulary."""
+    """An observed value in the plan's JSON vocabulary. A set stays a frozenset,
+    so it is compared without regard to order."""
     if isinstance(value, enum.Enum):
         return value.value if isinstance(value.value, str) else value.name
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return {field.name: _plain(getattr(value, field.name)) for field in dataclasses.fields(value)}
+    if isinstance(value, tuple) and hasattr(value, "_asdict"):
+        return {key: _plain(item) for key, item in value._asdict().items()}
     if isinstance(value, dict):
         return {_key(key): _plain(item) for key, item in value.items()}
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_plain(item) for item in value)
+    if isinstance(value, (list, tuple)):
+        return [_plain(item) for item in value]
+    return value
+
+
+def _json(value: Any) -> Any:
+    """A plain value as JSON: sets become lists in a stable order."""
+    if isinstance(value, frozenset):
+        return sorted((_json(item) for item in value), key=lambda item: json.dumps(item, sort_keys=True))
+    if isinstance(value, dict):
+        return {key: _json(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json(item) for item in value]
     return value
 
 
@@ -276,8 +299,12 @@ def _key(key: Any) -> str:
 
 
 def _show(value: Any) -> str:
+    if value is None:
+        return "nothing"
     if isinstance(value, bool):
         return "true" if value else "false"
+    if isinstance(value, (list, frozenset)):
+        return "[" + ", ".join(_show(item) for item in _json(value)) + "]"
     if isinstance(value, dict):
         return "{" + ", ".join(f"{key}: {_show(item)}" for key, item in value.items()) + "}"
     return str(value)
@@ -287,6 +314,16 @@ def _same(expected: Any, observed: Any) -> bool:
     if isinstance(expected, dict):
         return isinstance(observed, dict) and all(
             key in expected and _same(expected[key], item) for key, item in observed.items()
+        )
+    if isinstance(expected, list):
+        if isinstance(observed, frozenset):
+            return len(observed) == len(expected) and all(
+                any(_same(wanted, item) for wanted in expected) for item in observed
+            )
+        return (
+            isinstance(observed, list)
+            and len(observed) == len(expected)
+            and all(_same(wanted, item) for wanted, item in zip(expected, observed))
         )
     # bool is an int in Python; the specification keeps them apart.
     return type(expected) is type(observed) and expected == observed
@@ -581,7 +618,7 @@ class Recorder:
             "outcome": "accepted" if accepted else "rejected",
         }
         if state is not None:
-            record["state"] = _plain(state)
+            record["state"] = _json(_plain(state))
         self._write(record)
 
     def reset(self) -> None:

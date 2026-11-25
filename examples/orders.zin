@@ -1,0 +1,61 @@
+system "Orders"
+
+# Each customer has one order. A record keeps an order's status and size
+# together, where two parallel maps would let them drift apart. A nested map
+# records which days a customer paid on.
+
+types
+  interchangeable customer is one of ann, ben
+  day is one of mon, tue
+  order is a record with (status is one of draft, paid, shipped, items is an integer from 0 to 2)
+
+state
+  orders is a map from customer to order
+  paid_on is a map from customer to a map from day to a boolean
+  last is a record with (who is one of ann, ben, nobody, what is order)
+
+initially
+  orders of every customer is {status: draft, items: 0}
+  paid_on of every customer is {mon: false, tue: false}
+  last is {who: nobody, what: {status: draft, items: 0}}
+
+always
+  every c in customer satisfies status of orders of c is draft or items of orders of c > 0
+never
+  status of what of last is shipped
+
+sometimes
+  some c in customer satisfies orders of c is {status: shipped, items: 2}
+  some c in customer satisfies paid_on[c][tue]
+
+action add(c is a customer)
+  requires status of orders of c is draft
+  requires items of orders of c < 2
+  items of orders of c becomes items of orders of c + 1
+
+action pay(c is a customer, d is a day)
+  requires status of orders of c is draft and items of orders of c > 0
+  status of orders of c becomes paid
+  paid_on[c][d] becomes true
+  last becomes {who: c, what: {status: paid, items: items of orders of c}}
+
+action ship(c is a customer)
+  requires status of orders of c is paid
+  orders of c becomes {status: shipped, items: items of orders of c}
+
+scenario "Pay and ship"
+  add(ann)
+  add(ann)
+  pay(ann, tue)
+  ship(ann)
+  expect orders of ann is {status: shipped, items: 2}
+  expect last is {who: ann, what: {status: paid, items: 2}}
+  expect paid_on[ann][tue] and not paid_on[ann][mon]
+  reject ship(ann)
+
+scenario "One item is enough to pay"
+  add(ben)
+  pay(ben, mon)
+  expect orders of ben is {status: paid, items: 1}
+  expect orders of ann is {status: draft, items: 0}
+  reject add(ben)

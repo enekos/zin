@@ -1,0 +1,54 @@
+system "Channel"
+
+# A bounded channel delivers messages in the order they were sent. The
+# queue and the received log are lists, so order is part of the state.
+
+types
+  message is one of ping, pong
+
+state
+  queue is a list of at most 2 message
+  received is a list of at most 3 message
+  sent is an integer from 0 to 3
+  log is a list of at most 3 message
+
+initially
+  queue is []
+  received is []
+  sent is 0
+  log is []
+
+always
+  length of queue + length of received is sent
+  length of log is sent
+  every m in received satisfies log has m
+
+sometimes
+  received is [pong, ping]
+  length of queue is 2
+
+whenever queue is not [] eventually queue is []
+
+action send(m is a message)
+  requires sent < 3 and length of queue < 2
+  queue becomes queue with m
+  sent becomes sent + 1
+  log becomes log with m
+
+fair action deliver
+  requires queue is not []
+  received becomes received with first of queue
+  queue becomes rest of queue
+
+scenario "Delivered in order"
+  reject deliver
+  send(ping)
+  send(pong)
+  reject send(ping)
+  deliver
+  expect queue is [pong] and received is [ping]
+  deliver
+  expect received is [ping, pong] and last of received is pong
+  reject deliver
+  send(ping)
+  reject send(ping)

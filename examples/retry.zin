@@ -1,0 +1,60 @@
+system "Retried job"
+
+# A job is retried until it succeeds or runs out of attempts. The attempt
+# count belongs to the running state and the reason to the failed one, so
+# neither exists when it means nothing.
+
+types
+  attempt is an integer from 1 to 3
+
+state
+  job is one of queued, running with (attempt is attempt), succeeded, failed with (reason is one of crashed, timed_out)
+  tries is an integer from 0 to 3
+
+initially
+  job is queued
+  tries is 0
+
+always
+  job is running implies attempt of job is tries
+  job is failed implies tries is 3
+never
+  job is failed with {reason: timed_out} and tries < 3
+
+sometimes
+  job is succeeded
+  job is failed with {reason: crashed}
+  job is failed with {reason: timed_out}
+  job is running with {attempt: 3}
+
+eventually
+  job is succeeded or job is failed
+
+fair action start
+  requires job is queued
+  job becomes running with {attempt: tries + 1}
+  tries becomes tries + 1
+
+action succeed
+  requires job is running
+  job becomes succeeded
+
+action crash
+  requires job is running
+  job becomes if attempt of job is 3 then failed with {reason: crashed} else queued
+
+action time_out
+  requires job is running and attempt of job is 3
+  job becomes failed with {reason: timed_out}
+
+scenario "Third time lucky"
+  reject succeed
+  start
+  crash
+  start
+  expect job is running with {attempt: 2}
+  crash
+  start
+  succeed
+  expect job is succeeded and tries is 3
+  reject start

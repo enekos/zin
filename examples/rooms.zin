@@ -1,0 +1,53 @@
+system "Rooms"
+
+# Who is in the meeting room and who has been in it today. A set says it
+# directly, where a map from worker to a boolean only encodes it.
+
+types
+  interchangeable worker is one of ann, ben, cid
+
+state
+  inside is a set of worker
+  visited is a set of worker
+  open is a boolean
+
+initially
+  inside is []
+  visited is []
+  open is true
+
+always
+  every w in inside satisfies visited has w
+  size of inside <= 2
+never
+  not open and inside is not []
+
+sometimes
+  size of visited is 3 and inside is []
+  number of w in inside where visited has w is 2
+
+action enter(w is a worker)
+  requires open and not inside has w and size of inside < 2
+  inside becomes inside with w
+  visited becomes visited with w
+
+action leave(w is a worker)
+  requires inside has w
+  inside becomes inside without w
+
+action close
+  requires open and inside is []
+  open becomes false
+
+scenario "Two in, one out"
+  reject leave(cid)
+  enter(ann)
+  enter(ben)
+  reject enter(cid)
+  reject enter(ann)
+  leave(ann)
+  expect inside is [ben] and visited is [ann, ben]
+  reject close
+  leave(ben)
+  close
+  reject enter(cid)

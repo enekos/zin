@@ -95,6 +95,9 @@ for (const item of CASES.replay) {
 // JavaScript has no enum type; enum-like values are their names.
 function native(value) {
   if (value !== null && typeof value === "object" && "$enum" in value) return value.$enum;
+  if (value !== null && typeof value === "object" && "$set" in value) return new Set(value.$set.map(native));
+  if (value !== null && typeof value === "object" && "$record" in value) return native(value.$record);
+  if (Array.isArray(value)) return value.map(native);
   if (value !== null && typeof value === "object" && "$map" in value) {
     return new Map(value.$map.map(([key, item]) => [native(key), native(item)]));
   }

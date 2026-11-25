@@ -1,0 +1,57 @@
+system "Lease"
+
+# A lease is held by one worker or by nobody, and a held lease has a number
+# of ticks left. With 'or nothing' the absent holder has no fake worker and
+# no fake tick count.
+
+types
+  interchangeable worker is one of ann, ben, cid
+  ticks is an integer from 1 to 2
+
+state
+  lease is a record with (holder is a worker, left is ticks) or nothing
+  last is a worker or nothing
+
+initially
+  lease is nothing
+  last is nothing
+
+always
+  lease is nothing or last is holder of lease
+never
+  some w in worker satisfies lease is {holder: w, left: 2} and last is not w
+
+sometimes
+  lease is nothing and last is not nothing
+  lease is not nothing and left of lease is 1
+
+action acquire(w is a worker)
+  requires lease is nothing
+  lease becomes {holder: w, left: 2}
+  last becomes w
+
+action tick
+  requires lease is not nothing
+  lease becomes if left of lease is 1 then nothing else {holder: holder of lease, left: left of lease - 1}
+
+action release(w is a worker)
+  requires lease is not nothing and holder of lease is w
+  lease becomes nothing
+
+scenario "Expires after two ticks"
+  acquire(ann)
+  tick
+  expect left of lease is 1
+  tick
+  expect lease is nothing and last is ann
+  reject tick
+  reject release(ann)
+
+scenario "Only the holder releases"
+  acquire(ann)
+  reject acquire(ben)
+  reject release(ben)
+  release(ann)
+  expect lease is nothing
+  acquire(ben)
+  expect holder of lease is ben and last is ben

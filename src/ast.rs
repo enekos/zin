@@ -99,11 +99,33 @@ pub struct Field {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeExpr {
-    Integer { min: i64, max: i64 },
-    Enum { values: Vec<String> },
+    Integer {
+        min: i64,
+        max: i64,
+    },
+    Enum {
+        values: Vec<String>,
+    },
     Boolean,
     Named(String),
-    Map { key: String, value: Box<TypeExpr> },
+    Map {
+        key: String,
+        value: Box<TypeExpr>,
+    },
+    /// `a record with (name is <type>, ...)`: named members, in order.
+    Record(Vec<Field>),
+    /// `<type> or nothing`: a value of the type, or no value.
+    Optional(Box<TypeExpr>),
+    /// `a set of <type>`: any selection of the named finite type's values.
+    Set(String),
+    /// `a list of at most <capacity> <type>`: values in order, up to a bound.
+    List {
+        capacity: usize,
+        element: Box<TypeExpr>,
+    },
+    /// `one of idle, running with (attempts is <type>), ...`: an enumeration
+    /// whose values may carry members. Each case has its members, possibly none.
+    Variant(Vec<(String, Vec<Field>)>),
 }
 
 impl fmt::Display for TypeExpr {
@@ -114,6 +136,38 @@ impl fmt::Display for TypeExpr {
             Self::Boolean => formatter.write_str("a boolean"),
             Self::Named(name) => formatter.write_str(name),
             Self::Map { key, value } => write!(formatter, "a map from {key} to {value}"),
+            Self::Record(members) => {
+                let members = members
+                    .iter()
+                    .map(|member| format!("{} is {}", member.name, member.kind))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(formatter, "a record with ({members})")
+            }
+            Self::Optional(value) => write!(formatter, "{value} or nothing"),
+            Self::Set(element) => write!(formatter, "a set of {element}"),
+            Self::List { capacity, element } => {
+                write!(formatter, "a list of at most {capacity} {element}")
+            }
+            Self::Variant(cases) => {
+                let cases = cases
+                    .iter()
+                    .map(|(name, members)| {
+                        if members.is_empty() {
+                            name.clone()
+                        } else {
+                            let members = members
+                                .iter()
+                                .map(|member| format!("{} is {}", member.name, member.kind))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            format!("{name} with ({members})")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(formatter, "one of {cases}")
+            }
         }
     }
 }
@@ -177,20 +231,15 @@ impl Property {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TargetKey {
-    Whole,
-    At(Expr),
-    Every(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Assignment {
-    pub field: String,
-    pub key: TargetKey,
+    /// What is assigned: a state field, or a path into one built from map
+    /// keys (`at of w`, `m[a][b]`), members (`status of order`) and
+    /// `of every <type>` ([`Expr::Every`] as a key).
+    pub place: Expr,
     pub value: Expr,
     pub source: String,
     pub line: usize,
-    /// The assigned field's name.
+    /// The first name of the assigned path.
     pub target: Span,
     /// The action parameters this clause may read. `None` means all of them.
     pub params: Option<Arc<[String]>>,
@@ -279,6 +328,16 @@ pub enum Value {
     Symbol(String),
     Boolean(bool),
     Map(BTreeMap<String, Value>),
+    /// The value of an optional that holds none.
+    Nothing,
+    /// The items of a list in order, or the members of a set in the order
+    /// their type declares them.
+    List(Vec<Value>),
+    /// A value of an enumeration case that carries members.
+    Tagged {
+        tag: String,
+        members: BTreeMap<String, Value>,
+    },
 }
 
 impl Value {
@@ -303,7 +362,20 @@ impl Value {
                     .join(", ");
                 format!("{{{entries}}}")
             }
-            Self::Integer(_) | Self::Boolean(_) => self.to_string(),
+            Self::List(items) => format!(
+                "[{}]",
+                items
+                    .iter()
+                    .map(Value::source)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Self::Tagged { tag, members } => format!(
+                "{} with {}",
+                Self::Symbol(tag.clone()).source(),
+                Self::Map(members.clone()).source()
+            ),
+            Self::Integer(_) | Self::Boolean(_) | Self::Nothing => self.to_string(),
         }
     }
 }
@@ -345,6 +417,7 @@ pub fn is_reserved_word(name: &str) -> bool {
             | "satisfies"
             | "where"
             | "eventually"
+            | "nothing"
     )
 }
 
@@ -355,6 +428,8 @@ impl fmt::Display for Value {
             Self::Symbol(value) => formatter.write_str(value),
             Self::Boolean(value) => write!(formatter, "{value}"),
             Self::Map(_) => formatter.write_str(&self.source()),
+            Self::Nothing => formatter.write_str("nothing"),
+            Self::List(_) | Self::Tagged { .. } => formatter.write_str(&self.source()),
         }
     }
 }
@@ -366,12 +441,25 @@ pub enum Expr {
         name: String,
         span: Span,
     },
+    /// `name of key` or `name[key]`: an entry of the map field `name`, or the
+    /// member `name` of the record `key`, decided by the types.
     Index {
         map: String,
         key: Box<Expr>,
         /// The map's name.
         span: Span,
     },
+    /// `base[key]` where `base` is itself an entry or member: `m[a][b]`.
+    Subscript {
+        base: Box<Expr>,
+        key: Box<Expr>,
+    },
+    /// `{name: value, ...}`: a record value.
+    Record(Vec<(String, Expr)>),
+    /// `[a, b, ...]`: the items of a list or the members of a set.
+    Items(Vec<Expr>),
+    /// `every <type>` as a key in an assignment target: all keys at once.
+    Every(String),
     Unary {
         operator: UnaryOperator,
         value: Box<Expr>,
@@ -422,4 +510,12 @@ pub enum BinaryOperator {
     Subtract,
     Multiply,
     Divide,
+    /// `s has x`: whether the set or list `s` holds `x`.
+    Has,
+    /// `s with x`: `s` and also `x`, a value or a set; for a list, `x`
+    /// appended at the end.
+    With,
+    /// `s without x`: `s` except `x`, a value or a set; for a list, every
+    /// item equal to `x` removed.
+    Without,
 }

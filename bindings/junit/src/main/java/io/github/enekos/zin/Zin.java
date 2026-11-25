@@ -10,13 +10,18 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.lang.reflect.RecordComponent;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
@@ -35,6 +40,8 @@ import java.util.stream.Stream;
 public final class Zin {
     /** The plan file format this binding reads. */
     public static final String PLAN_FORMAT = "plan/1";
+    /** The format of plans whose state holds records, nested maps, optional values, sets or lists. */
+    public static final String PLAN_FORMAT_2 = "plan/2";
     // How many of the latest steps a report lists before eliding earlier ones.
     private static final int LISTED_STEPS = 8;
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -324,8 +331,9 @@ public final class Zin {
     }
 
     private static JsonNode validate(JsonNode plan, Object origin) throws PlanException {
-        if (plan == null || !PLAN_FORMAT.equals(plan.path("zin").asText(null))) {
-            throw new PlanException(origin + " is not a " + PLAN_FORMAT + " file");
+        String format = plan == null ? null : plan.path("zin").asText(null);
+        if (!PLAN_FORMAT.equals(format) && !PLAN_FORMAT_2.equals(format)) {
+            throw new PlanException(origin + " is not a " + PLAN_FORMAT + " or " + PLAN_FORMAT_2 + " file");
         }
         Map<String, Integer> params = new LinkedHashMap<>();
         for (JsonNode action : array(plan, "actions", origin)) {
@@ -542,9 +550,37 @@ public final class Zin {
     }
 
     /** An observed value in the plan's vocabulary: Long, Boolean, String or a map of them. */
+    /**
+     * An observed value in the plan's vocabulary. A {@link Set} stays a set and
+     * matches in any order; another collection is a list; a record is a map of
+     * its components; an empty {@link Optional} is nothing.
+     */
     static Object plain(Object value) {
+        if (value instanceof Optional<?> optional) return plain(optional.orElse(null));
         if (value instanceof Enum<?> member) return member.toString();
         if (value instanceof Boolean || value instanceof String || value == null) return value;
+        if (value instanceof Set<?> set) {
+            Set<Object> out = new LinkedHashSet<>();
+            set.forEach(item -> out.add(plain(item)));
+            return out;
+        }
+        if (value instanceof Collection<?> items) {
+            List<Object> out = new ArrayList<>();
+            items.forEach(item -> out.add(plain(item)));
+            return out;
+        }
+        if (value instanceof Record record) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            for (RecordComponent component : record.getClass().getRecordComponents()) {
+                try {
+                    component.getAccessor().setAccessible(true);
+                    out.put(component.getName(), plain(component.getAccessor().invoke(record)));
+                } catch (ReflectiveOperationException error) {
+                    throw new IllegalStateException("cannot read " + component.getName() + " of " + record, error);
+                }
+            }
+            return out;
+        }
         if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) {
             return ((Number) value).longValue();
         }
@@ -557,6 +593,23 @@ public final class Zin {
     }
 
     private static boolean same(JsonNode expected, Object observed) {
+        if (expected.isNull()) return observed == null;
+        if (expected.isArray()) {
+            if (observed instanceof Set<?> set) {
+                if (set.size() != expected.size()) return false;
+                for (Object item : set) {
+                    boolean found = false;
+                    for (JsonNode wanted : expected) found |= same(wanted, item);
+                    if (!found) return false;
+                }
+                return true;
+            }
+            if (!(observed instanceof List<?> list) || list.size() != expected.size()) return false;
+            for (int index = 0; index < list.size(); index++) {
+                if (!same(expected.get(index), list.get(index))) return false;
+            }
+            return true;
+        }
         if (expected.isObject()) {
             if (!(observed instanceof Map<?, ?> map)) return false;
             for (var entry : map.entrySet()) {
@@ -572,6 +625,12 @@ public final class Zin {
     }
 
     private static String show(Object value) {
+        if (value == null) return "nothing";
+        if (value instanceof Collection<?> items) {
+            List<String> parts = new ArrayList<>();
+            items.forEach(item -> parts.add(show(item)));
+            return "[" + String.join(", ", parts) + "]";
+        }
         if (value instanceof Map<?, ?> map) {
             List<String> parts = new ArrayList<>();
             map.forEach((key, item) -> parts.add(key + ": " + show(item)));
