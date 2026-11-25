@@ -81,12 +81,58 @@ fn sources(kind: &FieldType, relabel: &impl Fn(i64) -> i64, groups: &[Vec<i64>])
     }
 }
 
-fn relabeling(model: &Model, values: Vec<i64>, groups: &[Vec<i64>]) -> Relabeling {
+/// Every adjacent transposition of each group, as a table of raw values.
+fn swaps(model: &Model, groups: &[Vec<i64>]) -> Vec<Vec<i64>> {
+    let mut out = Vec::new();
+    for group in groups {
+        for pair in group.windows(2) {
+            let mut values: Vec<i64> = (0..symbol_count(model)).collect();
+            let (first, second) = (at_raw(pair[0]), at_raw(pair[1]));
+            if first < values.len() && second < values.len() {
+                values.swap(first, second);
+            }
+            out.push(values);
+        }
+    }
+    out
+}
+
+/// The fields whose slots some relabeling moves: a map keyed by, or a set
+/// of, an interchangeable type, possibly nested. The swaps generate every
+/// relabeling, so a field none of them moves never moves.
+fn moving_fields(model: &Model, groups: &[Vec<i64>]) -> Vec<usize> {
+    let swaps = swaps(model, groups);
+    (0..model.fields.len())
+        .filter(|index| {
+            let kind = &model.fields[*index].kind;
+            swaps.iter().any(|values| {
+                let relabel = |raw: i64| {
+                    usize::try_from(raw)
+                        .ok()
+                        .and_then(|index| values.get(index))
+                        .copied()
+                        .unwrap_or(raw)
+                };
+                sources(kind, &relabel, groups)
+                    .into_iter()
+                    .enumerate()
+                    .any(|(offset, from)| offset != from)
+            })
+        })
+        .collect()
+}
+
+fn relabeling(
+    model: &Model,
+    values: Vec<i64>,
+    groups: &[Vec<i64>],
+    moving: &[usize],
+) -> Relabeling {
     let mut relabeling = Relabeling {
         values,
         source: (0..model.slots.len()).collect(),
     };
-    for field in &model.fields {
+    for field in moving.iter().filter_map(|index| model.fields.get(*index)) {
         let relabel = |raw: i64| relabeling.value(raw);
         let moved = sources(&field.kind, &relabel, groups);
         for (offset, from) in moved.into_iter().enumerate() {
@@ -116,19 +162,13 @@ pub(crate) fn validate(model: &Model) -> Result<()> {
         relabelings: Vec::new(),
         relabeled: relabeled(model, &model.interchangeable),
     };
-    for group in &model.interchangeable {
-        for pair in group.windows(2) {
-            let mut values: Vec<i64> = (0..symbol_count(model)).collect();
-            let (first, second) = (at_raw(pair[0]), at_raw(pair[1]));
-            if first < values.len() && second < values.len() {
-                values.swap(first, second);
-            }
-            let swap = relabeling(model, values, &model.interchangeable);
-            if *symmetry.apply(&swap, &model.initial) != *model.initial {
-                return Err(Error::new(
-                    "the initial state treats interchangeable values differently",
-                ));
-            }
+    let moving = moving_fields(model, &model.interchangeable);
+    for values in swaps(model, &model.interchangeable) {
+        let swap = relabeling(model, values, &model.interchangeable, &moving);
+        if *symmetry.apply(&swap, &model.initial) != *model.initial {
+            return Err(Error::new(
+                "the initial state treats interchangeable values differently",
+            ));
         }
     }
     Ok(())
@@ -173,9 +213,10 @@ impl Symmetry {
             }
             maps = extended;
         }
+        let moving = moving_fields(model, groups);
         let relabelings = maps
             .into_iter()
-            .map(|values| relabeling(model, values, groups))
+            .map(|values| relabeling(model, values, groups, &moving))
             .collect();
         Ok(Self {
             relabelings,
