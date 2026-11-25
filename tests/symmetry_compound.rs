@@ -45,7 +45,7 @@ impl Generator {
             choices + 1
         }) {
             0 => self.rng.below(3).to_string(),
-            1 => "size of crew".into(),
+            1 => ["size of crew", "length of log"][self.rng.below(2)].into(),
             2 => "(if spare is nothing then 0 else n of spare)".into(),
             3 if !vars.is_empty() => format!("n of task of {}", self.worker(vars)),
             4 if !vars.is_empty() => format!("(n of task of {} + 1)", self.worker(vars)),
@@ -60,15 +60,19 @@ impl Generator {
     }
 
     fn atom(&mut self, depth: usize, vars: &[String]) -> String {
-        let bound = if vars.is_empty() { 5 } else { 11 };
+        let bound = if vars.is_empty() { 6 } else { 14 };
         match self.rng.below(bound) {
             0 => format!("({} is {})", self.int(depth, vars), self.rng.below(3)),
             1 => "(boss is nothing)".into(),
             2 => "(crew is [])".into(),
             3 => "(spare is nothing)".into(),
+            5 => "(log is [])".into(),
             // Unguarded: faults when the spare is nothing.
             4 => format!("(n of spare is {})", self.rng.below(3)),
-            5 => format!("(crew has {})", self.worker(vars)),
+            11 => format!("(crew has {})", self.worker(vars)),
+            12 => format!("(log has {})", self.worker(vars)),
+            // Unguarded: faults when the log is empty.
+            13 => format!("(first of log is {})", self.worker(vars)),
             6 => format!("(boss is {})", self.worker(vars)),
             7 => format!(
                 "(stage of task of {} is {})",
@@ -110,9 +114,9 @@ impl Generator {
                 inner.push(v.clone());
                 let body = self.boolean(depth - 1, &inner);
                 let (word, domain) = if quantifier == 3 {
-                    ("some", self.rng.pick(&["worker", "crew"]))
+                    ("some", self.rng.pick(&["worker", "crew", "log"]))
                 } else {
-                    ("every", self.rng.pick(&["worker", "crew"]))
+                    ("every", self.rng.pick(&["worker", "crew", "log"]))
                 };
                 format!("({word} {v} in {domain} satisfies {body})")
             }
@@ -137,8 +141,9 @@ impl Generator {
              types\n  interchangeable worker is one of {workers}\n  stage is one of idle, busy, done\n\
              state\n  crew is a set of worker\n  boss is a worker or nothing\n  \
              task is a map from worker to a record with (stage is stage, n is an integer from 0 to 2)\n  \
-             spare is a record with (who is a worker or nothing, n is an integer from 0 to 2) or nothing\n\
-             initially\n  crew is []\n  boss is nothing\n  task of every worker is {{stage: idle, n: 0}}\n  spare is nothing\n\
+             spare is a record with (who is a worker or nothing, n is an integer from 0 to 2) or nothing\n  \
+             log is a list of at most 2 worker\n\
+             initially\n  crew is []\n  boss is nothing\n  task of every worker is {{stage: idle, n: 0}}\n  spare is nothing\n  log is []\n\
              {word} {property}\n\
              action join(w is a worker)\n  requires not crew has w and {join_guard}\n  crew becomes crew with w\n\
              action quit(w is a worker)\n  requires crew has w\n  crew becomes crew without w\n  \
@@ -147,7 +152,9 @@ impl Generator {
              action work(w is a worker)\n  requires {work_guard}\n  task of w becomes {{stage: {stage}, n: {work_n}}}\n\
              action stash(w is a worker)\n  requires boss is not nothing and spare is nothing\n  \
              spare becomes {{who: {stash_who}, n: {stash_n}}}\n\
-             action drop\n  requires spare is not nothing\n  spare becomes nothing\n"
+             action drop\n  requires spare is not nothing\n  spare becomes nothing\n\
+             action note(w is a worker)\n  requires length of log < 2\n  log becomes log without w with w\n\
+             action forget\n  requires log is not []\n  log becomes rest of log\n"
         )
     }
 }

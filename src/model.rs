@@ -80,6 +80,12 @@ pub enum FieldType {
         element_type: String,
         elements: Domain,
     },
+    /// A length slot from 0 to `capacity`, then `capacity` items. Items at
+    /// or past the length hold their first values.
+    List {
+        capacity: usize,
+        element: Box<FieldType>,
+    },
 }
 
 impl FieldType {
@@ -94,6 +100,9 @@ impl FieldType {
                 .fold(0, |width, (_, kind)| width.saturating_add(kind.width())),
             Self::Optional(value) => value.width().saturating_add(1),
             Self::Set { elements, .. } => elements.size(),
+            Self::List { capacity, element } => {
+                capacity.saturating_mul(element.width()).saturating_add(1)
+            }
         }
     }
 
@@ -113,6 +122,11 @@ impl FieldType {
                 out
             }
             Self::Set { elements, .. } => vec![0; elements.size()],
+            Self::List { capacity, element } => {
+                let mut out = vec![0];
+                out.extend(element.defaults().repeat(*capacity));
+                out
+            }
         }
     }
 
@@ -121,7 +135,7 @@ impl FieldType {
         match self {
             Self::Scalar(_) => true,
             Self::Map { value, .. } => matches!(value.as_ref(), Self::Scalar(_)),
-            Self::Record(_) | Self::Optional(_) | Self::Set { .. } => false,
+            Self::Record(_) | Self::Optional(_) | Self::Set { .. } | Self::List { .. } => false,
         }
     }
 
@@ -391,6 +405,17 @@ impl Model {
                     .map(|(raw, _)| self.value(elements, raw))
                     .collect(),
             ),
+            FieldType::List { element, .. } => {
+                let width = element.width();
+                let (length, items) = slots.split_first().unwrap_or((&0, &[]));
+                Value::List(
+                    items
+                        .chunks(width.max(1))
+                        .take(usize::try_from(*length).unwrap_or(0))
+                        .map(|item| self.decode_value(element, item))
+                        .collect(),
+                )
+            }
             FieldType::Optional(value) => match slots.split_first() {
                 Some((1, rest)) => self.decode_value(value, rest),
                 _ => Value::Nothing,
@@ -552,6 +577,13 @@ pub(crate) fn observation_matches(kind: &FieldType, expected: &Value, actual: &V
         }
         (FieldType::Set { .. }, Value::List(wanted), Value::List(observed)) => {
             observed.len() == wanted.len() && observed.iter().all(|item| wanted.contains(item))
+        }
+        (FieldType::List { element, .. }, Value::List(wanted), Value::List(observed)) => {
+            observed.len() == wanted.len()
+                && wanted
+                    .iter()
+                    .zip(observed)
+                    .all(|(wanted, item)| observation_matches(element, wanted, item))
         }
         _ => expected == actual,
     }
@@ -759,6 +791,10 @@ enum Ty {
     /// The literal `nothing`, before the context says what it is nothing of.
     Nothing,
     Set(Domain),
+    List {
+        capacity: usize,
+        element: Box<Ty>,
+    },
 }
 
 impl Ty {
@@ -785,6 +821,10 @@ impl Ty {
             ),
             FieldType::Optional(value) => Self::Optional(Box::new(Self::of_kind(value))),
             FieldType::Set { elements, .. } => Self::Set(elements.clone()),
+            FieldType::List { capacity, element } => Self::List {
+                capacity: *capacity,
+                element: Box::new(Self::of_kind(element)),
+            },
         }
     }
 
@@ -798,6 +838,7 @@ impl Ty {
             Self::Optional(_) => "a value that may be nothing",
             Self::Nothing => "nothing",
             Self::Set(_) => "a set",
+            Self::List { .. } => "a list",
         }
     }
 
@@ -832,6 +873,16 @@ impl Ty {
                 value: Box::new(value.join(other_value)?),
             },
             (Self::Set(left), Self::Set(right)) if left == right => Self::Set(left.clone()),
+            (
+                Self::List { capacity, element },
+                Self::List {
+                    capacity: other,
+                    element: other_element,
+                },
+            ) if capacity == other => Self::List {
+                capacity: *capacity,
+                element: Box::new(element.join(other_element)?),
+            },
             (Self::Nothing, Self::Nothing) => Self::Nothing,
             (Self::Nothing, Self::Optional(value)) | (Self::Optional(value), Self::Nothing) => {
                 Self::Optional(value.clone())
@@ -871,6 +922,7 @@ impl Ty {
             Self::Optional(value) => value.width() + 1,
             Self::Nothing => 1,
             Self::Set(elements) => elements.size(),
+            Self::List { capacity, element } => capacity * element.width() + 1,
         }
     }
 }
@@ -900,6 +952,21 @@ fn coerce(parts: Vec<Ir>, from: &Ty, to: &Ty) -> Vec<Ir> {
             for ((_, from), (_, to)) in from.iter().zip(to) {
                 let member = parts.by_ref().take(from.width()).collect();
                 out.extend(coerce(member, from, to));
+            }
+            out
+        }
+        (
+            Ty::List { element: from, .. },
+            Ty::List {
+                capacity,
+                element: to,
+            },
+        ) => {
+            let mut parts = parts.into_iter();
+            let mut out = vec![parts.next().unwrap_or(Ir::Const(0))];
+            for _ in 0..*capacity {
+                let item = parts.by_ref().take(from.width()).collect();
+                out.extend(coerce(item, from, to));
             }
             out
         }
@@ -935,6 +1002,31 @@ fn equal_as(left: Vec<Ir>, right: Vec<Ir>, ty: &Ty) -> Ir {
             }
         }
         Ty::Nothing => Ir::Const(1),
+        Ty::List { capacity, element } => {
+            let (mut left, mut right) = (left.into_iter(), right.into_iter());
+            let (Some(length), Some(other)) = (left.next(), right.next()) else {
+                return Ir::Const(1);
+            };
+            let width = element.width();
+            let mut checks = vec![Ir::Binary(
+                BinaryOperator::Equal,
+                Box::new(length.clone()),
+                Box::new(other),
+            )];
+            for position in 0..*capacity {
+                let same = equal_as(
+                    left.by_ref().take(width).collect(),
+                    right.by_ref().take(width).collect(),
+                    element,
+                );
+                checks.push(Ir::Binary(
+                    BinaryOperator::Implies,
+                    Box::new(longer(&length, position)),
+                    Box::new(same),
+                ));
+            }
+            all(checks)
+        }
         Ty::Set(_) => all(left
             .into_iter()
             .zip(right)
@@ -1032,6 +1124,43 @@ fn canonical(parts: Vec<Ir>, kind: &FieldType) -> Vec<Ir> {
                 .flat_map(|_| canonical(parts.by_ref().take(value.width()).collect(), value))
                 .collect()
         }
+        FieldType::List { capacity, element } => {
+            let mut parts = parts.into_iter();
+            let length = parts.next().unwrap_or(Ir::Const(0));
+            let mut out = vec![length.clone()];
+            for position in 0..*capacity {
+                let item = canonical(parts.by_ref().take(element.width()).collect(), element);
+                let shown = longer(&length, position);
+                out.extend(
+                    item.into_iter()
+                        .zip(element.defaults())
+                        .map(|(part, default)| match (&shown, part) {
+                            (Ir::Const(0), _) => Ir::Const(default),
+                            (Ir::Const(_), part) => part,
+                            (_, Ir::Const(raw)) if raw == default => Ir::Const(raw),
+                            (shown, part) => Ir::If(
+                                Box::new(shown.clone()),
+                                Box::new(part),
+                                Box::new(Ir::Const(default)),
+                            ),
+                        }),
+                );
+            }
+            out
+        }
+    }
+}
+
+/// Whether a list of length `length` has an item at `position`.
+fn longer(length: &Ir, position: usize) -> Ir {
+    let position = i64::try_from(position).unwrap_or(i64::MAX);
+    match length {
+        Ir::Const(length) => Ir::Const(i64::from(*length > position)),
+        length => Ir::Binary(
+            BinaryOperator::Greater,
+            Box::new(length.clone()),
+            Box::new(Ir::Const(position)),
+        ),
     }
 }
 
@@ -1150,6 +1279,9 @@ struct Compiler<'a> {
     field_ids: HashMap<String, usize>,
     slots: Vec<Slot>,
     scope: Vec<(String, Ty)>,
+    /// Quantifier variables that stand for a list item: the local holding
+    /// the position, and the item read at it.
+    views: Vec<(usize, Ir, Ty)>,
     locals: usize,
     constant_only: bool,
     /// Interchangeable values, which the specification may not name, and their type.
@@ -1169,6 +1301,7 @@ impl<'a> Compiler<'a> {
             field_ids: HashMap::new(),
             slots: Vec::new(),
             scope: Vec::new(),
+            views: Vec::new(),
             locals: 0,
             constant_only: false,
             unnamed: HashMap::new(),
@@ -1251,6 +1384,7 @@ impl<'a> Compiler<'a> {
             field_ids: self.field_ids,
             slots: Vec::new(),
             scope: Vec::new(),
+            views: Vec::new(),
             locals: model.locals,
             constant_only: false,
             unnamed: HashMap::new(),
@@ -1374,6 +1508,10 @@ impl<'a> Compiler<'a> {
                 line,
                 "a set is only allowed in state; parameters are integers, booleans or enums",
             )),
+            FieldType::List { .. } => Err(Error::at(
+                line,
+                "a list is only allowed in state; parameters are integers, booleans or enums",
+            )),
         }
     }
 
@@ -1409,6 +1547,19 @@ impl<'a> Compiler<'a> {
             }
             TypeExpr::Optional(value) => {
                 return Ok(FieldType::Optional(Box::new(self.resolve(value, line)?)));
+            }
+            TypeExpr::List { capacity, element } => {
+                let element = self.resolve(element, line)?;
+                if capacity.saturating_mul(element.width()) > MAX_SLOTS {
+                    return Err(Error::at(
+                        line,
+                        format!("a list may hold at most {MAX_SLOTS} values"),
+                    ));
+                }
+                return Ok(FieldType::List {
+                    capacity: *capacity,
+                    element: Box::new(element),
+                });
             }
             TypeExpr::Set(element) => {
                 let elements = match self.types.get(element) {
@@ -1544,6 +1695,18 @@ impl<'a> Compiler<'a> {
                         domain: Domain::Boolean,
                         label: format!("{label} has {element}"),
                     });
+                }
+            }
+            FieldType::List { capacity, element } => {
+                self.slots.push(Slot {
+                    domain: Domain::Integer {
+                        min: 0,
+                        max: i64::try_from(*capacity).unwrap_or(i64::MAX),
+                    },
+                    label: format!("length of {label}"),
+                });
+                for position in 0..*capacity {
+                    self.lay_out(element, &format!("item {} of {label}", position + 1));
                 }
             }
         }
@@ -1828,6 +1991,12 @@ impl<'a> Compiler<'a> {
             ),
             FieldType::Optional(value) => format!("{} or nothing", self.describe_kind(value)),
             FieldType::Set { element_type, .. } => format!("a set of {element_type}"),
+            FieldType::List { capacity, element } => {
+                format!(
+                    "a list of at most {capacity} {}",
+                    self.describe_kind(element)
+                )
+            }
         }
     }
 
@@ -1852,6 +2021,9 @@ impl<'a> Compiler<'a> {
             ),
             Ty::Optional(value) => format!("{} or nothing", self.describe_ty(value)),
             Ty::Set(elements) => format!("a set of {}", self.describe(elements)),
+            Ty::List { capacity, element } => {
+                format!("a list of at most {capacity} {}", self.describe_ty(element))
+            }
             other => other.noun().to_string(),
         }
     }
@@ -2167,6 +2339,9 @@ impl<'a> Compiler<'a> {
 
     fn name(&mut self, name: &str, line: usize) -> Result<Operand> {
         if let Some(local) = self.scope.iter().rposition(|(local, _)| local == name) {
+            if let Some((_, item, ty)) = self.views.iter().rev().find(|(at, ..)| *at == local) {
+                return Ok(Operand::Value(item.clone(), ty.clone()));
+            }
             let ty = self.scope.get(local).map_or(Ty::Int, |(_, ty)| ty.clone());
             return Ok(Operand::Value(Ir::Local(local), ty));
         }
@@ -2214,13 +2389,16 @@ impl<'a> Compiler<'a> {
                     let (ir, ty) = unwrap(ir, ty, &format!("{} is nothing", describe_expr(key)));
                     Ok(Operand::Value(ir, ty))
                 }
-                Ok(Operand::Place(place)) if matches!(place.kind, FieldType::Set { .. }) => self
-                    .read(&place, line)
-                    .map(|(ir, ty)| Operand::Value(ir, ty)),
+                Ok(Operand::Place(place))
+                    if matches!(place.kind, FieldType::Set { .. } | FieldType::List { .. }) =>
+                {
+                    self.read(&place, line)
+                        .map(|(ir, ty)| Operand::Value(ir, ty))
+                }
                 other => other,
             };
             if let Ok(Operand::Value(ir, ty)) = &base
-                && let Some(result) = collection_property(name, ir, ty, line)
+                && let Some(result) = collection_property(name, ir, ty, &describe_expr(key), line)
             {
                 return result.map(|(ir, ty)| Operand::Value(ir, ty));
             }
@@ -2311,6 +2489,9 @@ impl<'a> Compiler<'a> {
 
     /// `[a, b]` where a set is expected.
     fn items(&mut self, items: &[Expr], want: Option<&Ty>, line: usize) -> Result<(Ir, Ty)> {
+        if let Some(Ty::List { capacity, element }) = want {
+            return self.list_literal(items, *capacity, element, line);
+        }
         let Some(Ty::Set(elements)) = want else {
             return Err(Error::at(
                 line,
@@ -2362,6 +2543,10 @@ impl<'a> Compiler<'a> {
         line: usize,
     ) -> Result<(Ir, Ty)> {
         let (set, set_ty) = self.expr_as(left, None, line)?;
+        if let Ty::List { capacity, element } = &set_ty {
+            let what = describe_expr(left);
+            return self.list_operator(operator, set, *capacity, element, right, &what, line);
+        }
         let Ty::Set(elements) = set_ty.clone() else {
             let word = match operator {
                 BinaryOperator::Has => "'has'",
@@ -2595,6 +2780,223 @@ impl<'a> Compiler<'a> {
         ))
     }
 
+    /// `[a, b]` where a list is expected.
+    fn list_literal(
+        &mut self,
+        items: &[Expr],
+        capacity: usize,
+        element: &Ty,
+        line: usize,
+    ) -> Result<(Ir, Ty)> {
+        if items.len() > capacity {
+            return Err(Error::at(
+                line,
+                format!(
+                    "this list holds at most {capacity} items, and {} are given",
+                    items.len()
+                ),
+            ));
+        }
+        let mut out = vec![Ir::Const(i64::try_from(items.len()).unwrap_or(i64::MAX))];
+        for item in items {
+            out.extend(self.item(item, element, line)?);
+        }
+        out.extend(
+            std::iter::repeat_with(|| Ir::Const(0))
+                .take((capacity - items.len()) * element.width()),
+        );
+        Ok((
+            tuple(out),
+            Ty::List {
+                capacity,
+                element: Box::new(element.clone()),
+            },
+        ))
+    }
+
+    /// `expr` laid out as an item of type `element`.
+    fn item(&mut self, expr: &Expr, element: &Ty, line: usize) -> Result<Vec<Ir>> {
+        let (ir, ty) = self.expr_as(expr, Some(element), line)?;
+        if ty.join(element).as_ref() != Some(element) {
+            return Err(Error::at(
+                line,
+                format!(
+                    "this list holds {}, not {}",
+                    self.describe_ty(element),
+                    self.describe_ty(&ty)
+                ),
+            )
+            .coded("type.mismatch"));
+        }
+        Ok(coerce(parts(ir), &ty, element))
+    }
+
+    /// `l has x`, `l with x` (append) and `l without x` (remove every `x`).
+    #[allow(clippy::too_many_arguments)]
+    fn list_operator(
+        &mut self,
+        operator: BinaryOperator,
+        list: Ir,
+        capacity: usize,
+        element: &Ty,
+        right: &Expr,
+        what: &str,
+        line: usize,
+    ) -> Result<(Ir, Ty)> {
+        let list_ty = Ty::List {
+            capacity,
+            element: Box::new(element.clone()),
+        };
+        let (length, items) = split_list(list, element.width());
+        let value = self.item(right, element, line)?;
+        let same = |item: &[Ir]| equal_as(item.to_vec(), value.clone(), element);
+        match operator {
+            BinaryOperator::Has => Ok((
+                items
+                    .iter()
+                    .enumerate()
+                    .map(|(position, item)| and(longer(&length, position), same(item)))
+                    .reduce(or)
+                    .unwrap_or(Ir::Const(0)),
+                Ty::Bool,
+            )),
+            BinaryOperator::With => {
+                let room = Ir::Binary(
+                    BinaryOperator::Less,
+                    Box::new(length.clone()),
+                    Box::new(Ir::Const(i64::try_from(capacity).unwrap_or(i64::MAX))),
+                );
+                let grown = Ir::Binary(
+                    BinaryOperator::Add,
+                    Box::new(length.clone()),
+                    Box::new(Ir::Const(1)),
+                );
+                let full = Ir::Fail(format!("{what} is full"));
+                let mut out = vec![Ir::If(Box::new(room), Box::new(grown), Box::new(full))];
+                for (position, item) in items.into_iter().enumerate() {
+                    let here = is_raw(&length, i64::try_from(position).unwrap_or(i64::MAX));
+                    out.extend(item.into_iter().zip(&value).map(|(old, new)| match &here {
+                        Ir::Const(0) => old,
+                        Ir::Const(_) => new.clone(),
+                        here => {
+                            Ir::If(Box::new(here.clone()), Box::new(new.clone()), Box::new(old))
+                        }
+                    }));
+                }
+                Ok((tuple(out), list_ty))
+            }
+            _ => {
+                if capacity
+                    .saturating_mul(capacity)
+                    .saturating_mul(element.width())
+                    > MAX_SLOTS
+                {
+                    return Err(Error::at(
+                        line,
+                        format!("'without' needs a smaller list than {what}"),
+                    ));
+                }
+                let kept: Vec<Ir> = items
+                    .iter()
+                    .enumerate()
+                    .map(|(position, item)| {
+                        and(longer(&length, position), Ir::Not(Box::new(same(item))))
+                    })
+                    .collect();
+                let add = |left: Ir, right: Ir| {
+                    Ir::Binary(BinaryOperator::Add, Box::new(left), Box::new(right))
+                };
+                let before: Vec<Ir> = (0..capacity)
+                    .map(|position| {
+                        kept.iter()
+                            .take(position)
+                            .cloned()
+                            .reduce(add)
+                            .unwrap_or(Ir::Const(0))
+                    })
+                    .collect();
+                let mut out = vec![kept.iter().cloned().reduce(add).unwrap_or(Ir::Const(0))];
+                for target in 0..capacity {
+                    let target_raw = i64::try_from(target).unwrap_or(i64::MAX);
+                    let mut chosen = vec![Ir::Const(0); element.width()];
+                    for source in (target..capacity).rev() {
+                        let lands = and(kept[source].clone(), is_raw(&before[source], target_raw));
+                        for (slot, part) in chosen.iter_mut().zip(&items[source]) {
+                            *slot = Ir::If(
+                                Box::new(lands.clone()),
+                                Box::new(part.clone()),
+                                Box::new(std::mem::replace(slot, Ir::Const(0))),
+                            );
+                        }
+                    }
+                    out.extend(chosen);
+                }
+                Ok((tuple(out), list_ty))
+            }
+        }
+    }
+
+    /// `every m in l satisfies ...` over the items of the list field `l`.
+    fn over_list(
+        &mut self,
+        quantifier: Quantifier,
+        variable: &str,
+        place: &Place,
+        body: &Expr,
+        line: usize,
+    ) -> Result<(Ir, Ty)> {
+        let FieldType::List { capacity, element } = &place.kind else {
+            return Err(Error::at(line, "internal error: not a list"));
+        };
+        let (capacity, element) = (*capacity, Ty::of_kind(element));
+        let (list, _) = self.read(place, line)?;
+        let (length, items) = split_list(list, element.width());
+        let local = self.scope.len();
+        let at = positions(capacity);
+        let item = (0..element.width())
+            .map(|part| {
+                select(
+                    Ir::Local(local),
+                    &at,
+                    items.iter().map(|item| item[part].clone()).collect(),
+                    format!("a position in {}", place.label),
+                )
+            })
+            .collect();
+        self.scope.push((variable.to_string(), element.clone()));
+        self.views.push((local, tuple(item), element));
+        self.locals = self.locals.max(self.scope.len());
+        let body = self.expr(body, line);
+        self.views.pop();
+        self.scope.pop();
+        let (body, ty) = body?;
+        expect(&ty, &Ty::Bool, "the condition of a quantifier", line)?;
+        let present = Ir::Binary(
+            BinaryOperator::Greater,
+            Box::new(length),
+            Box::new(Ir::Local(local)),
+        );
+        let body = match quantifier {
+            Quantifier::Every => {
+                Ir::Binary(BinaryOperator::Implies, Box::new(present), Box::new(body))
+            }
+            Quantifier::Some | Quantifier::Count => and(present, body),
+        };
+        Ok((
+            Ir::Quantified {
+                quantifier,
+                local,
+                values: at.raws(),
+                body: Box::new(body),
+            },
+            if quantifier == Quantifier::Count {
+                Ty::Int
+            } else {
+                Ty::Bool
+            },
+        ))
+    }
+
     fn quantified(
         &mut self,
         quantifier: Quantifier,
@@ -2606,6 +3008,9 @@ impl<'a> Compiler<'a> {
         if !self.types.contains_key(domain)
             && let Some(place) = self.field(domain)
         {
+            if matches!(place.kind, FieldType::List { .. }) {
+                return self.over_list(quantifier, variable, &place, body, line);
+            }
             return self.over_set(quantifier, variable, &place, body, line);
         }
         let domain = match self.types.get(domain) {
@@ -2696,24 +3101,113 @@ fn select(key: Ir, keys: &Domain, mut options: Vec<Ir>, what: String) -> Ir {
     }
 }
 
-/// `size of s`. `None` when `ty` is not a collection.
-fn collection_property(name: &str, ir: &Ir, ty: &Ty, line: usize) -> Option<Result<(Ir, Ty)>> {
-    let Ty::Set(_) = ty else {
-        return None;
-    };
-    Some(match name {
-        "size" => Ok((
-            parts(ir.clone())
-                .into_iter()
-                .reduce(|sum, next| Ir::Binary(BinaryOperator::Add, Box::new(sum), Box::new(next)))
-                .unwrap_or(Ir::Const(0)),
-            Ty::Int,
-        )),
-        _ => Err(Error::at(
-            line,
-            format!("a set has no {name}; 'size of' counts its members"),
-        )),
-    })
+/// `size of s`, and `length`, `first`, `last` and `rest of` a list. `None`
+/// when `ty` is not a collection. `what` names the collection in faults.
+fn collection_property(
+    name: &str,
+    ir: &Ir,
+    ty: &Ty,
+    what: &str,
+    line: usize,
+) -> Option<Result<(Ir, Ty)>> {
+    match ty {
+        Ty::Set(_) => Some(match name {
+            "size" => Ok((
+                parts(ir.clone())
+                    .into_iter()
+                    .reduce(|sum, next| {
+                        Ir::Binary(BinaryOperator::Add, Box::new(sum), Box::new(next))
+                    })
+                    .unwrap_or(Ir::Const(0)),
+                Ty::Int,
+            )),
+            _ => Err(Error::at(
+                line,
+                format!("a set has no {name}; 'size of' counts its members"),
+            )),
+        }),
+        Ty::List { capacity, element } => {
+            let (length, items) = split_list(ir.clone(), element.width());
+            let empty = format!("{what} is empty");
+            let guarded = |part: Ir| {
+                Ir::If(
+                    Box::new(longer(&length, 0)),
+                    Box::new(part),
+                    Box::new(Ir::Fail(empty.clone())),
+                )
+            };
+            Some(match name {
+                "length" => Ok((length.clone(), Ty::Int)),
+                "first" => Ok((
+                    tuple(
+                        items
+                            .first()
+                            .cloned()
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(guarded)
+                            .collect(),
+                    ),
+                    (**element).clone(),
+                )),
+                "last" => {
+                    let at = positions(*capacity);
+                    let last = Ir::Binary(
+                        BinaryOperator::Subtract,
+                        Box::new(length.clone()),
+                        Box::new(Ir::Const(1)),
+                    );
+                    let item = (0..element.width())
+                        .map(|part| {
+                            guarded(select(
+                                last.clone(),
+                                &at,
+                                items.iter().map(|item| item[part].clone()).collect(),
+                                format!("a position in {what}"),
+                            ))
+                        })
+                        .collect();
+                    Ok((tuple(item), (**element).clone()))
+                }
+                "rest" => {
+                    let mut out = vec![guarded(Ir::Binary(
+                        BinaryOperator::Subtract,
+                        Box::new(length.clone()),
+                        Box::new(Ir::Const(1)),
+                    ))];
+                    for item in items.iter().skip(1) {
+                        out.extend(item.iter().cloned());
+                    }
+                    out.extend(std::iter::repeat_with(|| Ir::Const(0)).take(element.width()));
+                    Ok((tuple(out), ty.clone()))
+                }
+                _ => Err(Error::at(
+                    line,
+                    format!("a list has no {name}; use length, first, last or rest"),
+                )),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The positions of a list: 0 up to `capacity - 1`.
+fn positions(capacity: usize) -> Domain {
+    Domain::Integer {
+        min: 0,
+        max: i64::try_from(capacity).unwrap_or(i64::MAX) - 1,
+    }
+}
+
+/// A list value's length and the parts of each item.
+fn split_list(ir: Ir, width: usize) -> (Ir, Vec<Vec<Ir>>) {
+    let mut parts = parts(ir).into_iter();
+    let length = parts.next().unwrap_or(Ir::Const(0));
+    let rest: Vec<Ir> = parts.collect();
+    (
+        length,
+        rest.chunks(width.max(1)).map(<[Ir]>::to_vec).collect(),
+    )
 }
 
 fn expect(actual: &Ty, wanted: &Ty, what: &str, line: usize) -> Result<()> {
@@ -2758,6 +3252,13 @@ fn assignable(ty: &Ty, kind: &FieldType) -> bool {
                 elements: wanted, ..
             },
         ) => elements == wanted,
+        (
+            Ty::List { capacity, element },
+            FieldType::List {
+                capacity: wanted_capacity,
+                element: wanted,
+            },
+        ) => capacity == wanted_capacity && assignable(element, wanted),
         (Ty::Nothing, FieldType::Optional(_)) => true,
         (Ty::Optional(value), FieldType::Optional(wanted)) => assignable(value, wanted),
         (value, FieldType::Optional(wanted)) => assignable(value, wanted),

@@ -444,3 +444,137 @@ fn a_set_observed_in_another_order_conforms() {
         ErrorKind::Violation
     );
 }
+
+const CHANNEL: &str = include_str!("../examples/channel.zin");
+const RECENCY: &str = include_str!("../examples/recency.zin");
+
+#[test]
+fn lists_keep_order_and_have_one_encoding() {
+    let channel = verify(&parse(CHANNEL).unwrap()).unwrap();
+    assert_eq!(channel.graph.state_count(), 41);
+    let full = verify(&parse(RECENCY).unwrap()).unwrap();
+    assert_eq!(full.graph.state_count(), 10);
+    let reduced = verify_with(&parse(RECENCY).unwrap(), Options::default()).unwrap();
+    assert_eq!(reduced.graph.state_count(), 3);
+    let plan = Plan::build(&full, &PlanOptions::default()).unwrap();
+    let json = plan.to_json(&full);
+    assert!(json.get("fields").unwrap().to_compact().contains(
+        r#"{"kind":"list","capacity":2,"element":{"kind":"enum","values":["a","b","c"]}}"#
+    ));
+}
+
+#[test]
+fn list_faults_and_type_errors() {
+    let full = error(&CHANNEL.replace(
+        "requires sent < 3 and length of queue < 2",
+        "requires sent < 3",
+    ));
+    assert_eq!(full.kind, ErrorKind::Model);
+    assert!(
+        full.message.ends_with("send(ping): queue is full"),
+        "{full}"
+    );
+    let empty = error(&CHANNEL.replace("  requires queue is not []\n", ""));
+    assert!(
+        empty.message.ends_with("deliver: queue is empty"),
+        "{empty}"
+    );
+    let literal = error(&CHANNEL.replace("  queue is []\n", "  queue is [ping, pong, ping]\n"));
+    assert!(
+        literal
+            .message
+            .starts_with("this list holds at most 2 items, and 3 are given"),
+        "{literal}"
+    );
+    let item = error(&CHANNEL.replace("queue becomes queue with m", "queue becomes queue with 1"));
+    assert!(
+        item.message
+            .starts_with("this list holds ping or pong, not a number"),
+        "{item}"
+    );
+    let property = error(&CHANNEL.replace("length of log is sent", "size of log is sent"));
+    assert!(
+        property.message.starts_with("a list has no size"),
+        "{property}"
+    );
+}
+
+#[test]
+fn removing_from_a_list_keeps_the_others_in_order() {
+    let source = r#"system "Remove"
+types
+  item is one of a, b
+state
+  l is a list of at most 4 item
+initially
+  l is [a, b, a, b]
+action drop_a
+  requires l has a
+  l becomes l without a
+action drop_b
+  requires l has b
+  l becomes l without b
+scenario "Drop a then b"
+  drop_a
+  expect l is [b, b] and length of l is 2
+  drop_b
+  expect l is []
+  reject drop_a
+scenario "Drop b"
+  drop_b
+  expect l is [a, a] and first of l is a
+"#;
+    verify(&parse(source).unwrap()).unwrap();
+}
+
+#[test]
+fn an_implementation_with_a_vec_conforms_and_a_stack_does_not() {
+    #[derive(Default)]
+    struct Queue {
+        queue: Vec<String>,
+        received: Vec<String>,
+        log: Vec<String>,
+        lifo: bool,
+    }
+    impl Adapter for Queue {
+        fn call(&mut self, action: &str, args: &Args) -> Outcome {
+            match action {
+                "send" if self.log.len() < 3 && self.queue.len() < 2 => {
+                    let message = args.get("m").map(ToString::to_string).unwrap_or_default();
+                    self.queue.push(message.clone());
+                    self.log.push(message);
+                }
+                "deliver" if !self.queue.is_empty() => {
+                    let message = if self.lifo {
+                        self.queue.pop().unwrap_or_default()
+                    } else {
+                        self.queue.remove(0)
+                    };
+                    self.received.push(message);
+                }
+                _ => return Outcome::Rejected,
+            }
+            Outcome::Accepted
+        }
+        fn observe(&self) -> Option<State> {
+            let list =
+                |items: &[String]| Value::List(items.iter().cloned().map(Value::Symbol).collect());
+            Some(State::from([
+                ("queue".to_string(), list(&self.queue)),
+                ("received".to_string(), list(&self.received)),
+            ]))
+        }
+    }
+    check(CHANNEL, &PlanOptions::default(), Queue::default).unwrap();
+    let error = check(CHANNEL, &PlanOptions::default(), || Queue {
+        lifo: true,
+        ..Queue::default()
+    })
+    .unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("queue is [ping], but the specification says [pong]"),
+        "{error}"
+    );
+}

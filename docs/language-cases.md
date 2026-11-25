@@ -128,3 +128,26 @@ action leave(w is a worker)
   inside becomes inside without w
 always size of inside <= 2 # fails: always size of inside <= 1
 ```
+
+## Lists
+
+```zin
+system "Queue"
+types
+  message is one of ping, pong
+state
+  queue is a list of at most 2 message
+initially
+  queue is []
+action send(m is a message)
+  requires length of queue < 2
+  queue becomes queue with m
+action deliver
+  requires queue is not []
+  queue becomes rest of queue
+scenario "First in, first out"
+  send(ping)
+  send(pong)
+  deliver
+  expect queue is [pong] # fails: expect queue is [ping]
+```

@@ -142,7 +142,9 @@
       "type": "object",
       "required": ["kind"],
       "properties": {
-        "kind": { "enum": ["integer", "boolean", "enum", "map", "record", "optional", "set"] },
+        "kind": { "enum": ["integer", "boolean", "enum", "map", "record", "optional", "set", "list"] },
+        "capacity": { "type": "integer", "minimum": 1 },
+        "element": { "$ref": "#/$defs/fieldType" },
         "min": { "type": "integer" },
         "max": { "type": "integer" },
         "values": { "type": "array", "items": { "type": "string" } },

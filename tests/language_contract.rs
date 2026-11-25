@@ -36,5 +36,5 @@ fn documented_language_cases_have_both_verdicts() {
         }
         count += 1;
     }
-    assert_eq!(count, 7);
+    assert_eq!(count, 8);
 }

@@ -118,6 +118,11 @@ pub enum TypeExpr {
     Optional(Box<TypeExpr>),
     /// `a set of <type>`: any selection of the named finite type's values.
     Set(String),
+    /// `a list of at most <capacity> <type>`: values in order, up to a bound.
+    List {
+        capacity: usize,
+        element: Box<TypeExpr>,
+    },
 }
 
 impl fmt::Display for TypeExpr {
@@ -138,6 +143,9 @@ impl fmt::Display for TypeExpr {
             }
             Self::Optional(value) => write!(formatter, "{value} or nothing"),
             Self::Set(element) => write!(formatter, "a set of {element}"),
+            Self::List { capacity, element } => {
+                write!(formatter, "a list of at most {capacity} {element}")
+            }
         }
     }
 }
@@ -300,7 +308,8 @@ pub enum Value {
     Map(BTreeMap<String, Value>),
     /// The value of an optional that holds none.
     Nothing,
-    /// The members of a set, in the order their type declares them.
+    /// The items of a list in order, or the members of a set in the order
+    /// their type declares them.
     List(Vec<Value>),
 }
 
@@ -415,7 +424,7 @@ pub enum Expr {
     },
     /// `{name: value, ...}`: a record value.
     Record(Vec<(String, Expr)>),
-    /// `[a, b, ...]`: the members of a set.
+    /// `[a, b, ...]`: the items of a list or the members of a set.
     Items(Vec<Expr>),
     /// `every <type>` as a key in an assignment target: all keys at once.
     Every(String),
@@ -469,10 +478,12 @@ pub enum BinaryOperator {
     Subtract,
     Multiply,
     Divide,
-    /// `s has x`: whether the set `s` holds `x`.
+    /// `s has x`: whether the set or list `s` holds `x`.
     Has,
-    /// `s with x`: `s` and also `x`, a value or a set.
+    /// `s with x`: `s` and also `x`, a value or a set; for a list, `x`
+    /// appended at the end.
     With,
-    /// `s without x`: `s` except `x`, a value or a set.
+    /// `s without x`: `s` except `x`, a value or a set; for a list, every
+    /// item equal to `x` removed.
     Without,
 }

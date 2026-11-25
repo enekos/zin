@@ -18,6 +18,7 @@ fn value(json: &Json) -> Value {
         Json::Str(s) => Value::Symbol(s.clone()),
         Json::Object(_) => Value::Map(state(json)),
         Json::Null => Value::Nothing,
+        Json::Array(items) => Value::List(items.iter().map(value).collect()),
         _ => panic!("unexpected fixture value {json:?}"),
     }
 }
@@ -39,7 +40,21 @@ fn kind(item: &Value) -> String {
         Value::Boolean(_) => "a boolean".into(),
         Value::Integer(_) => "an integer from 0 to 2".into(),
         Value::Nothing => "an integer from 0 to 2 or nothing".into(),
-        Value::List(_) => unreachable!("cases with arrays are skipped"),
+        Value::List(items) => {
+            let symbols: Vec<String> = items
+                .iter()
+                .filter_map(|item| match item {
+                    Value::Symbol(_) => Some(item.source()),
+                    _ => None,
+                })
+                .collect();
+            let element = match items.first() {
+                Some(Value::Symbol(_)) => format!("one of {}, other", symbols.join(", ")),
+                Some(item) => kind(item),
+                None => "an integer from 0 to 2".into(),
+            };
+            format!("a list of at most 3 {element}")
+        }
         Value::Symbol(_) => format!("one of {}, other", item.source()),
         Value::Map(entries) => format!(
             "a record with ({})",
@@ -63,15 +78,6 @@ fn model(expected: &State) -> String {
     )
 }
 
-/// Whether the Rust value model has every kind of value in `json` yet.
-fn representable(json: &Json) -> bool {
-    match json {
-        Json::Object(entries) => entries.iter().all(|(_, item)| representable(item)),
-        Json::Int(_) | Json::Bool(_) | Json::Str(_) | Json::Null => true,
-        _ => false,
-    }
-}
-
 #[test]
 fn rust_and_trace_replay_share_the_runner_observation_contract() {
     let Json::Array(cases) = Json::parse(include_str!(
@@ -81,9 +87,6 @@ fn rust_and_trace_replay_share_the_runner_observation_contract() {
         panic!("expected fixture array");
     };
     for case in cases {
-        if !representable(&case) {
-            continue;
-        }
         let src = model(&state(case.get("expected").unwrap()));
         let observed = case.get("observed").unwrap();
         let matches = case.get("matches") == Some(&Json::Bool(true));

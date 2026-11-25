@@ -39,6 +39,7 @@ scenario "Name"                    # worked examples, checked and turned into te
 | Record | `a record with (status is one of draft, paid, items is an integer from 0 to 2)` |
 | Optional | `a worker or nothing`, `an integer from 1 to 3 or nothing` |
 | Set | `a set of worker` |
+| List | `a list of at most 3 message` |
 
 Map keys must be a named finite type (an enum, a boolean, or a bounded
 integer); map values may be any type, including maps and records. Every key
@@ -186,6 +187,43 @@ comparisons. Sets compare with `is`. In plans a set is an array of its members
 in the order the element type declares them; runners and `zin trace` match it
 in any order.
 
+### Lists
+
+```zin
+state
+  queue is a list of at most 2 message
+
+initially
+  queue is []
+
+action send(m is a message)
+  requires length of queue < 2
+  queue becomes queue with m
+
+action deliver
+  requires queue is not []
+  received becomes received with first of queue
+  queue becomes rest of queue
+```
+
+A list holds up to its capacity of items in order; an item may be of any
+type. It takes a length slot and the slots of every item it could hold.
+
+| | |
+| --- | --- |
+| `[ping, pong]`, `[]` | a list; it takes its type from the other side of `is` or `becomes` |
+| `queue with m` | `m` appended at the end; appending to a full list is a model fault |
+| `queue without m` | every item equal to `m` removed, the rest kept in order |
+| `queue has m` | whether some item equals `m` |
+| `length of queue` | the number of items |
+| `first of queue`, `last of queue` | an item; reading one from an empty list is a model fault |
+| `rest of queue` | all but the first item; a fault when the list is empty |
+| `every m in queue satisfies ...` | quantifiers range over a list field's items, in order |
+
+Lists compare with `is`, item by item. `queue without m with m` moves `m` to
+the end, which is how `examples/recency.zin` keeps a least recently used
+order. In plans a list is an array.
+
 ## State and initial values
 
 ```zin
@@ -233,7 +271,7 @@ number of w in worker where at of w is done
 ```
 
 Quantifiers range over a named type (declare `small is an integer from 1 to 3`
-under `types` to range over numbers) or over the members of a set field and extend as far to the right as
+under `types` to range over numbers) or over the members of a set field or the items of a list field and extend as far to the right as
 possible; parenthesize them inside larger expressions.
 
 Expressions are statically typed. Integers, booleans and each enum are

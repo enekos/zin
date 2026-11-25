@@ -30,10 +30,18 @@ pub(crate) struct Symmetry {
 /// A slot is hidden when the value it belongs to is absent. A hidden slot
 /// holds its first value, so relabeling a state must put that value back
 /// rather than relabel it.
+#[derive(Debug, Clone, Copy)]
+enum Guard {
+    /// The optional with this presence slot holds a value.
+    Present(usize),
+    /// The list with this length slot is longer than the position.
+    Longer(usize, usize),
+}
+
 #[derive(Debug, Clone, Default)]
 struct Hidden {
-    /// For each slot, the presence slots that must all be 1 for it to show.
-    guards: Vec<Vec<usize>>,
+    /// For each slot, what must hold for it to show.
+    guards: Vec<Vec<Guard>>,
     defaults: Vec<i64>,
     /// Whether any slot can be hidden; most models have none.
     any: bool,
@@ -54,7 +62,7 @@ impl Hidden {
         hidden
     }
 
-    fn guard(&mut self, kind: &FieldType, offset: usize, outer: &[usize]) {
+    fn guard(&mut self, kind: &FieldType, offset: usize, outer: &[Guard]) {
         match kind {
             FieldType::Scalar(_) => {
                 if let Some(cell) = self.guards.get_mut(offset) {
@@ -85,8 +93,18 @@ impl Hidden {
                     *cell = outer.to_vec();
                 }
                 let mut inner = outer.to_vec();
-                inner.push(offset);
+                inner.push(Guard::Present(offset));
                 self.guard(value, offset + 1, &inner);
+            }
+            FieldType::List { capacity, element } => {
+                if let Some(cell) = self.guards.get_mut(offset) {
+                    *cell = outer.to_vec();
+                }
+                for position in 0..*capacity {
+                    let mut inner = outer.to_vec();
+                    inner.push(Guard::Longer(offset, position));
+                    self.guard(element, offset + 1 + position * element.width(), &inner);
+                }
             }
         }
     }
@@ -126,6 +144,15 @@ fn moved(domain: &Domain, groups: &[Vec<i64>]) -> bool {
 fn sources(kind: &FieldType, relabel: &impl Fn(i64) -> i64, groups: &[Vec<i64>]) -> Vec<usize> {
     match kind {
         FieldType::Scalar(_) => vec![0],
+        FieldType::List { capacity, element } => {
+            let inner = sources(element, relabel, groups);
+            let mut out = vec![0];
+            for position in 0..*capacity {
+                let base = 1 + position * inner.len();
+                out.extend(inner.iter().map(|from| base + from));
+            }
+            out
+        }
         FieldType::Set { elements, .. } => {
             let mut out: Vec<usize> = (0..elements.size()).collect();
             if moved(elements, groups) {
@@ -334,10 +361,12 @@ impl Symmetry {
             return self.shown_at(relabeling, state, slot);
         }
         let guards = self.hidden.guards.get(slot).map_or(&[][..], Vec::as_slice);
-        if guards
-            .iter()
-            .any(|guard| self.shown_at(relabeling, state, *guard) == 0)
-        {
+        if guards.iter().any(|guard| match *guard {
+            Guard::Present(tag) => self.shown_at(relabeling, state, tag) == 0,
+            Guard::Longer(length, position) => {
+                usize::try_from(self.shown_at(relabeling, state, length)).unwrap_or(0) <= position
+            }
+        }) {
             return self.hidden.defaults.get(slot).copied().unwrap_or(0);
         }
         self.shown_at(relabeling, state, slot)

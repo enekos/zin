@@ -80,6 +80,13 @@ fn matches(kind: &FieldType, expected: &Json, observed: &Json) -> bool {
         (FieldType::Set { .. }, Json::Array(wanted), Json::Array(items)) => {
             items.len() == wanted.len() && items.iter().all(|item| wanted.contains(item))
         }
+        (FieldType::List { element, .. }, Json::Array(wanted), Json::Array(items)) => {
+            items.len() == wanted.len()
+                && wanted
+                    .iter()
+                    .zip(items)
+                    .all(|(wanted, item)| matches(element, wanted, item))
+        }
         _ => expected == observed,
     }
 }

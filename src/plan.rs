@@ -952,6 +952,7 @@ fn check_safe_integers(model: &Model) -> Result<()> {
                 .any(|(_, kind)| unsafe_kind(kind, unsafe_domain)),
             FieldType::Optional(value) => unsafe_kind(value, unsafe_domain),
             FieldType::Set { elements, .. } => unsafe_domain(elements),
+            FieldType::List { element, .. } => unsafe_kind(element, unsafe_domain),
         }
     }
     let fields = model
@@ -1033,6 +1034,11 @@ fn field_type_json(model: &Model, kind: &FieldType) -> Json {
                 ),
             ),
             ("value", field_type_json(model, value)),
+        ]),
+        FieldType::List { capacity, element } => Json::object([
+            ("kind", Json::str("list")),
+            ("capacity", Json::count(*capacity)),
+            ("element", field_type_json(model, element)),
         ]),
         FieldType::Set { elements, .. } => Json::object([
             ("kind", Json::str("set")),

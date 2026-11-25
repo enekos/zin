@@ -876,6 +876,20 @@ impl Tokens {
             }
             return Ok(TypeExpr::Enum { values });
         }
+        if self.eat_word("list") {
+            self.expect_word("of")?;
+            self.expect_word("at")?;
+            self.expect_word("most")?;
+            let capacity = self.take_nonnegative_integer()?;
+            if capacity == 0 {
+                return Err(self.previous_error(format!("{name} must hold at least one item")));
+            }
+            let element = self.take_type(name, parameter_list)?;
+            return Ok(TypeExpr::List {
+                capacity,
+                element: Box::new(element),
+            });
+        }
         if self.eat_word("set") {
             self.expect_word("of")?;
             if !self.eat_word("a") {
