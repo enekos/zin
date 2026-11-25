@@ -876,6 +876,13 @@ impl Tokens {
             }
             return Ok(TypeExpr::Enum { values });
         }
+        if self.eat_word("set") {
+            self.expect_word("of")?;
+            if !self.eat_word("a") {
+                self.eat_word("an");
+            }
+            return Ok(TypeExpr::Set(self.take_word()?.0));
+        }
         if self.eat_word("record") {
             self.expect_word("with")?;
             self.expect(&Token::LeftParen)?;
@@ -1132,7 +1139,7 @@ fn parse_not(tokens: &mut Tokens) -> Result<Expr> {
 }
 
 fn parse_comparison(tokens: &mut Tokens) -> Result<Expr> {
-    let left = parse_additive(tokens)?;
+    let left = parse_combination(tokens)?;
     let operator =
         if tokens.eat(&Token::Equal) || tokens.eat(&Token::EqualEqual) || tokens.eat_word("equals")
         {
@@ -1149,14 +1156,32 @@ fn parse_comparison(tokens: &mut Tokens) -> Result<Expr> {
             Some(BinaryOperator::Greater)
         } else if tokens.eat_word("is") {
             Some(parse_english_comparison(tokens)?)
+        } else if tokens.eat_word("has") {
+            Some(BinaryOperator::Has)
         } else {
             None
         };
     if let Some(operator) = operator {
-        Ok(binary(operator, left, parse_additive(tokens)?))
+        Ok(binary(operator, left, parse_combination(tokens)?))
     } else {
         Ok(left)
     }
+}
+
+/// `s with x` and `s without x`, between comparisons and arithmetic.
+fn parse_combination(tokens: &mut Tokens) -> Result<Expr> {
+    let mut expression = parse_additive(tokens)?;
+    loop {
+        let operator = if tokens.eat_word("with") {
+            BinaryOperator::With
+        } else if tokens.eat_word("without") {
+            BinaryOperator::Without
+        } else {
+            break;
+        };
+        expression = binary(operator, expression, parse_additive(tokens)?);
+    }
+    Ok(expression)
 }
 
 fn parse_english_comparison(tokens: &mut Tokens) -> Result<BinaryOperator> {
@@ -1284,6 +1309,20 @@ fn parse_primary(tokens: &mut Tokens) -> Result<Expr> {
             parse_subscripts(tokens, expression)
         }
         Some(Token::LeftBrace) => parse_record(tokens),
+        Some(Token::LeftBracket) => {
+            let mut items = Vec::new();
+            if !tokens.eat(&Token::RightBracket) {
+                loop {
+                    items.push(parse_expression(tokens)?);
+                    if tokens.eat(&Token::Comma) {
+                        continue;
+                    }
+                    tokens.expect(&Token::RightBracket)?;
+                    break;
+                }
+            }
+            Ok(Expr::Items(items))
+        }
         _ => Err(tokens.previous_error("expected a value, name, or parenthesized expression")),
     }
 }

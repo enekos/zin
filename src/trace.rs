@@ -1,7 +1,7 @@
 use crate::ast::{ActionCall, CallArguments, Value};
 use crate::display_state;
 use crate::json::Json;
-use crate::model::{Model, resolve_call};
+use crate::model::{FieldType, Model, resolve_call};
 use crate::plan::value_json;
 use crate::{Error, ErrorKind, Result};
 use std::io::BufRead;
@@ -53,13 +53,33 @@ fn arguments(event: &Json, line: usize) -> Result<CallArguments> {
     }
 }
 
-fn matches(expected: &Json, observed: &Json) -> bool {
-    match (expected, observed) {
-        (Json::Object(_), Json::Object(entries)) => entries.iter().all(|(key, value)| {
-            expected
-                .get(key)
-                .is_some_and(|wanted| matches(wanted, value))
-        }),
+/// Whether an observed value agrees with the specification's value of type
+/// `kind`: maps and records may list a subset of their keys, and a set
+/// matches in any order.
+fn matches(kind: &FieldType, expected: &Json, observed: &Json) -> bool {
+    match (kind, expected, observed) {
+        (FieldType::Map { value, .. }, Json::Object(_), Json::Object(entries)) => {
+            entries.iter().all(|(key, item)| {
+                expected
+                    .get(key)
+                    .is_some_and(|wanted| matches(value, wanted, item))
+            })
+        }
+        (FieldType::Record(members), Json::Object(_), Json::Object(entries)) => {
+            entries.iter().all(|(key, item)| {
+                members
+                    .iter()
+                    .find(|(member, _)| member == key)
+                    .zip(expected.get(key))
+                    .is_some_and(|((_, kind), wanted)| matches(kind, wanted, item))
+            })
+        }
+        (FieldType::Optional(value), wanted, observed) if *wanted != Json::Null => {
+            matches(value, wanted, observed)
+        }
+        (FieldType::Set { .. }, Json::Array(wanted), Json::Array(items)) => {
+            items.len() == wanted.len() && items.iter().all(|item| wanted.contains(item))
+        }
         _ => expected == observed,
     }
 }
@@ -178,7 +198,12 @@ pub fn check_trace_reader(model: &Model, reader: impl BufRead, limit: u64) -> Re
                     .get(field)
                     .map(value_json)
                     .ok_or_else(|| malformed(line, format!("'{field}' is not a state field")))?;
-                if !matches(&wanted, actual) {
+                let kind = model
+                    .fields
+                    .iter()
+                    .find(|info| info.name == *field)
+                    .map(|info| &info.kind);
+                if !kind.is_some_and(|kind| matches(kind, &wanted, actual)) {
                     return Err(violation(
                         line,
                         format!(

@@ -14,8 +14,13 @@
   of nothing (`left of lease`, `asked + 1`) is a model fault. In plans an
   absent value is `null`. **Breaking:** `nothing` is now a reserved word, so
   it can no longer name an enum value or a field.
-- `plan/2`: plans whose state holds records, nested maps or optional values
-  say `plan/2`;
+- Sets: `a set of worker`, written `[ann, ben]` or `[]`. `s has w`, `s with
+  w`, `s without w` (also union and difference with another set), `size of
+  s`, and quantifiers over a set field's members. Symmetry reduction moves
+  set members with the relabeled values. Rust conformance and `zin trace`
+  match a set in any order.
+- `plan/2`: plans whose state holds records, nested maps, optional values or
+  sets say `plan/2`;
   every other plan stays `plan/1`. The Python, JavaScript, Go and JUnit
   runners read both, and compare `null`, lists in order, native sets in any
   order, and records given as dataclasses, Java records or Go structs.

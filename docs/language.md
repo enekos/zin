@@ -38,6 +38,7 @@ scenario "Name"                    # worked examples, checked and turned into te
 | Map | `a map from worker to a boolean` |
 | Record | `a record with (status is one of draft, paid, items is an integer from 0 to 2)` |
 | Optional | `a worker or nothing`, `an integer from 1 to 3 or nothing` |
+| Set | `a set of worker` |
 
 Map keys must be a named finite type (an enum, a boolean, or a bounded
 integer); map values may be any type, including maps and records. Every key
@@ -152,6 +153,39 @@ holder needs no made-up worker and an unasked question no made-up number 0.
 - An optional record is assigned whole; its members cannot be assigned one by
   one.
 
+### Sets
+
+```zin
+state
+  inside is a set of worker
+
+initially
+  inside is []
+
+always
+  every w in inside satisfies visited has w
+  size of inside <= 2
+
+action enter(w is a worker)
+  requires not inside has w
+  inside becomes inside with w
+```
+
+A set holds any selection of a named finite type's values, one slot per value.
+
+| | |
+| --- | --- |
+| `[ann, ben]`, `[]` | a set; it takes its type from the other side of `is` or `becomes` |
+| `inside has w` | membership, a comparison |
+| `inside with w`, `inside without w` | the set plus or minus a value; with another set, union and difference |
+| `size of inside` | the number of members |
+| `every w in inside satisfies ...` | quantifiers range over a set field's members as well as over a type |
+
+`with` and `without` bind more loosely than arithmetic and more tightly than
+comparisons. Sets compare with `is`. In plans a set is an array of its members
+in the order the element type declares them; runners and `zin trace` match it
+in any order.
+
 ## State and initial values
 
 ```zin
@@ -199,7 +233,7 @@ number of w in worker where at of w is done
 ```
 
 Quantifiers range over a named type (declare `small is an integer from 1 to 3`
-under `types` to range over numbers) and extend as far to the right as
+under `types` to range over numbers) or over the members of a set field and extend as far to the right as
 possible; parenthesize them inside larger expressions.
 
 Expressions are statically typed. Integers, booleans and each enum are

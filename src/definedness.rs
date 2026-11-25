@@ -147,6 +147,27 @@ impl Analysis<'_> {
                 }
                 facts
             }
+            Ir::Select {
+                key, keys, options, ..
+            } => {
+                let key = self.facts(key);
+                let mut facts = Facts {
+                    values: BOOLEAN,
+                    can_fault: key.can_fault || !key.values.within(keys),
+                    order_sensitive: key.order_sensitive,
+                };
+                for (index, option) in options.iter().enumerate() {
+                    let option = self.facts(option);
+                    facts.values = if index == 0 {
+                        option.values
+                    } else {
+                        facts.values.union(option.values)
+                    };
+                    facts.can_fault |= option.can_fault;
+                    facts.order_sensitive |= option.order_sensitive;
+                }
+                facts
+            }
             Ir::Fail(_) => Facts {
                 values: Values::Range(0, 0),
                 can_fault: true,

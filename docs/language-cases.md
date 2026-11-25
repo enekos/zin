@@ -109,3 +109,22 @@ action answer
   asked becomes nothing
 always asked is nothing or asked > 0 # fails: always asked > 0
 ```
+
+## Sets
+
+```zin
+system "Room"
+types
+  worker is one of ann, ben, cid
+state
+  inside is a set of worker
+initially
+  inside is []
+action enter(w is a worker)
+  requires not inside has w and size of inside < 2
+  inside becomes inside with w
+action leave(w is a worker)
+  requires inside has w
+  inside becomes inside without w
+always size of inside <= 2 # fails: always size of inside <= 1
+```

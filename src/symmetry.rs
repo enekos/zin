@@ -61,6 +61,13 @@ impl Hidden {
                     *cell = outer.to_vec();
                 }
             }
+            FieldType::Set { elements, .. } => {
+                for position in 0..elements.size() {
+                    if let Some(cell) = self.guards.get_mut(offset + position) {
+                        *cell = outer.to_vec();
+                    }
+                }
+            }
             FieldType::Map { keys, value, .. } => {
                 for position in 0..keys.size() {
                     self.guard(value, offset + position * value.width(), outer);
@@ -119,6 +126,20 @@ fn moved(domain: &Domain, groups: &[Vec<i64>]) -> bool {
 fn sources(kind: &FieldType, relabel: &impl Fn(i64) -> i64, groups: &[Vec<i64>]) -> Vec<usize> {
     match kind {
         FieldType::Scalar(_) => vec![0],
+        FieldType::Set { elements, .. } => {
+            let mut out: Vec<usize> = (0..elements.size()).collect();
+            if moved(elements, groups) {
+                for (position, raw) in elements.raws().into_iter().enumerate() {
+                    if let Some(cell) = elements
+                        .position(relabel(raw))
+                        .and_then(|target| out.get_mut(target))
+                    {
+                        *cell = position;
+                    }
+                }
+            }
+            out
+        }
         FieldType::Optional(value) => {
             let mut out = vec![0];
             out.extend(

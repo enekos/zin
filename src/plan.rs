@@ -951,6 +951,7 @@ fn check_safe_integers(model: &Model) -> Result<()> {
                 .iter()
                 .any(|(_, kind)| unsafe_kind(kind, unsafe_domain)),
             FieldType::Optional(value) => unsafe_kind(value, unsafe_domain),
+            FieldType::Set { elements, .. } => unsafe_domain(elements),
         }
     }
     let fields = model
@@ -976,6 +977,7 @@ pub(crate) fn value_json(value: &Value) -> Json {
         Value::Boolean(flag) => Json::Bool(*flag),
         Value::Symbol(name) => Json::str(name.clone()),
         Value::Nothing => Json::Null,
+        Value::List(items) => Json::Array(items.iter().map(value_json).collect()),
         Value::Map(entries) => Json::Object(
             entries
                 .iter()
@@ -1031,6 +1033,19 @@ fn field_type_json(model: &Model, kind: &FieldType) -> Json {
                 ),
             ),
             ("value", field_type_json(model, value)),
+        ]),
+        FieldType::Set { elements, .. } => Json::object([
+            ("kind", Json::str("set")),
+            (
+                "values",
+                Json::Array(
+                    elements
+                        .raws()
+                        .into_iter()
+                        .map(|raw| Json::str(model.value(elements, raw).to_string()))
+                        .collect(),
+                ),
+            ),
         ]),
         FieldType::Optional(value) => Json::object([
             ("kind", Json::str("optional")),

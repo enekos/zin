@@ -116,6 +116,8 @@ pub enum TypeExpr {
     Record(Vec<Field>),
     /// `<type> or nothing`: a value of the type, or no value.
     Optional(Box<TypeExpr>),
+    /// `a set of <type>`: any selection of the named finite type's values.
+    Set(String),
 }
 
 impl fmt::Display for TypeExpr {
@@ -135,6 +137,7 @@ impl fmt::Display for TypeExpr {
                 write!(formatter, "a record with ({members})")
             }
             Self::Optional(value) => write!(formatter, "{value} or nothing"),
+            Self::Set(element) => write!(formatter, "a set of {element}"),
         }
     }
 }
@@ -297,6 +300,8 @@ pub enum Value {
     Map(BTreeMap<String, Value>),
     /// The value of an optional that holds none.
     Nothing,
+    /// The members of a set, in the order their type declares them.
+    List(Vec<Value>),
 }
 
 impl Value {
@@ -321,6 +326,14 @@ impl Value {
                     .join(", ");
                 format!("{{{entries}}}")
             }
+            Self::List(items) => format!(
+                "[{}]",
+                items
+                    .iter()
+                    .map(Value::source)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Self::Integer(_) | Self::Boolean(_) | Self::Nothing => self.to_string(),
         }
     }
@@ -375,6 +388,7 @@ impl fmt::Display for Value {
             Self::Boolean(value) => write!(formatter, "{value}"),
             Self::Map(_) => formatter.write_str(&self.source()),
             Self::Nothing => formatter.write_str("nothing"),
+            Self::List(_) => formatter.write_str(&self.source()),
         }
     }
 }
@@ -401,6 +415,8 @@ pub enum Expr {
     },
     /// `{name: value, ...}`: a record value.
     Record(Vec<(String, Expr)>),
+    /// `[a, b, ...]`: the members of a set.
+    Items(Vec<Expr>),
     /// `every <type>` as a key in an assignment target: all keys at once.
     Every(String),
     Unary {
@@ -453,4 +469,10 @@ pub enum BinaryOperator {
     Subtract,
     Multiply,
     Divide,
+    /// `s has x`: whether the set `s` holds `x`.
+    Has,
+    /// `s with x`: `s` and also `x`, a value or a set.
+    With,
+    /// `s without x`: `s` except `x`, a value or a set.
+    Without,
 }

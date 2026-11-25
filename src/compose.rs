@@ -250,6 +250,7 @@ fn foreign_name<'a>(
                 pending.push(key);
             }
             Expr::Record(members) => pending.extend(members.iter().map(|(_, value)| value)),
+            Expr::Items(items) => pending.extend(items),
             Expr::Every(_) => {}
         }
     }

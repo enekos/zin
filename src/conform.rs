@@ -94,17 +94,6 @@ struct Divergence {
     message: String,
 }
 
-fn matches_observation(expected: &Value, actual: &Value) -> bool {
-    if let (Value::Map(expected), Value::Map(actual)) = (expected, actual) {
-        return actual.iter().all(|(key, item)| {
-            expected
-                .get(key)
-                .is_some_and(|wanted| matches_observation(wanted, item))
-        });
-    }
-    expected == actual
-}
-
 fn compare<A: Adapter>(
     adapter: &A,
     verification: &Verification,
@@ -121,7 +110,13 @@ fn compare<A: Adapter>(
                 "observe() returned '{field}', which is not a state field of the specification"
             ));
         };
-        if !matches_observation(wanted, actual) {
+        let kind = verification
+            .model
+            .fields
+            .iter()
+            .find(|info| info.name == *field)
+            .map(|info| &info.kind);
+        if !kind.is_some_and(|kind| crate::model::observation_matches(kind, wanted, actual)) {
             return Err(format!(
                 "{after}, {field} is {}, but the specification says {}",
                 actual.source(),

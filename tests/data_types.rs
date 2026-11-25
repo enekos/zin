@@ -334,3 +334,113 @@ fn an_implementation_with_options_conforms() {
     let report = check(LEASE, &PlanOptions::default(), Lease::default).unwrap();
     assert!(report.tests > 0);
 }
+
+const ROOMS: &str = include_str!("../examples/rooms.zin");
+
+#[test]
+fn sets_check_with_and_without_symmetry() {
+    let full = verify(&parse(ROOMS).unwrap()).unwrap();
+    assert_eq!(full.graph.state_count(), 34);
+    let reduced = verify_with(&parse(ROOMS).unwrap(), Options::default()).unwrap();
+    assert_eq!(reduced.graph.state_count(), 13);
+    let plan = Plan::build(&full, &PlanOptions::default()).unwrap();
+    let json = plan.to_json(&full);
+    assert!(
+        json.get("fields")
+            .unwrap()
+            .to_compact()
+            .contains(r#"{"kind":"set","values":["ann","ben","cid"]}"#)
+    );
+    let broken = ROOMS.replace(
+        "  inside becomes inside without w\n",
+        "  inside becomes inside without w\n  visited becomes visited without w\n",
+    );
+    let full = error(&broken);
+    let reduced = verify_with(&parse(&broken).unwrap(), Options::default()).unwrap_err();
+    assert_eq!(full.kind, ErrorKind::Violation);
+    assert_eq!((reduced.kind, reduced.line), (full.kind, full.line));
+}
+
+#[test]
+fn set_type_errors() {
+    let has = error(&ROOMS.replace("requires inside has w", "requires open has w"));
+    assert_eq!(
+        has.message,
+        "'has' needs a set on its left, found a true/false value"
+    );
+    let element = error(&ROOMS.replace("requires inside has w", "requires inside has 1"));
+    assert!(
+        element
+            .message
+            .starts_with("this set holds one of ann, ben, cid, not a number"),
+        "{element}"
+    );
+    let literal = error(&ROOMS.replace("not open and inside is not []", "[] is []"));
+    assert!(
+        literal.message.starts_with("a [...] literal needs a set"),
+        "{literal}"
+    );
+    let property = error(&ROOMS.replace("size of inside <= 2", "length of inside <= 2"));
+    assert!(
+        property.message.starts_with("a set has no length"),
+        "{property}"
+    );
+}
+
+#[derive(Default)]
+struct Room {
+    inside: Vec<String>,
+    visited: Vec<String>,
+    open: bool,
+    started: bool,
+}
+
+impl Adapter for Room {
+    fn call(&mut self, action: &str, args: &Args) -> Outcome {
+        if !self.started {
+            self.open = true;
+            self.started = true;
+        }
+        let who = args.get("w").map(ToString::to_string).unwrap_or_default();
+        match action {
+            "enter" if self.open && !self.inside.contains(&who) && self.inside.len() < 2 => {
+                self.inside.insert(0, who.clone());
+                if !self.visited.contains(&who) {
+                    self.visited.insert(0, who);
+                }
+            }
+            "leave" if self.inside.contains(&who) => self.inside.retain(|w| *w != who),
+            "close" if self.open && self.inside.is_empty() => self.open = false,
+            _ => return Outcome::Rejected,
+        }
+        Outcome::Accepted
+    }
+
+    fn observe(&self) -> Option<State> {
+        let list =
+            |names: &[String]| Value::List(names.iter().cloned().map(Value::Symbol).collect());
+        Some(State::from([
+            ("inside".to_string(), list(&self.inside)),
+            ("visited".to_string(), list(&self.visited)),
+        ]))
+    }
+}
+
+#[test]
+fn a_set_observed_in_another_order_conforms() {
+    let report = check(ROOMS, &PlanOptions::default(), Room::default).unwrap();
+    assert!(report.tests > 0);
+    let model = verify(&parse(ROOMS).unwrap()).unwrap().model;
+    let events = concat!(
+        r#"{"action":"enter","args":["ben"]}"#,
+        "\n",
+        r#"{"action":"enter","args":["ann"],"state":{"inside":["ben","ann"],"visited":["ben","ann"]}}"#,
+        "\n"
+    );
+    zin::check_trace(&model, events).unwrap();
+    let wrong = events.replace(r#""visited":["ben","ann"]"#, r#""visited":["ben"]"#);
+    assert_eq!(
+        zin::check_trace(&model, &wrong).unwrap_err().kind,
+        ErrorKind::Violation
+    );
+}

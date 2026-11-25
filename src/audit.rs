@@ -88,8 +88,13 @@ fn swapped(operator: BinaryOperator) -> Option<(BinaryOperator, &'static str)> {
         BinaryOperator::And => (BinaryOperator::Or, "'and' becomes 'or'"),
         BinaryOperator::Or => (BinaryOperator::And, "'or' becomes 'and'"),
         BinaryOperator::Add => (BinaryOperator::Subtract, "'+' becomes '-'"),
+        BinaryOperator::With => (BinaryOperator::Without, "'with' becomes 'without'"),
+        BinaryOperator::Without => (BinaryOperator::With, "'without' becomes 'with'"),
         BinaryOperator::Subtract => (BinaryOperator::Add, "'-' becomes '+'"),
-        BinaryOperator::Implies | BinaryOperator::Multiply | BinaryOperator::Divide => return None,
+        BinaryOperator::Implies
+        | BinaryOperator::Multiply
+        | BinaryOperator::Divide
+        | BinaryOperator::Has => return None,
     })
 }
 
@@ -124,6 +129,19 @@ fn variants(expr: &Expr) -> Vec<(String, Expr)> {
             }));
             all
         }
+        Expr::Items(items) => items
+            .iter()
+            .enumerate()
+            .flat_map(|(index, item)| {
+                variants(item).into_iter().map(move |(description, item)| {
+                    let mut changed = items.clone();
+                    if let Some(slot) = changed.get_mut(index) {
+                        *slot = item;
+                    }
+                    (description, Expr::Items(changed))
+                })
+            })
+            .collect(),
         Expr::Record(members) => members
             .iter()
             .enumerate()

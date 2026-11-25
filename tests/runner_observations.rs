@@ -39,6 +39,7 @@ fn kind(item: &Value) -> String {
         Value::Boolean(_) => "a boolean".into(),
         Value::Integer(_) => "an integer from 0 to 2".into(),
         Value::Nothing => "an integer from 0 to 2 or nothing".into(),
+        Value::List(_) => unreachable!("cases with arrays are skipped"),
         Value::Symbol(_) => format!("one of {}, other", item.source()),
         Value::Map(entries) => format!(
             "a record with ({})",

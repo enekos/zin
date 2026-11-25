@@ -75,6 +75,11 @@ pub enum FieldType {
     /// A presence slot (0 for nothing, 1 for a value), then the value's
     /// slots. When the value is nothing they hold each slot's first value.
     Optional(Box<FieldType>),
+    /// One boolean slot per value of the element type: whether the set holds it.
+    Set {
+        element_type: String,
+        elements: Domain,
+    },
 }
 
 impl FieldType {
@@ -88,6 +93,7 @@ impl FieldType {
                 .iter()
                 .fold(0, |width, (_, kind)| width.saturating_add(kind.width())),
             Self::Optional(value) => value.width().saturating_add(1),
+            Self::Set { elements, .. } => elements.size(),
         }
     }
 
@@ -106,6 +112,7 @@ impl FieldType {
                 out.extend(value.defaults());
                 out
             }
+            Self::Set { elements, .. } => vec![0; elements.size()],
         }
     }
 
@@ -114,7 +121,7 @@ impl FieldType {
         match self {
             Self::Scalar(_) => true,
             Self::Map { value, .. } => matches!(value.as_ref(), Self::Scalar(_)),
-            Self::Record(_) | Self::Optional(_) => false,
+            Self::Record(_) | Self::Optional(_) | Self::Set { .. } => false,
         }
     }
 
@@ -182,6 +189,14 @@ pub(crate) enum Ir {
     Tuple(Vec<Ir>),
     /// A model fault with this message, such as reading the value of nothing.
     Fail(String),
+    /// The option at `key`'s position in `keys`; `what` names the keys in
+    /// the fault when `key` is not one of them.
+    Select {
+        key: Box<Ir>,
+        keys: Domain,
+        options: Vec<Ir>,
+        what: String,
+    },
     Not(Box<Ir>),
     Negate(Box<Ir>),
     Binary(BinaryOperator, Box<Ir>, Box<Ir>),
@@ -367,6 +382,15 @@ impl Model {
     pub(crate) fn decode_value(&self, kind: &FieldType, slots: &[i64]) -> Value {
         match kind {
             FieldType::Scalar(domain) => self.value(domain, slots.first().copied().unwrap_or(0)),
+            FieldType::Set { elements, .. } => Value::List(
+                elements
+                    .raws()
+                    .into_iter()
+                    .zip(slots)
+                    .filter(|(_, held)| **held != 0)
+                    .map(|(raw, _)| self.value(elements, raw))
+                    .collect(),
+            ),
             FieldType::Optional(value) => match slots.split_first() {
                 Some((1, rest)) => self.decode_value(value, rest),
                 _ => Value::Nothing,
@@ -502,6 +526,37 @@ impl Model {
     }
 }
 
+/// Whether an observed value agrees with the specification's value of type
+/// `kind`. Maps and records may list a subset of their keys; a set matches
+/// in any order.
+pub(crate) fn observation_matches(kind: &FieldType, expected: &Value, actual: &Value) -> bool {
+    match (kind, expected, actual) {
+        (FieldType::Map { value, .. }, Value::Map(wanted), Value::Map(observed)) => {
+            observed.iter().all(|(key, item)| {
+                wanted
+                    .get(key)
+                    .is_some_and(|wanted| observation_matches(value, wanted, item))
+            })
+        }
+        (FieldType::Record(members), Value::Map(wanted), Value::Map(observed)) => {
+            observed.iter().all(|(key, item)| {
+                members
+                    .iter()
+                    .find(|(member, _)| member == key)
+                    .zip(wanted.get(key))
+                    .is_some_and(|((_, kind), wanted)| observation_matches(kind, wanted, item))
+            })
+        }
+        (FieldType::Optional(value), wanted, observed) if *wanted != Value::Nothing => {
+            observation_matches(value, wanted, observed)
+        }
+        (FieldType::Set { .. }, Value::List(wanted), Value::List(observed)) => {
+            observed.len() == wanted.len() && observed.iter().all(|item| wanted.contains(item))
+        }
+        _ => expected == actual,
+    }
+}
+
 pub(crate) struct Write {
     pub slot: usize,
     pub raw: i64,
@@ -604,6 +659,19 @@ pub(crate) fn eval(ir: &Ir, state: &[i64], locals: &mut [i64]) -> std::result::R
         Ir::Index { offset, steps } => fetch(state, locate(*offset, steps, state, locals)?)?,
         Ir::Tuple(_) => return Err("internal error: a compound value was evaluated".to_string()),
         Ir::Fail(message) => return Err(message.clone()),
+        Ir::Select {
+            key,
+            keys,
+            options,
+            what,
+        } => {
+            let key = eval(key, state, locals)?;
+            let option = keys
+                .position(key)
+                .and_then(|position| options.get(position))
+                .ok_or_else(|| format!("{key} is not {what}"))?;
+            eval(option, state, locals)?
+        }
         Ir::Not(value) => i64::from(eval(value, state, locals)? == 0),
         Ir::Negate(value) => eval(value, state, locals)?
             .checked_neg()
@@ -667,6 +735,9 @@ pub(crate) fn eval(ir: &Ir, state: &[i64], locals: &mut [i64]) -> std::result::R
                     }
                     left.checked_div(right).ok_or("integer overflow")?
                 }
+                BinaryOperator::Has | BinaryOperator::With | BinaryOperator::Without => {
+                    return Err("internal error: a set operator was evaluated".to_string());
+                }
             }
         }
     })
@@ -687,6 +758,7 @@ enum Ty {
     Optional(Box<Ty>),
     /// The literal `nothing`, before the context says what it is nothing of.
     Nothing,
+    Set(Domain),
 }
 
 impl Ty {
@@ -712,6 +784,7 @@ impl Ty {
                     .collect(),
             ),
             FieldType::Optional(value) => Self::Optional(Box::new(Self::of_kind(value))),
+            FieldType::Set { elements, .. } => Self::Set(elements.clone()),
         }
     }
 
@@ -724,6 +797,7 @@ impl Ty {
             Self::Map { .. } => "a map",
             Self::Optional(_) => "a value that may be nothing",
             Self::Nothing => "nothing",
+            Self::Set(_) => "a set",
         }
     }
 
@@ -757,6 +831,7 @@ impl Ty {
                 keys: keys.clone(),
                 value: Box::new(value.join(other_value)?),
             },
+            (Self::Set(left), Self::Set(right)) if left == right => Self::Set(left.clone()),
             (Self::Nothing, Self::Nothing) => Self::Nothing,
             (Self::Nothing, Self::Optional(value)) | (Self::Optional(value), Self::Nothing) => {
                 Self::Optional(value.clone())
@@ -795,6 +870,7 @@ impl Ty {
             Self::Map { keys, value } => keys.size().saturating_mul(value.width()),
             Self::Optional(value) => value.width() + 1,
             Self::Nothing => 1,
+            Self::Set(elements) => elements.size(),
         }
     }
 }
@@ -859,6 +935,11 @@ fn equal_as(left: Vec<Ir>, right: Vec<Ir>, ty: &Ty) -> Ir {
             }
         }
         Ty::Nothing => Ir::Const(1),
+        Ty::Set(_) => all(left
+            .into_iter()
+            .zip(right)
+            .map(|(left, right)| Ir::Binary(BinaryOperator::Equal, Box::new(left), Box::new(right)))
+            .collect()),
         Ty::Optional(value) => {
             let (mut left, mut right) = (left.into_iter(), right.into_iter());
             let (Some(left_tag), Some(right_tag)) = (left.next(), right.next()) else {
@@ -915,7 +996,7 @@ fn equal_as(left: Vec<Ir>, right: Vec<Ir>, ty: &Ty) -> Ir {
 /// optional's slots set to their first values, so each value has one encoding.
 fn canonical(parts: Vec<Ir>, kind: &FieldType) -> Vec<Ir> {
     match kind {
-        FieldType::Scalar(_) => parts,
+        FieldType::Scalar(_) | FieldType::Set { .. } => parts,
         FieldType::Optional(value) => {
             let mut parts = parts.into_iter();
             let tag = parts.next().unwrap_or(Ir::Const(0));
@@ -1052,8 +1133,12 @@ fn tuple(mut parts: Vec<Ir>) -> Ir {
     }
 }
 
+/// Whether `expr` is a literal that takes its type from the other side.
 fn record_literal(expr: &Expr) -> bool {
-    matches!(expr, Expr::Record(_))
+    matches!(
+        expr,
+        Expr::Record(_) | Expr::Items(_) | Expr::Literal(Value::Nothing)
+    )
 }
 
 struct Compiler<'a> {
@@ -1285,6 +1370,10 @@ impl<'a> Compiler<'a> {
                 line,
                 "'or nothing' is only allowed in state; parameters are integers, booleans or enums",
             )),
+            FieldType::Set { .. } => Err(Error::at(
+                line,
+                "a set is only allowed in state; parameters are integers, booleans or enums",
+            )),
         }
     }
 
@@ -1320,6 +1409,35 @@ impl<'a> Compiler<'a> {
             }
             TypeExpr::Optional(value) => {
                 return Ok(FieldType::Optional(Box::new(self.resolve(value, line)?)));
+            }
+            TypeExpr::Set(element) => {
+                let elements = match self.types.get(element) {
+                    Some(FieldType::Scalar(domain)) => domain.clone(),
+                    Some(_) => {
+                        return Err(Error::at(
+                            line,
+                            format!(
+                                "set elements must be integers, booleans or enums, and {element} is not"
+                            ),
+                        ));
+                    }
+                    None => {
+                        return Err(Error::at(
+                            line,
+                            format!("unknown element type {element}; declare it in a types block"),
+                        ));
+                    }
+                };
+                if elements.size() > MAX_SLOTS {
+                    return Err(Error::at(
+                        line,
+                        format!("a set may hold at most {MAX_SLOTS} values"),
+                    ));
+                }
+                return Ok(FieldType::Set {
+                    element_type: element.clone(),
+                    elements,
+                });
             }
             TypeExpr::Record(members) => {
                 let mut resolved = Vec::with_capacity(members.len());
@@ -1418,6 +1536,15 @@ impl<'a> Compiler<'a> {
                     label: label.to_string(),
                 });
                 self.lay_out(value, label);
+            }
+            FieldType::Set { elements, .. } => {
+                for element in elements.raws() {
+                    let element = self.raw_value(elements, element);
+                    self.slots.push(Slot {
+                        domain: Domain::Boolean,
+                        label: format!("{label} has {element}"),
+                    });
+                }
             }
         }
     }
@@ -1700,6 +1827,7 @@ impl<'a> Compiler<'a> {
                     .join(", ")
             ),
             FieldType::Optional(value) => format!("{} or nothing", self.describe_kind(value)),
+            FieldType::Set { element_type, .. } => format!("a set of {element_type}"),
         }
     }
 
@@ -1723,6 +1851,7 @@ impl<'a> Compiler<'a> {
                     .join(", ")
             ),
             Ty::Optional(value) => format!("{} or nothing", self.describe_ty(value)),
+            Ty::Set(elements) => format!("a set of {}", self.describe(elements)),
             other => other.noun().to_string(),
         }
     }
@@ -1861,6 +1990,7 @@ impl<'a> Compiler<'a> {
             },
             Expr::Literal(Value::Map(_)) => Err(Error::at(line, "map literals are not supported")),
             Expr::Literal(Value::Nothing) => Ok((Ir::Const(0), Ty::Nothing)),
+            Expr::Literal(Value::List(_)) => Err(Error::at(line, "list values are written [a, b]")),
             Expr::Name { .. } | Expr::Index { .. } | Expr::Subscript { .. } => {
                 self.expr_as(expr, want, line)
             }
@@ -1869,6 +1999,7 @@ impl<'a> Compiler<'a> {
                 format!("'every {domain}' names all keys at once, so it can only be assigned to"),
             )),
             Expr::Record(members) => self.record(members, want, line),
+            Expr::Items(items) => self.items(items, want, line),
             Expr::Unary { operator, value } => {
                 let (value, ty) = self.expr(value, line)?;
                 match operator {
@@ -2083,8 +2214,16 @@ impl<'a> Compiler<'a> {
                     let (ir, ty) = unwrap(ir, ty, &format!("{} is nothing", describe_expr(key)));
                     Ok(Operand::Value(ir, ty))
                 }
+                Ok(Operand::Place(place)) if matches!(place.kind, FieldType::Set { .. }) => self
+                    .read(&place, line)
+                    .map(|(ir, ty)| Operand::Value(ir, ty)),
                 other => other,
             };
+            if let Ok(Operand::Value(ir, ty)) = &base
+                && let Some(result) = collection_property(name, ir, ty, line)
+            {
+                return result.map(|(ir, ty)| Operand::Value(ir, ty));
+            }
             match base {
                 Ok(Operand::Place(place)) if place.kind.member(name).is_some() => {
                     return Ok(Operand::Place(place.member(name).unwrap_or(place)));
@@ -2170,6 +2309,109 @@ impl<'a> Compiler<'a> {
         Ok(entry)
     }
 
+    /// `[a, b]` where a set is expected.
+    fn items(&mut self, items: &[Expr], want: Option<&Ty>, line: usize) -> Result<(Ir, Ty)> {
+        let Some(Ty::Set(elements)) = want else {
+            return Err(Error::at(
+                line,
+                "a [...] literal needs a set on the other side of 'is' or 'becomes'",
+            ));
+        };
+        let elements = elements.clone();
+        let mut members = Vec::with_capacity(items.len());
+        for item in items {
+            members.push(self.element(item, &elements, line)?);
+        }
+        let held = elements
+            .raws()
+            .into_iter()
+            .map(|raw| {
+                members
+                    .iter()
+                    .map(|member| is_raw(member, raw))
+                    .reduce(or)
+                    .unwrap_or(Ir::Const(0))
+            })
+            .collect();
+        Ok((tuple(held), Ty::Set(elements)))
+    }
+
+    /// `expr` as a value of `elements`, the element type of a set.
+    fn element(&mut self, expr: &Expr, elements: &Domain, line: usize) -> Result<Ir> {
+        let (ir, ty) = self.expr(expr, line)?;
+        if !assignable(&ty, &FieldType::Scalar(elements.clone())) {
+            return Err(Error::at(
+                line,
+                format!(
+                    "this set holds {}, not {}",
+                    self.describe(elements),
+                    self.describe_ty(&ty)
+                ),
+            )
+            .coded("type.mismatch"));
+        }
+        Ok(ir)
+    }
+
+    /// `s has x`, `s with x` and `s without x`, where `x` is a value or a set.
+    fn set_operator(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expr,
+        right: &Expr,
+        line: usize,
+    ) -> Result<(Ir, Ty)> {
+        let (set, set_ty) = self.expr_as(left, None, line)?;
+        let Ty::Set(elements) = set_ty.clone() else {
+            let word = match operator {
+                BinaryOperator::Has => "'has'",
+                BinaryOperator::With => "'with'",
+                _ => "'without'",
+            };
+            return Err(Error::at(
+                line,
+                format!("{word} needs a set on its left, found {}", set_ty.noun()),
+            )
+            .coded("type.mismatch"));
+        };
+        let held = parts(set);
+        if operator == BinaryOperator::Has {
+            let element = self.element(right, &elements, line)?;
+            let what = format!("one of {}", self.describe(&elements));
+            return Ok((select(element, &elements, held, what), Ty::Bool));
+        }
+        let with = operator == BinaryOperator::With;
+        let (other, other_ty) = self.expr_as(right, Some(&set_ty), line)?;
+        let combined = if other_ty == set_ty {
+            held.into_iter()
+                .zip(parts(other))
+                .map(|(mine, theirs)| {
+                    if with {
+                        or(mine, theirs)
+                    } else {
+                        and(mine, Ir::Not(Box::new(theirs)))
+                    }
+                })
+                .collect()
+        } else {
+            let element = self.element(right, &elements, line)?;
+            held.into_iter()
+                .zip(elements.raws())
+                .map(|(mine, raw)| {
+                    let hit = is_raw(&element, raw);
+                    match (hit, with) {
+                        (Ir::Const(0), _) => mine,
+                        (Ir::Const(_), true) => Ir::Const(1),
+                        (Ir::Const(_), false) => Ir::Const(0),
+                        (hit, true) => or(hit, mine),
+                        (hit, false) => and(Ir::Not(Box::new(hit)), mine),
+                    }
+                })
+                .collect()
+        };
+        Ok((tuple(combined), set_ty))
+    }
+
     fn binary(
         &mut self,
         operator: BinaryOperator,
@@ -2177,6 +2419,12 @@ impl<'a> Compiler<'a> {
         right: &Expr,
         line: usize,
     ) -> Result<(Ir, Ty)> {
+        if matches!(
+            operator,
+            BinaryOperator::Has | BinaryOperator::With | BinaryOperator::Without
+        ) {
+            return self.set_operator(operator, left, right, line);
+        }
         let ((left, left_ty), (right, right_ty)) =
             if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
                 self.pair(left, right, None, line)?
@@ -2238,6 +2486,12 @@ impl<'a> Compiler<'a> {
                 expect(&right_ty, &Ty::Int, "arithmetic", line)?;
                 Ty::Int
             }
+            BinaryOperator::Has | BinaryOperator::With | BinaryOperator::Without => {
+                return Err(Error::at(
+                    line,
+                    "internal error: a set operator was not compiled",
+                ));
+            }
         };
         Ok((Ir::Binary(operator, Box::new(left), Box::new(right)), ty))
     }
@@ -2291,6 +2545,56 @@ impl<'a> Compiler<'a> {
         Ok((ir, Ty::Bool))
     }
 
+    /// `every x in s satisfies ...` over the members of the set field `s`.
+    fn over_set(
+        &mut self,
+        quantifier: Quantifier,
+        variable: &str,
+        place: &Place,
+        body: &Expr,
+        line: usize,
+    ) -> Result<(Ir, Ty)> {
+        let FieldType::Set { elements, .. } = &place.kind else {
+            return Err(Error::at(
+                line,
+                format!(
+                    "a quantifier ranges over a type or a set, and {} is neither",
+                    place.label
+                ),
+            ));
+        };
+        let elements = elements.clone();
+        let (held, _) = self.read(place, line)?;
+        let local = self.scope.len();
+        self.scope.push((variable.to_string(), Ty::of(&elements)));
+        self.locals = self.locals.max(self.scope.len());
+        let body = self.expr(body, line);
+        self.scope.pop();
+        let (body, ty) = body?;
+        expect(&ty, &Ty::Bool, "the condition of a quantifier", line)?;
+        let what = format!("one of {}", self.describe(&elements));
+        let member = select(Ir::Local(local), &elements, parts(held), what);
+        let body = match quantifier {
+            Quantifier::Every => {
+                Ir::Binary(BinaryOperator::Implies, Box::new(member), Box::new(body))
+            }
+            Quantifier::Some | Quantifier::Count => and(member, body),
+        };
+        Ok((
+            Ir::Quantified {
+                quantifier,
+                local,
+                values: elements.raws(),
+                body: Box::new(body),
+            },
+            if quantifier == Quantifier::Count {
+                Ty::Int
+            } else {
+                Ty::Bool
+            },
+        ))
+    }
+
     fn quantified(
         &mut self,
         quantifier: Quantifier,
@@ -2299,6 +2603,11 @@ impl<'a> Compiler<'a> {
         body: &Expr,
         line: usize,
     ) -> Result<(Ir, Ty)> {
+        if !self.types.contains_key(domain)
+            && let Some(place) = self.field(domain)
+        {
+            return self.over_set(quantifier, variable, &place, body, line);
+        }
         let domain = match self.types.get(domain) {
             Some(FieldType::Scalar(domain)) => domain.clone(),
             Some(_) => {
@@ -2352,6 +2661,61 @@ impl<'a> Compiler<'a> {
     }
 }
 
+fn or(left: Ir, right: Ir) -> Ir {
+    Ir::Binary(BinaryOperator::Or, Box::new(left), Box::new(right))
+}
+
+fn and(left: Ir, right: Ir) -> Ir {
+    Ir::Binary(BinaryOperator::And, Box::new(left), Box::new(right))
+}
+
+/// Whether `value` is `raw`, folded when `value` is a constant.
+fn is_raw(value: &Ir, raw: i64) -> Ir {
+    match value {
+        Ir::Const(constant) => Ir::Const(i64::from(*constant == raw)),
+        value => Ir::Binary(
+            BinaryOperator::Equal,
+            Box::new(value.clone()),
+            Box::new(Ir::Const(raw)),
+        ),
+    }
+}
+
+/// The option for `key`, chosen while compiling when `key` is a constant.
+fn select(key: Ir, keys: &Domain, mut options: Vec<Ir>, what: String) -> Ir {
+    if let Ir::Const(raw) = key
+        && let Some(position) = keys.position(raw)
+    {
+        return options.swap_remove(position);
+    }
+    Ir::Select {
+        key: Box::new(key),
+        keys: keys.clone(),
+        options,
+        what,
+    }
+}
+
+/// `size of s`. `None` when `ty` is not a collection.
+fn collection_property(name: &str, ir: &Ir, ty: &Ty, line: usize) -> Option<Result<(Ir, Ty)>> {
+    let Ty::Set(_) = ty else {
+        return None;
+    };
+    Some(match name {
+        "size" => Ok((
+            parts(ir.clone())
+                .into_iter()
+                .reduce(|sum, next| Ir::Binary(BinaryOperator::Add, Box::new(sum), Box::new(next)))
+                .unwrap_or(Ir::Const(0)),
+            Ty::Int,
+        )),
+        _ => Err(Error::at(
+            line,
+            format!("a set has no {name}; 'size of' counts its members"),
+        )),
+    })
+}
+
 fn expect(actual: &Ty, wanted: &Ty, what: &str, line: usize) -> Result<()> {
     if actual == wanted {
         Ok(())
@@ -2388,6 +2752,12 @@ fn assignable(ty: &Ty, kind: &FieldType) -> bool {
                 ..
             },
         ) => keys == wanted_keys && assignable(value, wanted),
+        (
+            Ty::Set(elements),
+            FieldType::Set {
+                elements: wanted, ..
+            },
+        ) => elements == wanted,
         (Ty::Nothing, FieldType::Optional(_)) => true,
         (Ty::Optional(value), FieldType::Optional(wanted)) => assignable(value, wanted),
         (value, FieldType::Optional(wanted)) => assignable(value, wanted),
