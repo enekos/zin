@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 — 2026-11-25
 
 - Records: `a record with (status is one of draft, paid, items is an integer
   from 0 to 2)` as a state field, a named type or a map value. Members read

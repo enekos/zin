@@ -3,7 +3,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>io.github.enekos</groupId>
   <artifactId>zin-junit</artifactId>
-  <version>0.4.0</version>
+  <version>0.5.0</version>
   <name>Zin JUnit 5 binding</name>
   <description>Replay Zin specifications' derived test plans as JUnit Jupiter dynamic tests</description>
   <url>https://github.com/enekos/zin</url>

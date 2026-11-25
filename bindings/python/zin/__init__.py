@@ -46,7 +46,7 @@ __all__ = [
     "run_test",
     "verify",
 ]
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 PLAN_FORMAT = "plan/1"
 # plan/2 carries records, nested maps, optional values, sets and lists.

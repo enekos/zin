@@ -11,7 +11,7 @@ package is not on Maven Central yet), then add the test dependencies:
 <dependency>
   <groupId>io.github.enekos</groupId>
   <artifactId>zin-junit</artifactId>
-  <version>0.4.0</version>
+  <version>0.5.0</version>
   <scope>test</scope>
 </dependency>
 <dependency>
