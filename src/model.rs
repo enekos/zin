@@ -1372,6 +1372,18 @@ impl<'a> Compiler<'a> {
 
     fn assignment_at(&mut self, assignment: &Assignment) -> Result<Vec<CompiledAssignment>> {
         let line = assignment.line;
+        if let Some((Ir::Slot(slot), Ty::Int | Ty::Bool | Ty::Enum(_))) =
+            self.scalar_field_at(&assignment.place)
+        {
+            let (value, ty) = self.expr_as(&assignment.value, None, line)?;
+            if ty.is_scalar() && assignable(&ty, &self.slot_kind(slot)) {
+                return Ok(vec![CompiledAssignment {
+                    target: Target::Slot(slot),
+                    value,
+                    line,
+                }]);
+            }
+        }
         let place = self.target(&assignment.place, line)?;
         let want = Ty::of_kind(&place.kind);
         let (value, ty) = self.expr_as(&assignment.value, Some(&want), line)?;
@@ -1483,10 +1495,45 @@ impl<'a> Compiler<'a> {
     /// Compiles `expr` to a value. `want` is the type the context expects,
     /// which a record literal needs to order its members.
     fn expr_as(&mut self, expr: &Expr, want: Option<&Ty>, line: usize) -> Result<(Ir, Ty)> {
+        if let Some(read) = self.scalar_field(expr) {
+            return Ok(read);
+        }
         match self.operand(expr, want, line)? {
             Operand::Place(place) => self.read(&place, line),
             Operand::Value(ir, ty) => Ok((ir, ty)),
         }
+    }
+
+    /// A read of a scalar state field named by `expr`, without building a
+    /// place: the common case, kept as cheap as before compound types.
+    fn scalar_field(&self, expr: &Expr) -> Option<(Ir, Ty)> {
+        if self.constant_only {
+            return None;
+        }
+        self.scalar_field_at(expr)
+    }
+
+    /// The slot and type of the scalar state field named by `expr`.
+    fn scalar_field_at(&self, expr: &Expr) -> Option<(Ir, Ty)> {
+        let Expr::Name { name, .. } = expr else {
+            return None;
+        };
+        if self.scope.iter().any(|(local, _)| local == name) {
+            return None;
+        }
+        let field = self.fields.get(*self.field_ids.get(name)?)?;
+        let FieldType::Scalar(domain) = &field.kind else {
+            return None;
+        };
+        Some((Ir::Slot(field.offset), Ty::of(domain)))
+    }
+
+    fn slot_kind(&self, slot: usize) -> FieldType {
+        FieldType::Scalar(
+            self.slots
+                .get(slot)
+                .map_or(Domain::Boolean, |slot| slot.domain.clone()),
+        )
     }
 
     fn read(&self, place: &Place, line: usize) -> Result<(Ir, Ty)> {
