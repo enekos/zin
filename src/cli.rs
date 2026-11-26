@@ -21,10 +21,11 @@ pub const USAGE: &str = "\
 zin - specifications you can prove, then run against your code
 
 usage:
-  zin check <spec>... [--format json] [--symmetry on|off] [--inductive]
+  zin check <spec>... [--format json] [--symmetry on|off] [--inductive] [--fix]
                                         prove every property over every reachable state;
                                         --inductive also asks whether every call from any
-                                        state satisfying the always/never properties keeps them
+                                        state satisfying the always/never properties keeps them;
+                                        --fix applies each fix a diagnostic is sure of
   zin plan <spec> [--out FILE] [--cover transitions|states|actions|scenarios|pairs] [--max-steps N] [--step-budget N] [--pair-limit N]
            [--component NAME] [--observe FIELDS]
                                         derive the conformance test plan (JSON);
@@ -42,6 +43,8 @@ usage:
                                         testing-library, go, rust, junit)
   zin report <spec>                     Markdown report with Mermaid diagrams
   zin diagram <spec> [scenario]         Mermaid state diagram, or one scenario's sequence diagram
+  zin explain [code]                    what a diagnostic code means and how to fix it;
+                                        without a code, list them
 
 exit codes: 0 ok, 1 the specification or implementation is wrong, 2 the input could not be used";
 
@@ -187,6 +190,21 @@ fn error_json(error: &Error) -> Json {
         ),
         ("message", Json::str(error.message.clone())),
         ("trace", trace),
+        (
+            "fixes",
+            Json::Array(
+                error
+                    .fixes()
+                    .map(|fix| {
+                        Json::object([
+                            ("span", span_json(&fix.span)),
+                            ("replacement", Json::str(fix.replacement.clone())),
+                            ("label", Json::str(fix.label.clone())),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
     ])
 }
 
@@ -388,8 +406,10 @@ fn verify_options(arguments: &Arguments) -> Result<Options> {
 }
 
 fn check(args: &[String]) -> Result<Output> {
-    let arguments = Arguments::parse_with_flags(args, &["format", "symmetry"], &["inductive"])?;
+    let arguments =
+        Arguments::parse_with_flags(args, &["format", "symmetry"], &["inductive", "fix"])?;
     let inductive = arguments.flag("inductive");
+    let fix = arguments.flag("fix");
     let json = match arguments.option("format") {
         None | Some("text") => false,
         Some("json") => true,
@@ -406,6 +426,9 @@ fn check(args: &[String]) -> Result<Output> {
     };
     let mut results = Vec::new();
     for path in &arguments.positional {
+        if fix {
+            apply_fixes(path, options, &mut output.stdout)?;
+        }
         let spec = load_spec(path);
         let result = spec
             .as_ref()
@@ -441,10 +464,15 @@ fn check(args: &[String]) -> Result<Output> {
                     .source_span()
                     .is_some_and(|span| !span.file.is_empty()) =>
             {
-                let _ = writeln!(output.stderr, "{}: {error}", error.kind.label());
+                let _ = writeln!(output.stderr, "{}: {}", error.kind.label(), error.report());
             }
             Err(error) => {
-                let _ = writeln!(output.stderr, "{path}: {}: {error}", error.kind.label());
+                let _ = writeln!(
+                    output.stderr,
+                    "{path}: {}: {}",
+                    error.kind.label(),
+                    error.report()
+                );
             }
         }
     }
@@ -460,6 +488,90 @@ fn check(args: &[String]) -> Result<Output> {
         );
     }
     Ok(output)
+}
+
+/// The most fixes `check --fix` applies to one specification.
+const MAX_FIXES: usize = 64;
+
+/// Apply the fix of each error that has exactly one, checking again after
+/// each, until the specification checks or an error has no single fix.
+fn apply_fixes(path: &str, options: Options, log: &mut String) -> Result<()> {
+    if path == "-" {
+        return Err(Error::usage("--fix needs files, not standard input"));
+    }
+    for _ in 0..MAX_FIXES {
+        let Err(error) = load_spec(path).and_then(|spec| verify_with(&spec, options)) else {
+            return Ok(());
+        };
+        let mut fixes = error.fixes();
+        let (Some(fix), None) = (fixes.next(), fixes.next()) else {
+            return Ok(());
+        };
+        let original = replace_span(fix)?;
+        let _ = writeln!(
+            log,
+            "fixed {}:{}:{}: {original} -> {}",
+            fix.span.file, fix.span.line, fix.span.column, fix.replacement
+        );
+    }
+    Ok(())
+}
+
+/// Write `fix` into its file and return the text it replaced.
+fn replace_span(fix: &crate::Fix) -> Result<String> {
+    let span = &fix.span;
+    let text = read(&span.file, MAX_SPEC_BYTES)?;
+    let mut lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let unusable = || {
+        Error::usage(format!(
+            "cannot apply the fix at {}:{}",
+            span.file, span.line
+        ))
+    };
+    let line = lines
+        .get_mut(span.line.wrapping_sub(1))
+        .ok_or_else(unusable)?;
+    let chars: Vec<char> = line.chars().collect();
+    let (start, end) = (span.column.wrapping_sub(1), span.end_column.wrapping_sub(1));
+    let original: String = chars.get(start..end).ok_or_else(unusable)?.iter().collect();
+    if original == fix.replacement {
+        return Err(unusable());
+    }
+    let fixed: String = chars[..start]
+        .iter()
+        .chain(fix.replacement.chars().collect::<Vec<_>>().iter())
+        .chain(&chars[end..])
+        .collect();
+    *line = &fixed;
+    std::fs::write(&span.file, lines.concat())
+        .map_err(|e| Error::usage(format!("cannot write {}: {e}", span.file)))?;
+    Ok(original)
+}
+
+fn explain(args: &[String]) -> Result<Output> {
+    let arguments = Arguments::parse(args, &[])?;
+    let Some(code) = arguments.positional.first() else {
+        let mut out = String::new();
+        for explanation in crate::explanations() {
+            let _ = writeln!(out, "{:<30}{}", explanation.code, explanation.summary);
+        }
+        return Ok(ok(out));
+    };
+    let explanation = crate::explanation(code).ok_or_else(|| {
+        Error::usage(format!("unknown code '{code}'; zin explain lists them")).suggest_closest(
+            code,
+            crate::explanations()
+                .iter()
+                .map(|explanation| explanation.code),
+        )
+    })?;
+    Ok(ok(format!(
+        "{}: {} (since {})\n{}",
+        explanation.code,
+        explanation.summary,
+        explanation.since,
+        explanation.body()
+    )))
 }
 
 fn plan(args: &[String]) -> Result<Output> {
@@ -811,6 +923,7 @@ fn dispatch(args: &[String]) -> Result<Output> {
             )?)))
         }
         "diagram" => diagram(rest),
+        "explain" => explain(rest),
         "--version" | "-V" | "version" => Ok(ok(format!("zin {}\n", env!("CARGO_PKG_VERSION")))),
         "--help" | "-h" | "help" => Ok(ok(format!("{USAGE}\n"))),
         other => Err(Error::usage(format!(
@@ -828,9 +941,9 @@ pub fn run(args: &[String]) -> Output {
             code: error.kind.exit_code(),
             stdout: String::new(),
             stderr: if error.kind == ErrorKind::Usage {
-                format!("{error}\n")
+                format!("{}\n", error.report())
             } else {
-                format!("{}: {error}\n", error.kind.label())
+                format!("{}: {}\n", error.kind.label(), error.report())
             },
         },
     }

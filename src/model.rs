@@ -3,6 +3,7 @@ use crate::ast::{
     PropertyKind, Quantifier, ScenarioStep, Spec, TypeDecl, TypeExpr, UnaryOperator, Value,
     display_call,
 };
+use crate::explain::{self, Code};
 use crate::{Error, Result, State};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -1743,6 +1744,8 @@ impl<'a> Compiler<'a> {
                         line,
                         format!("unknown type {name}; declare it in a types block"),
                     )
+                    .coded(Code::NameUnknown)
+                    .suggest_closest(name, self.types.keys().map(String::as_str))
                 });
             }
             TypeExpr::Optional(value) => {
@@ -1803,7 +1806,9 @@ impl<'a> Compiler<'a> {
                         return Err(Error::at(
                             line,
                             format!("unknown element type {element}; declare it in a types block"),
-                        ));
+                        )
+                        .coded(Code::NameUnknown)
+                        .suggest_closest(element, self.scalar_types()));
                     }
                 };
                 if elements.size() > MAX_SLOTS {
@@ -1843,7 +1848,9 @@ impl<'a> Compiler<'a> {
                         return Err(Error::at(
                             line,
                             format!("unknown key type {key}; declare it in a types block"),
-                        ));
+                        )
+                        .coded(Code::NameUnknown)
+                        .suggest_closest(key, self.scalar_types()));
                     }
                 };
                 if keys.size() > MAX_SLOTS {
@@ -2135,7 +2142,7 @@ impl<'a> Compiler<'a> {
                     ty.noun()
                 ),
             )
-            .coded("type.mismatch")
+            .coded(Code::TypeMismatch)
             .spanned(condition.span));
         }
         Ok(CompiledCondition {
@@ -2183,7 +2190,7 @@ impl<'a> Compiler<'a> {
                     line,
                     format!("{name} carries members; write '{name} with {{{example}}}'"),
                 )
-                .coded("type.mismatch"));
+                .coded(Code::TypeMismatch));
             }
             if let (FieldType::Map { key_type, .. }, true) = (&place.kind, ty.is_scalar()) {
                 return Err(Error::at(
@@ -2204,7 +2211,7 @@ impl<'a> Compiler<'a> {
                     self.describe_ty(&ty)
                 ),
             )
-            .coded("type.mismatch"));
+            .coded(Code::TypeMismatch));
         }
         let value = canonical(coerce(parts(value), &ty, &want), &place.kind);
         Ok(place
@@ -2321,7 +2328,7 @@ impl<'a> Compiler<'a> {
                     self.describe_ty(&ty)
                 ),
             )
-            .coded("type.mismatch"));
+            .coded(Code::TypeMismatch));
         }
         Ok(ir)
     }
@@ -2418,7 +2425,9 @@ impl<'a> Compiler<'a> {
 
     fn operand(&mut self, expr: &Expr, want: Option<&Ty>, line: usize) -> Result<Operand> {
         match expr {
-            Expr::Name { name, span } => self.name(name, line).map_err(|e| e.within(*span)),
+            Expr::Name { name, span } => self
+                .name(name, line)
+                .map_err(|e| self.suggest_name(e, name, want).within(*span)),
             Expr::Index { map, key, span } => self.of(map, key, line).map_err(|e| e.within(*span)),
             Expr::Subscript { base, key } => match self.operand(base, None, line)? {
                 Operand::Place(place) => Ok(Operand::Place(self.index(place, key, line)?)),
@@ -2440,7 +2449,15 @@ impl<'a> Compiler<'a> {
             Expr::Literal(Value::Boolean(flag)) => Ok((Ir::Const(i64::from(*flag)), Ty::Bool)),
             Expr::Literal(Value::Symbol(name)) => match self.symbol_ids.get(name).copied() {
                 Some(id) => self.symbol(id, line),
-                None => Err(Error::at(line, format!("unknown enum value \"{name}\""))),
+                None => Err(Error::at(line, format!("unknown enum value \"{name}\""))
+                    .coded(Code::NameUnknown)
+                    .suggest(
+                        &format!("\"{name}\""),
+                        explain::closest(name, self.symbol_candidates(want))
+                            .into_iter()
+                            .map(|value| format!("\"{value}\""))
+                            .collect(),
+                    )),
             },
             Expr::Literal(Value::Map(_)) => Err(Error::at(line, "map literals are not supported")),
             Expr::Literal(Value::Nothing) => Ok((Ir::Const(0), Ty::Nothing)),
@@ -2565,10 +2582,14 @@ impl<'a> Compiler<'a> {
                     .iter()
                     .find(|(name, _)| !wanted.iter().any(|(member, _)| member == name))
                 {
-                    return Err(Error::at(
-                        line,
-                        format!("this record has no member {extra}"),
-                    ));
+                    return Err(
+                        Error::at(line, format!("this record has no member {extra}"))
+                            .coded(Code::NameUnknown)
+                            .suggest_closest(
+                                extra,
+                                wanted.iter().map(|(member, _)| member.as_str()),
+                            ),
+                    );
                 }
                 wanted
                     .iter()
@@ -2610,7 +2631,9 @@ impl<'a> Compiler<'a> {
             .map(|raw| self.raw_value(keys, raw).to_string())
             .collect();
         if let Some((extra, _)) = members.iter().find(|(name, _)| !names.contains(name)) {
-            return Err(Error::at(line, format!("{extra} is not a key of this map")));
+            return Err(Error::at(line, format!("{extra} is not a key of this map"))
+                .coded(Code::NameUnknown)
+                .suggest_closest(extra, names.iter().map(String::as_str)));
         }
         let mut irs = Vec::new();
         let mut joined = value.clone();
@@ -2653,7 +2676,69 @@ impl<'a> Compiler<'a> {
             line,
             format!("unknown name {name}; declare it or use a quoted enum value"),
         )
-        .coded("name.unknown"))
+        .coded(Code::NameUnknown))
+    }
+
+    /// Suggest names close to `name` that could stand where a value of type
+    /// `want` is needed.
+    fn suggest_name(&self, error: Error, name: &str, want: Option<&Ty>) -> Error {
+        if error.code() != Code::NameUnknown.name() {
+            return error;
+        }
+        let fits = |ty: &Ty| want.is_none_or(|want| want.join(ty).is_some());
+        let locals = self
+            .scope
+            .iter()
+            .filter(|(_, ty)| fits(ty))
+            .map(|(local, _)| local.as_str());
+        let fields = self
+            .fields
+            .iter()
+            .filter(|field| fits(&Ty::of_kind(&field.kind)))
+            .map(|field| field.name.as_str());
+        let literals = match want {
+            None => ["true", "false", "nothing"].as_slice(),
+            Some(Ty::Bool) => ["true", "false"].as_slice(),
+            Some(Ty::Optional(_)) => ["nothing"].as_slice(),
+            Some(_) => [].as_slice(),
+        };
+        let candidates = locals
+            .chain(fields)
+            .chain(self.symbol_candidates(want))
+            .chain(literals.iter().copied());
+        error.suggest_closest(name, candidates.collect::<Vec<_>>())
+    }
+
+    /// The enum values a specification may name where a value of type
+    /// `want` is needed: not interchangeable ones.
+    fn symbol_candidates(&self, want: Option<&Ty>) -> Vec<&str> {
+        let allowed = |id: u32| match want {
+            None => true,
+            Some(Ty::Enum(ids)) => ids.contains(&id),
+            Some(Ty::Variant(cases)) => cases.iter().any(|(tag, _)| *tag == id),
+            Some(_) => false,
+        };
+        self.symbol_ids
+            .iter()
+            .filter(|(_, id)| !self.unnamed.contains_key(id) && allowed(**id))
+            .map(|(name, _)| name.as_str())
+            .collect()
+    }
+
+    fn map_fields(&self) -> impl Iterator<Item = &str> {
+        self.fields
+            .iter()
+            .filter(|field| matches!(field.kind, FieldType::Map { .. }))
+            .map(|field| field.name.as_str())
+    }
+
+    /// Named integer, boolean and enum types, which quantifiers, sets and
+    /// map keys range over.
+    fn scalar_types(&self) -> impl Iterator<Item = &str> {
+        self.types
+            .iter()
+            .filter(|(_, kind)| matches!(kind, FieldType::Scalar(_)))
+            .map(|(name, _)| name.as_str())
     }
 
     fn field(&self, name: &str) -> Option<Place> {
@@ -2716,22 +2801,25 @@ impl<'a> Compiler<'a> {
                     return Ok(Operand::Value(tuple(slice), member));
                 }
                 Ok(Operand::Place(place)) if self.field(name).is_none() => {
-                    return Err(Error::at(
-                        line,
-                        match place.kind {
-                            FieldType::Record(_) => format!("{} has no member {name}", place.label),
-                            _ => format!("unknown map {name}"),
-                        },
-                    )
-                    .coded("name.unknown"));
+                    let error = match &place.kind {
+                        FieldType::Record(members) => {
+                            Error::at(line, format!("{} has no member {name}", place.label))
+                                .suggest_closest(name, members.iter().map(|(m, _)| m.as_str()))
+                        }
+                        _ => Error::at(line, format!("unknown map {name}"))
+                            .suggest_closest(name, self.map_fields()),
+                    };
+                    return Err(error.coded(Code::NameUnknown));
                 }
                 Err(error) if self.field(name).is_none() => return Err(error),
                 _ => {}
             }
         }
-        let place = self
-            .field(name)
-            .ok_or_else(|| Error::at(line, format!("unknown map {name}")).coded("name.unknown"))?;
+        let place = self.field(name).ok_or_else(|| {
+            Error::at(line, format!("unknown map {name}"))
+                .coded(Code::NameUnknown)
+                .suggest_closest(name, self.map_fields())
+        })?;
         Ok(Operand::Place(self.index(place, key, line)?))
     }
 
@@ -2831,7 +2919,7 @@ impl<'a> Compiler<'a> {
                     self.describe_ty(&ty)
                 ),
             )
-            .coded("type.mismatch"));
+            .coded(Code::TypeMismatch));
         }
         Ok(ir)
     }
@@ -2859,7 +2947,7 @@ impl<'a> Compiler<'a> {
                 line,
                 format!("{word} needs a set on its left, found {}", set_ty.noun()),
             )
-            .coded("type.mismatch"));
+            .coded(Code::TypeMismatch));
         };
         let held = parts(set);
         if operator == BinaryOperator::Has {
@@ -2952,7 +3040,7 @@ impl<'a> Compiler<'a> {
                             line,
                             format!("cannot compare {} with {}", left_ty.noun(), right_ty.noun()),
                         )
-                        .coded("type.mismatch"));
+                        .coded(Code::TypeMismatch));
                     }
                 }
                 Ty::Bool
@@ -3005,7 +3093,7 @@ impl<'a> Compiler<'a> {
                     line,
                     format!("{} cannot be used with this operator", culprit.noun()),
                 )
-                .coded("type.mismatch"));
+                .coded(Code::TypeMismatch));
             }
         };
         if let (Ty::Variant(_), Ty::Enum(ids)) | (Ty::Enum(ids), Ty::Variant(_)) =
@@ -3036,7 +3124,7 @@ impl<'a> Compiler<'a> {
                     self.describe_ty(&right_ty)
                 ),
             )
-            .coded("type.mismatch"));
+            .coded(Code::TypeMismatch));
         };
         let equal = equal_as(
             coerce(parts(left), &left_ty, &joined),
@@ -3147,7 +3235,7 @@ impl<'a> Compiler<'a> {
                     self.describe_ty(&ty)
                 ),
             )
-            .coded("type.mismatch"));
+            .coded(Code::TypeMismatch));
         }
         Ok(coerce(parts(ir), &ty, element))
     }
@@ -3382,7 +3470,7 @@ impl<'a> Compiler<'a> {
                             self.describe_ty(&value)
                         ),
                     )
-                    .coded("type.mismatch"));
+                    .coded(Code::TypeMismatch));
                 }
                 out.extend(coerce(parts(ir), &value, &record));
             } else {
@@ -3491,11 +3579,19 @@ impl<'a> Compiler<'a> {
                 ));
             }
             None => {
+                let collections = self.fields.iter().filter(|field| {
+                    matches!(field.kind, FieldType::Set { .. } | FieldType::List { .. })
+                });
                 return Err(Error::at(
                     line,
                     format!("unknown type {domain}; declare it in a types block"),
                 )
-                .coded("name.unknown"));
+                .coded(Code::NameUnknown)
+                .suggest_closest(
+                    domain,
+                    self.scalar_types()
+                        .chain(collections.map(|field| field.name.as_str())),
+                ));
             }
         };
         if domain.size() > MAX_QUANTIFIER_VALUES {
@@ -3685,7 +3781,7 @@ fn expect(actual: &Ty, wanted: &Ty, what: &str, line: usize) -> Result<()> {
             line,
             format!("{what} needs {}, found {}", wanted.noun(), actual.noun()),
         )
-        .coded("type.mismatch"))
+        .coded(Code::TypeMismatch))
     }
 }
 
@@ -3822,9 +3918,14 @@ fn enumerate_calls(actions: &[ActionInfo]) -> Result<Calls> {
 
 pub(crate) fn resolve_call(model: &Model, call: &ActionCall) -> Result<u32> {
     let line = call.line;
-    let index = model
-        .action_index(&call.name)
-        .ok_or_else(|| Error::at(line, format!("unknown action {}", call.name)))?;
+    let index = model.action_index(&call.name).ok_or_else(|| {
+        Error::at(line, format!("unknown action {}", call.name))
+            .coded(Code::NameUnknown)
+            .suggest_closest(
+                &call.name,
+                model.actions.iter().map(|action| action.name.as_str()),
+            )
+    })?;
     let action = model
         .actions
         .get(index)
@@ -3849,10 +3950,11 @@ pub(crate) fn resolve_call(model: &Model, call: &ActionCall) -> Result<u32> {
                 .keys()
                 .find(|name| !action.params.iter().any(|param| &param.name == *name))
             {
-                return Err(Error::at(
-                    line,
-                    format!("{} has no parameter {unknown}", action.name),
-                ));
+                return Err(
+                    Error::at(line, format!("{} has no parameter {unknown}", action.name))
+                        .coded(Code::NameUnknown)
+                        .suggest_closest(unknown, action.params.iter().map(|p| p.name.as_str())),
+                );
             }
             let mut values = Vec::new();
             for param in &action.params {
