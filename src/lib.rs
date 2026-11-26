@@ -7,6 +7,7 @@ mod compose;
 pub mod conform;
 mod definedness;
 mod explore;
+mod induction;
 mod json;
 mod mermaid;
 mod model;
@@ -27,6 +28,7 @@ pub use check::{
 };
 pub use component::verify_component;
 pub use explore::{Edge, Graph};
+pub use induction::{Broken, Induction, InductionCounterexample, check_induction};
 pub use json::Json;
 pub use mermaid::{sequence_diagram, state_diagram};
 pub use model::{ActionInfo, Domain, FieldInfo, FieldType, Model, Param};
@@ -223,7 +225,7 @@ pub fn display_state(state: &State) -> String {
         .join(", ")
 }
 
-fn display_changes(before: &State, after: &State) -> String {
+pub(crate) fn display_changes(before: &State, after: &State) -> String {
     let changes = after
         .iter()
         .filter(|(name, value)| before.get(*name) != Some(value))

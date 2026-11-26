@@ -5,7 +5,7 @@ use crate::{Error, ErrorKind, Result, Trace, TraceStep};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-const MAX_TRANSITIONS: usize = 20_000_000;
+pub(crate) const MAX_TRANSITIONS: usize = 20_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Edge {

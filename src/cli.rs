@@ -2,6 +2,7 @@
 
 use crate::audit::{MutantFate, audit};
 use crate::check::{Options, Verification, verify, verify_with};
+use crate::induction::{Broken, Induction, check_induction};
 use crate::json::Json;
 use crate::mermaid::{sequence_diagram, state_diagram};
 use crate::observe::adequacy;
@@ -20,8 +21,10 @@ pub const USAGE: &str = "\
 zin - specifications you can prove, then run against your code
 
 usage:
-  zin check <spec>... [--format json] [--symmetry on|off]
-                                        prove every property over every reachable state
+  zin check <spec>... [--format json] [--symmetry on|off] [--inductive]
+                                        prove every property over every reachable state;
+                                        --inductive also asks whether every call from any
+                                        state satisfying the always/never properties keeps them
   zin plan <spec> [--out FILE] [--cover transitions|states|actions|scenarios|pairs] [--max-steps N] [--step-budget N] [--pair-limit N]
            [--component NAME] [--observe FIELDS]
                                         derive the conformance test plan (JSON);
@@ -52,17 +55,28 @@ pub struct Output {
 struct Arguments {
     positional: Vec<String>,
     options: Vec<(String, String)>,
+    flags: Vec<String>,
 }
 
 impl Arguments {
     fn parse(args: &[String], valued: &[&str]) -> Result<Self> {
+        Self::parse_with_flags(args, valued, &[])
+    }
+
+    /// As [`Arguments::parse`], where the options in `flags` take no value.
+    fn parse_with_flags(args: &[String], valued: &[&str], flags: &[&str]) -> Result<Self> {
         let mut parsed = Self {
             positional: Vec::new(),
             options: Vec::new(),
+            flags: Vec::new(),
         };
         let mut rest = args.iter();
         while let Some(argument) = rest.next() {
             if let Some(name) = argument.strip_prefix("--") {
+                if flags.contains(&name) {
+                    parsed.flags.push(name.to_string());
+                    continue;
+                }
                 if !valued.contains(&name) {
                     return Err(Error::usage(format!("unknown option --{name}")));
                 }
@@ -83,6 +97,10 @@ impl Arguments {
             .rev()
             .find(|(option, _)| option == name)
             .map(|(_, value)| value.as_str())
+    }
+
+    fn flag(&self, name: &str) -> bool {
+        self.flags.iter().any(|flag| flag == name)
     }
 
     fn one(&self, what: &str) -> Result<&str> {
@@ -172,71 +190,187 @@ fn error_json(error: &Error) -> Json {
     ])
 }
 
-fn check_json(path: &str, spec: Option<&Spec>, result: &Result<Verification>) -> Json {
+fn check_json(path: &str, spec: Option<&Spec>, result: &Result<Checked>) -> Json {
     match result {
-        Ok(verification) => Json::object([
-            ("file", Json::str(path)),
-            ("ok", Json::Bool(true)),
-            ("system", Json::str(verification.model.name.clone())),
-            ("states", Json::count(verification.graph.state_count())),
-            ("calls", Json::count(verification.model.call_count())),
-            (
-                "attempted_calls",
-                Json::count(
-                    verification
-                        .graph
-                        .state_count()
-                        .saturating_mul(verification.model.call_count()),
-                ),
-            ),
-            ("relabelings", Json::count(verification.graph.relabelings())),
-            (
-                "transitions",
-                Json::count(verification.graph.transition_count()),
-            ),
-            ("up_to_symmetry", Json::Bool(verification.reduced)),
-            ("terminal_states", Json::count(verification.terminal_states)),
-            (
-                "properties",
-                Json::Array(
-                    verification
-                        .properties
-                        .iter()
-                        .map(|property| {
-                            let span = spec.and_then(|spec| spec.statement_span(property.line));
-                            Json::object([
-                                ("property", Json::str(property.text.clone())),
-                                (
-                                    "line",
-                                    Json::count(span.as_ref().map_or(property.line, |s| s.line)),
-                                ),
-                                ("span", span.as_ref().map_or(Json::Null, span_json)),
-                            ])
-                        })
-                        .collect(),
-                ),
-            ),
-            (
-                "scenarios",
-                Json::Array(
-                    verification
-                        .scenarios
-                        .iter()
-                        .map(|scenario| Json::str(scenario.name.clone()))
-                        .collect(),
-                ),
-            ),
-            (
-                "notes",
-                Json::Array(verification.notes.iter().map(Json::str).collect()),
-            ),
-        ]),
+        Ok((verification, induction)) => {
+            let mut json = verification_json(path, spec, verification);
+            if let (Json::Object(entries), Some(induction)) = (&mut json, induction) {
+                entries.push(("inductive".to_string(), induction_json(spec, induction)));
+            }
+            json
+        }
         Err(error) => Json::object([
             ("file", Json::str(path)),
             ("ok", Json::Bool(false)),
             ("error", error_json(error)),
         ]),
     }
+}
+
+/// A verified specification and, when asked for, whether its properties are inductive.
+type Checked = (Verification, Option<Induction>);
+
+fn verification_json(path: &str, spec: Option<&Spec>, verification: &Verification) -> Json {
+    Json::object([
+        ("file", Json::str(path)),
+        ("ok", Json::Bool(true)),
+        ("system", Json::str(verification.model.name.clone())),
+        ("states", Json::count(verification.graph.state_count())),
+        ("calls", Json::count(verification.model.call_count())),
+        (
+            "attempted_calls",
+            Json::count(
+                verification
+                    .graph
+                    .state_count()
+                    .saturating_mul(verification.model.call_count()),
+            ),
+        ),
+        ("relabelings", Json::count(verification.graph.relabelings())),
+        (
+            "transitions",
+            Json::count(verification.graph.transition_count()),
+        ),
+        ("up_to_symmetry", Json::Bool(verification.reduced)),
+        ("terminal_states", Json::count(verification.terminal_states)),
+        (
+            "properties",
+            Json::Array(
+                verification
+                    .properties
+                    .iter()
+                    .map(|property| {
+                        let span = spec.and_then(|spec| spec.statement_span(property.line));
+                        Json::object([
+                            ("property", Json::str(property.text.clone())),
+                            (
+                                "line",
+                                Json::count(span.as_ref().map_or(property.line, |s| s.line)),
+                            ),
+                            ("span", span.as_ref().map_or(Json::Null, span_json)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+        (
+            "scenarios",
+            Json::Array(
+                verification
+                    .scenarios
+                    .iter()
+                    .map(|scenario| Json::str(scenario.name.clone()))
+                    .collect(),
+            ),
+        ),
+        (
+            "notes",
+            Json::Array(verification.notes.iter().map(Json::str).collect()),
+        ),
+    ])
+}
+
+/// The file and line of a statement, or `line N` for standard input.
+fn statement_line(spec: Option<&Spec>, line: usize) -> (String, usize) {
+    spec.and_then(|spec| spec.statement_span(line))
+        .map_or((String::new(), line), |span| (span.file, span.line))
+}
+
+fn induction_json(spec: Option<&Spec>, induction: &Induction) -> Json {
+    let counterexample = induction
+        .counterexample
+        .as_ref()
+        .map_or(Json::Null, |found| {
+            let (property, message, line) = match &found.broken {
+                Broken::Property { text, line } => (Json::str(text.clone()), Json::Null, *line),
+                Broken::Fault { message, line } => (Json::Null, Json::str(message.clone()), *line),
+            };
+            let (file, line) = statement_line(spec, line);
+            Json::object([
+                ("state", state_json(&found.state)),
+                ("call", Json::str(found.call.clone())),
+                ("next", found.next.as_ref().map_or(Json::Null, state_json)),
+                ("property", property),
+                ("fault", message),
+                ("file", Json::str(file)),
+                ("line", Json::count(line)),
+            ])
+        });
+    Json::object([
+        ("holds", Json::Bool(induction.holds())),
+        ("properties", Json::count(induction.properties)),
+        (
+            "well_typed_states",
+            Json::count(induction.well_typed_states),
+        ),
+        (
+            "satisfying_states",
+            Json::count(induction.satisfying_states),
+        ),
+        ("counterexample", counterexample),
+    ])
+}
+
+fn induction_text(spec: Option<&Spec>, induction: &Induction) -> String {
+    if induction.properties == 0 {
+        return "  note: there are no always or never properties to check for induction\n"
+            .to_string();
+    }
+    let (properties, hold) = if induction.properties == 1 {
+        ("the always/never property".to_string(), "holds")
+    } else {
+        (
+            format!("the {} always/never properties", induction.properties),
+            "hold",
+        )
+    };
+    let Some(found) = &induction.counterexample else {
+        return format!(
+            "  inductive: {properties} still {hold} after every call from any of the {} of {} well-typed states where {} {hold}\n",
+            induction.satisfying_states,
+            induction.well_typed_states,
+            if induction.properties == 1 {
+                "it"
+            } else {
+                "they"
+            },
+        );
+    };
+    let place = |line: usize| match statement_line(spec, line) {
+        (file, line) if !file.is_empty() => format!("{file}:{line}"),
+        (_, line) => format!("line {line}"),
+    };
+    let mut text = match &found.broken {
+        Broken::Property { text, line } => format!(
+            "  not inductive: {} breaks '{text}' ({}) from a state where {properties} {hold}\n",
+            found.call,
+            place(*line)
+        ),
+        Broken::Fault { message, line } => format!(
+            "  not inductive: {} faults ({}) from a state where {properties} {hold}: {message}\n",
+            found.call,
+            place(*line)
+        ),
+    };
+    let _ = writeln!(text, "    state: {}", crate::display_state(&found.state));
+    let _ = writeln!(
+        text,
+        "    {}  ->  {}",
+        found.call,
+        found.next.as_ref().map_or_else(
+            || "fault".to_string(),
+            |next| crate::display_changes(&found.state, next)
+        )
+    );
+    text.push_str(match found.broken {
+        Broken::Property { .. } => {
+            "  no reachable state looks like this one, but the properties do not rule it out; add an 'always' that does, so that each call preserves them on its own\n"
+        }
+        Broken::Fault { .. } => {
+            "  no reachable state looks like this one, but the properties do not rule it out; add an 'always' that does, or a 'requires' that refuses the call there\n"
+        }
+    });
+    text
 }
 
 /// How `check` and `trace` verify: with symmetry reduction unless `--symmetry off`.
@@ -254,7 +388,8 @@ fn verify_options(arguments: &Arguments) -> Result<Options> {
 }
 
 fn check(args: &[String]) -> Result<Output> {
-    let arguments = Arguments::parse(args, &["format", "symmetry"])?;
+    let arguments = Arguments::parse_with_flags(args, &["format", "symmetry"], &["inductive"])?;
+    let inductive = arguments.flag("inductive");
     let json = match arguments.option("format") {
         None | Some("text") => false,
         Some("json") => true,
@@ -275,7 +410,13 @@ fn check(args: &[String]) -> Result<Output> {
         let result = spec
             .as_ref()
             .map_err(Clone::clone)
-            .and_then(|spec| verify_with(spec, options));
+            .and_then(|spec| verify_with(spec, options))
+            .and_then(|verification| {
+                let induction = inductive
+                    .then(|| check_induction(&verification))
+                    .transpose()?;
+                Ok((verification, induction))
+            });
         if let Err(error) = &result {
             output.code = output.code.max(error.kind.exit_code());
         }
@@ -284,10 +425,15 @@ fn check(args: &[String]) -> Result<Output> {
             continue;
         }
         match result {
-            Ok(verification) => {
+            Ok((verification, induction)) => {
                 let _ = writeln!(output.stdout, "ok {}", verification.summary());
                 for note in &verification.notes {
                     let _ = writeln!(output.stdout, "  note: {note}");
+                }
+                if let Some(induction) = &induction {
+                    output
+                        .stdout
+                        .push_str(&induction_text(spec.as_ref().ok(), induction));
                 }
             }
             Err(error)

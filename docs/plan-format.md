@@ -184,6 +184,22 @@ that index on repeat forever. `up_to_symmetry` is `true` when `states` and
 reduction). These are added fields; readers of `check/1` should ignore fields
 they do not know.
 
+With `--inductive`, a successful result also has an `inductive` object:
+
+```json
+"inductive": {"holds": false, "properties": 1, "well_typed_states": 16, "satisfying_states": 13,
+  "counterexample": {"state": {"attempts": 3, "status": "queued"}, "call": "start", "next": null,
+    "property": null, "fault": "attempts would become 4, but ...", "file": "job.zin", "line": 31}}
+```
+
+`properties` counts the `always` and `never` properties, `well_typed_states`
+every state the field types allow and `satisfying_states` those where every
+such property holds. `counterexample` is `null` when `holds` is `true`.
+Otherwise it gives a satisfying state, a call from it, and either the state
+the call leads to (`next`) and the `property` it breaks, or `next: null` or a
+state and the `fault` the call or a property raised. `file` and `line` locate
+the property or the fault.
+
 `code` is a stable identifier for the diagnostic: `name.unknown`,
 `type.mismatch`, `component.field_conflict`, `component.type_conflict`,
 `component.parameter_conflict`, `component.duplicate_action` and
