@@ -480,6 +480,12 @@ pub enum Expr {
         domain: String,
         body: Box<Expr>,
     },
+    /// `value or else default`: `value`, or `default` where reading `value`
+    /// finds nothing, a case without the member, or an empty list.
+    OrElse {
+        value: Box<Expr>,
+        default: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

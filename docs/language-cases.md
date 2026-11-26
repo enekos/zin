@@ -110,6 +110,25 @@ action answer
 always asked is nothing or asked > 0 # fails: always asked > 0
 ```
 
+## Defaults for absent values
+
+```zin
+system "Lease"
+types
+  worker is one of ann, ben
+state
+  lease is a record with (holder is a worker, left is an integer from 0 to 2) or nothing
+  ticks is an integer from 0 to 2
+initially
+  lease is nothing
+  ticks is 0
+action acquire(w is a worker)
+  requires lease is nothing
+  lease becomes {holder: w, left: 2}
+action tick
+  ticks becomes left of lease or else 0 # fails: ticks becomes left of lease
+```
+
 ## Sets
 
 ```zin

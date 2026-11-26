@@ -223,8 +223,19 @@ pub(crate) enum Ir {
     /// A compound value, one expression per slot. Compiled code takes it
     /// apart; it is never evaluated as a whole.
     Tuple(Vec<Ir>),
-    /// A model fault with this message, such as reading the value of nothing.
+    /// A model fault with this message, such as appending to a full list.
     Fail(String),
+    /// A model fault because a value is absent: the value of nothing, a
+    /// member of a case that does not have it, or an item of an empty list.
+    Absent(String),
+    /// `value`, or `default` when evaluating `probe` and then `value` finds
+    /// an absent value. `probe` holds the other slots of a compound read, so
+    /// every slot of the value falls back together.
+    Recover {
+        probe: Vec<Ir>,
+        value: Box<Ir>,
+        default: Box<Ir>,
+    },
     /// The option at `key`'s position in `keys`; `what` names the keys in
     /// the fault when `key` is not one of them.
     Select {
@@ -678,9 +689,18 @@ fn locate(
     state: &[i64],
     locals: &mut [i64],
 ) -> std::result::Result<usize, String> {
+    find(offset, steps, state, locals).map_err(Stop::message)
+}
+
+fn find(
+    offset: usize,
+    steps: &[KeyStep],
+    state: &[i64],
+    locals: &mut [i64],
+) -> std::result::Result<usize, Stop> {
     let mut slot = offset;
     for step in steps {
-        let key = eval(&step.key, state, locals)?;
+        let key = run(&step.key, state, locals)?;
         slot = key_slot(slot, &step.keys, step.stride, key, &step.field)?;
     }
     Ok(slot)
@@ -747,36 +767,81 @@ fn fetch(values: &[i64], index: usize) -> std::result::Result<i64, String> {
         .ok_or_else(|| "internal error: value out of range".to_string())
 }
 
+/// Why evaluation stopped.
+enum Stop {
+    Absent(String),
+    Fault(String),
+}
+
+impl Stop {
+    fn message(self) -> String {
+        match self {
+            Self::Absent(message) | Self::Fault(message) => message,
+        }
+    }
+}
+
+impl From<String> for Stop {
+    fn from(message: String) -> Self {
+        Self::Fault(message)
+    }
+}
+
+impl From<&str> for Stop {
+    fn from(message: &str) -> Self {
+        Self::Fault(message.to_string())
+    }
+}
+
 pub(crate) fn eval(ir: &Ir, state: &[i64], locals: &mut [i64]) -> std::result::Result<i64, String> {
+    run(ir, state, locals).map_err(Stop::message)
+}
+
+fn run(ir: &Ir, state: &[i64], locals: &mut [i64]) -> std::result::Result<i64, Stop> {
     Ok(match ir {
         Ir::Const(raw) => *raw,
         Ir::Slot(slot) => fetch(state, *slot)?,
         Ir::Local(local) => fetch(locals, *local)?,
-        Ir::Index { offset, steps } => fetch(state, locate(*offset, steps, state, locals)?)?,
-        Ir::Tuple(_) => return Err("internal error: a compound value was evaluated".to_string()),
-        Ir::Fail(message) => return Err(message.clone()),
+        Ir::Index { offset, steps } => fetch(state, find(*offset, steps, state, locals)?)?,
+        Ir::Tuple(_) => return Err("internal error: a compound value was evaluated".into()),
+        Ir::Fail(message) => return Err(Stop::Fault(message.clone())),
+        Ir::Absent(message) => return Err(Stop::Absent(message.clone())),
+        Ir::Recover {
+            probe,
+            value,
+            default,
+        } => {
+            let found = probe
+                .iter()
+                .try_for_each(|part| run(part, state, locals).map(drop))
+                .and_then(|()| run(value, state, locals));
+            match found {
+                Err(Stop::Absent(_)) => run(default, state, locals)?,
+                other => other?,
+            }
+        }
         Ir::Select {
             key,
             keys,
             options,
             what,
         } => {
-            let key = eval(key, state, locals)?;
+            let key = run(key, state, locals)?;
             let option = keys
                 .position(key)
                 .and_then(|position| options.get(position))
                 .ok_or_else(|| format!("{key} is not {what}"))?;
-            eval(option, state, locals)?
+            run(option, state, locals)?
         }
-        Ir::Not(value) => i64::from(eval(value, state, locals)? == 0),
-        Ir::Negate(value) => eval(value, state, locals)?
+        Ir::Not(value) => i64::from(run(value, state, locals)? == 0),
+        Ir::Negate(value) => run(value, state, locals)?
             .checked_neg()
             .ok_or("integer overflow")?,
         Ir::If(condition, then, otherwise) => {
-            if eval(condition, state, locals)? != 0 {
-                eval(then, state, locals)?
+            if run(condition, state, locals)? != 0 {
+                run(then, state, locals)?
             } else {
-                eval(otherwise, state, locals)?
+                run(otherwise, state, locals)?
             }
         }
         Ir::Quantified {
@@ -790,7 +855,7 @@ pub(crate) fn eval(ir: &Ir, state: &[i64], locals: &mut [i64]) -> std::result::R
                 if let Some(cell) = locals.get_mut(*local) {
                     *cell = *value;
                 }
-                if eval(body, state, locals)? != 0 {
+                if run(body, state, locals)? != 0 {
                     count += 1;
                     if *quantifier == Quantifier::Some {
                         return Ok(1);
@@ -806,14 +871,14 @@ pub(crate) fn eval(ir: &Ir, state: &[i64], locals: &mut [i64]) -> std::result::R
             }
         }
         Ir::Binary(operator, left, right) => {
-            let left = eval(left, state, locals)?;
+            let left = run(left, state, locals)?;
             match operator {
                 BinaryOperator::And if left == 0 => return Ok(0),
                 BinaryOperator::Or if left != 0 => return Ok(1),
                 BinaryOperator::Implies if left == 0 => return Ok(1),
                 _ => {}
             }
-            let right = eval(right, state, locals)?;
+            let right = run(right, state, locals)?;
             match operator {
                 BinaryOperator::And | BinaryOperator::Or | BinaryOperator::Implies => right,
                 BinaryOperator::Equal => i64::from(left == right),
@@ -827,12 +892,12 @@ pub(crate) fn eval(ir: &Ir, state: &[i64], locals: &mut [i64]) -> std::result::R
                 BinaryOperator::Multiply => left.checked_mul(right).ok_or("integer overflow")?,
                 BinaryOperator::Divide => {
                     if right == 0 {
-                        return Err("division by zero".to_string());
+                        return Err("division by zero".into());
                     }
                     left.checked_div(right).ok_or("integer overflow")?
                 }
                 BinaryOperator::Has | BinaryOperator::With | BinaryOperator::Without => {
-                    return Err("internal error: a set operator was evaluated".to_string());
+                    return Err("internal error: a set operator was evaluated".into());
                 }
             }
         }
@@ -1369,11 +1434,29 @@ fn unwrap(ir: Ir, ty: Ty, message: &str) -> (Ir, Ty) {
             Ir::If(
                 Box::new(tag.clone()),
                 Box::new(part),
-                Box::new(Ir::Fail(message.to_string())),
+                Box::new(Ir::Absent(message.to_string())),
             )
         })
         .collect();
     unwrap(tuple(inner), *value, message)
+}
+
+/// Whether evaluating `ir` can find an absent value.
+fn can_be_absent(ir: &Ir) -> bool {
+    match ir {
+        Ir::Absent(_) => true,
+        Ir::Const(_) | Ir::Slot(_) | Ir::Local(_) | Ir::Fail(_) => false,
+        Ir::Index { steps, .. } => steps.iter().any(|step| can_be_absent(&step.key)),
+        Ir::Tuple(parts) => parts.iter().any(can_be_absent),
+        Ir::Select { key, options, .. } => can_be_absent(key) || options.iter().any(can_be_absent),
+        Ir::Not(value) | Ir::Negate(value) => can_be_absent(value),
+        Ir::Binary(_, left, right) => can_be_absent(left) || can_be_absent(right),
+        Ir::If(condition, then, otherwise) => {
+            can_be_absent(condition) || can_be_absent(then) || can_be_absent(otherwise)
+        }
+        Ir::Quantified { body, .. } => can_be_absent(body),
+        Ir::Recover { default, .. } => can_be_absent(default),
+    }
 }
 
 /// How a fault message names the value `expr` reads.
@@ -1383,6 +1466,13 @@ fn describe_expr(expr: &Expr) -> String {
         Expr::Index { map, key, .. } => format!("{map} of {}", describe_expr(key)),
         Expr::Subscript { base, key } => format!("{}[{}]", describe_expr(base), describe_expr(key)),
         Expr::Literal(value) => value.source(),
+        Expr::OrElse { value, default } => {
+            format!(
+                "{} or else {}",
+                describe_expr(value),
+                describe_expr(default)
+            )
+        }
         _ => "a value".to_string(),
     }
 }
@@ -2544,6 +2634,7 @@ impl<'a> Compiler<'a> {
                 domain,
                 body,
             } => self.quantified(*quantifier, variable, domain, body, line),
+            Expr::OrElse { value, default } => self.or_else(value, default, line),
         }
     }
 
@@ -3531,7 +3622,7 @@ impl<'a> Compiler<'a> {
             .iter()
             .map(|(case, _)| self.symbols.get(at(*case)).cloned().unwrap_or_default())
             .collect();
-        let missing = Ir::Fail(format!(
+        let missing = Ir::Absent(format!(
             "{what} is not {}, so it has no {name}",
             names.join(" or ")
         ));
@@ -3550,6 +3641,56 @@ impl<'a> Compiler<'a> {
             })
             .collect();
         Some(Ok((tuple(read), member_ty)))
+    }
+
+    /// `value or else default`: every slot of `value`, or of `default` where
+    /// reading `value` finds an absent value.
+    fn or_else(&mut self, value: &Expr, default: &Expr, line: usize) -> Result<(Ir, Ty)> {
+        let (read, ty) = self.expr(value, line)?;
+        if !can_be_absent(&read) {
+            return Err(Error::at(
+                line,
+                format!(
+                    "'or else' gives a default for a value that can be absent: the value of an optional, a member of an enumeration case, or first, last or rest of a list; {} is always there",
+                    describe_expr(value)
+                ),
+            ));
+        }
+        let (fallback, fallback_ty) = self.expr_as(default, Some(&ty), line)?;
+        let (fallback, fallback_ty) = unwrap(
+            fallback,
+            fallback_ty,
+            &format!("{} is nothing", describe_expr(default)),
+        );
+        let Some(joined) = ty.join(&fallback_ty) else {
+            return Err(Error::at(
+                line,
+                format!(
+                    "the default after 'or else' must be {}, like {}, not {}",
+                    ty.noun(),
+                    describe_expr(value),
+                    fallback_ty.noun()
+                ),
+            )
+            .coded(Code::TypeMismatch));
+        };
+        let read = coerce(parts(read), &ty, &joined);
+        let fallback = coerce(parts(fallback), &fallback_ty, &joined);
+        let probe = if read.len() > 1 {
+            read.clone()
+        } else {
+            Vec::new()
+        };
+        let slots = read
+            .into_iter()
+            .zip(fallback)
+            .map(|(value, default)| Ir::Recover {
+                probe: probe.clone(),
+                value: Box::new(value),
+                default: Box::new(default),
+            })
+            .collect();
+        Ok((tuple(slots), joined))
     }
 
     fn quantified(
@@ -3696,7 +3837,7 @@ fn collection_property(
                 Ir::If(
                     Box::new(longer(&length, 0)),
                     Box::new(part),
-                    Box::new(Ir::Fail(empty.clone())),
+                    Box::new(Ir::Absent(empty.clone())),
                 )
             };
             Some(match name {

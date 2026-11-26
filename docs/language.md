@@ -151,7 +151,8 @@ holder needs no made-up worker and an unasked question no made-up number 0.
 - **Reading the value.** Where an integer, boolean or enum is needed
   (arithmetic, ordering, a condition, a map key) and wherever a member is read
   (`left of lease`), the value is used, and reading it when it is nothing is a
-  model fault. Guard the read: `lease is not nothing and left of lease is 1`.
+  model fault. Guard the read (`lease is not nothing and left of lease is 1`)
+  or give a default: `left of lease or else 0` is 0 when `lease` is nothing.
 - An optional record is assigned whole; its members cannot be assigned one by
   one.
 
@@ -219,6 +220,7 @@ type. It takes a length slot and the slots of every item it could hold.
 | `length of queue` | the number of items |
 | `first of queue`, `last of queue` | an item; reading one from an empty list is a model fault |
 | `rest of queue` | all but the first item; a fault when the list is empty |
+| `first of queue or else ping` | the first item, or `ping` when the list is empty |
 | `every m in queue satisfies ...` | quantifiers range over a list field's items, in order |
 
 Lists compare with `is`, item by item. `queue without m with m` moves `m` to
@@ -250,8 +252,9 @@ here they cannot.
 - **Testing the case.** `job is running` is true whatever the attempt;
   `job is running with {attempt: 3}` also compares the members.
 - **Reading a member.** `attempt of job` reads the member of the case that
-  holds; when the case has no such member it is a model fault, so guard it:
-  `job is running and attempt of job is 3`.
+  holds; when the case has no such member it is a model fault, so guard it
+  (`job is running and attempt of job is 3`) or give a default
+  (`attempt of job or else 0`).
 - Members are assigned with the whole value, never one by one.
 
 In plans a case without members is a string and a case with members an
@@ -287,6 +290,7 @@ From loosest to tightest binding:
 | `a + b`, `a - b` | also `plus`, `minus` |
 | `a * b`, `a / b` | also `times`, `divided by`; division truncates toward zero |
 | `-a` | |
+| `a or else b` | `a`, or `b` where reading `a` finds no value; see below |
 
 Comparisons do not chain; parenthesize (`(a < b) is flag`).
 
@@ -319,6 +323,22 @@ arithmetic overflow or a key outside a map's key type in a part that is
 evaluated is a model fault; in a part that is skipped it is not. So
 `load of w is 0 or 2 / load of w is 1` is safe where `2 / load of w is 1`
 alone faults.
+
+### Defaults for absent values
+
+`read or else default` is `read`, or `default` where reading it finds no
+value: an optional that is nothing (`last or else ann`, `left of lease or else
+0`), a case without the member (`attempt of job or else 0`), or an empty list
+(`first of queue or else ping`, `rest of queue or else []`).
+
+- It binds more tightly than arithmetic, and the default is one primary
+  form or a negative number: `left of lease or else 0 + 1` is
+  `(left of lease or else 0) + 1`. Parenthesize a computed default:
+  `left of lease or else (limit - 1)`.
+- The default has the read's type and is evaluated only when it is used.
+- Only an absent value falls back. Overflow, division by zero or a key outside
+  a map's keys in `read` is still a model fault.
+- `read` must be able to find no value; `balance or else 0` is an error.
 
 [Language cases](language-cases.md) pairs each of these rules with a passing
 specification and a one-line change that breaks it; the test suite checks
