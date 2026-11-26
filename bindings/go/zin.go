@@ -27,10 +27,6 @@ import (
 // PlanFormat is the plan file format this package reads.
 const PlanFormat = "plan/1"
 
-// PlanFormat2 is the format of plans whose state holds records, nested maps,
-// optional values, sets or lists. This package reads both.
-const PlanFormat2 = "plan/2"
-
 // Set marks an observed value as a set: it matches the specification's set
 // in any order. Observe a list as an ordinary slice.
 type Set []any
@@ -96,7 +92,7 @@ type Observer interface {
 }
 
 // Plan is a derived test plan, as written by `zin plan`. docs/plan.schema.json
-// defines it; the pointer fields are absent from plans written before 0.3.
+// defines it.
 type Plan struct {
 	Format      string            `json:"zin"`
 	System      string            `json:"system"`
@@ -117,7 +113,6 @@ type Plan struct {
 }
 
 // Defaults are the planning options zin plan uses when none are given.
-// Plans written before 0.3.1 do not record them.
 type Defaults struct {
 	Cover      string `json:"cover"`
 	MaxSteps   *int   `json:"max_steps"`
@@ -232,8 +227,8 @@ func parsePlan(data []byte, origin string) (*Plan, error) {
 	var format struct {
 		Format string `json:"zin"`
 	}
-	if json.Unmarshal(data, &format) != nil || (format.Format != PlanFormat && format.Format != PlanFormat2) {
-		return nil, fmt.Errorf("zin: %s is not a %s or %s file", origin, PlanFormat, PlanFormat2)
+	if json.Unmarshal(data, &format) != nil || format.Format != PlanFormat {
+		return nil, fmt.Errorf("zin: %s is not a %s file", origin, PlanFormat)
 	}
 	var plan Plan
 	if err := json.Unmarshal(data, &plan); err != nil {

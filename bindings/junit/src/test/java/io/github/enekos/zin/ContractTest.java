@@ -192,7 +192,7 @@ class ContractTest {
     @Test
     void plansHaveEveryKeyTheSchemaRequires() throws IOException {
         JsonNode schema = JSON.readTree(Path.of("..", "..", "docs", "plan.schema.json").toFile());
-        for (String name : List.of("latch.plan.json", "composed/main.plan.json", "v02/switch.plan.json")) {
+        for (String name : List.of("latch.plan.json", "composed/main.plan.json")) {
             JsonNode plan = JSON.readTree(CONTRACT.resolve(name).toFile());
             schema.get("required").forEach(key -> assertTrue(plan.has(key.asText()), name + ": " + key));
             schema.at("/properties/summary/required")

@@ -6,7 +6,7 @@ specifies, so the runners cannot drift apart. A new runner passes them first.
 
 | File | What it pins |
 | --- | --- |
-| `cases.json` `load` | Plan loading: fresh and stale plans, the combined fingerprint of included files, option compatibility, old plans without option keys, `.json` paths and malformed calls. Runs with a binary path that does not exist, so a case that needs `zin plan` reports it. `expect.errors` are fragments the error message must contain. |
+| `cases.json` `load` | Plan loading: fresh and stale plans, the combined fingerprint of included files, option compatibility, `.json` paths and malformed calls. Runs with a binary path that does not exist, so a case that needs `zin plan` reports it. `expect.errors` are fragments the error message must contain. |
 | `cases.json` `replay` | Replay and reporting against a scripted adapter. `expect.report` is the exact divergence text; `expect.raises` is an implementation error that must propagate unchanged; `expect.factories` counts the fresh implementations built. |
 | `observations.json` | Matching an observation against a state: partial maps, unknown keys and fields, strict types. |
 | `native-observations.json` | Normalizing native values first. `{"$enum": name}` stands for the runner's enum-like value (a Python `Enum` member, a Go named string type, a Java enum constant, a plain string in JavaScript); `{"$map": [[key, value], ...]}` for a map with non-string keys. |
@@ -41,7 +41,6 @@ cp composed/main.plan.json drifted/main.plan.json
 zin plan weaker/latch.zin --cover states --out weaker/latch.plan.json
 ```
 
-`stale.plan.json` was derived from an earlier `latch.zin`, `arity.plan.json` is
-`latch.plan.json` with an extra argument on its first call, `weaker/` is a
-sibling plan with weaker coverage than the default, and `v02/` holds a
-specification and plan saved by zin 0.2.
+`stale.plan.json` was derived from a different `latch.zin`, `arity.plan.json` is
+`latch.plan.json` with an extra argument on its first call, and `weaker/` is a
+sibling plan with weaker coverage than the default.

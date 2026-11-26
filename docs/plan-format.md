@@ -2,10 +2,10 @@
 
 Everything a binding needs is in one JSON document, so a binding for a new
 language or framework is a few hundred lines with no parser and no model
-checker. The three shipped bindings are reference implementations
+checker. The shipped bindings are reference implementations
 (`bindings/python/zin/__init__.py` is the shortest).
 
-## `plan/1` and `plan/2`
+## `plan/1`
 
 Written by `zin plan`. Compact JSON, one line.
 
@@ -42,13 +42,14 @@ Written by `zin plan`. Compact JSON, one line.
 | Key | Meaning |
 | --- | --- |
 | `fingerprint` | FNV-1a 64 of the specification file's bytes, 16 lowercase hex digits. A binding compares it with the specification on disk to detect a stale plan. For a specification with `include` directives it covers every file: FNV-1a 64 of the entry file's fingerprint and a newline, followed by `path`, a tab, the file's fingerprint and a newline for each entry of `sources` in order. |
-| `sources` | included files, transitively, by path relative to the entry file's directory with `/` separators, each with the FNV-1a 64 of its bytes. Empty for a single file; may be absent in plans from older versions. |
-| `component` | the composition block the plan tests in isolation (`zin plan --component`), or `null` for the whole system. May be absent in plans from older versions. |
+| `sources` | included files, transitively, by path relative to the entry file's directory with `/` separators, each with the FNV-1a 64 of its bytes. Empty for a single file. |
+| `component` | the composition block the plan tests in isolation (`zin plan --component`), or `null` for the whole system. |
 | `cover` | the coverage goal the plan was derived for: `transitions`, `states`, `actions`, `scenarios` or `pairs` |
-| `max_steps`, `step_budget`, `pair_limit` | the soft tour target, the hard total step ceiling and the pair sample size (null unless a sampled `pairs` plan) the plan was derived with. Absent from plans written before 0.3. |
+| `max_steps`, `step_budget`, `pair_limit` | the soft tour target, the hard total step ceiling and the pair sample size (null unless a sampled `pairs` plan) the plan was derived with. |
+| `defaults` | the `cover`, `max_steps`, `step_budget` and `pair_limit` that `zin plan` uses when none are given. |
 | `observe` | only in plans from `zin plan --observe`: the fields the adapter's `observe` is taken to return, in declaration order (empty for an adapter without `observe`). The plan's `identify` tests rule out states that look alike under these fields. |
 | `summary` | full-model `states`, `transitions` and `refusals`, plus the emitted `tests`, `accepted_steps` and `rejected_steps`. `eligible_pairs` and `covered_pairs` are numbers for `pairs` plans and null otherwise. |
-| `fields` | the state variables. Types: `integer` (`min`, `max`), `boolean`, `enum` (`values`), `map` (`keys` as strings, `value` type), and in `plan/2` `record` (`members`, each a `name` and a `type`) `optional` (`value` type) `set` (`values`, the element type's values as strings) `list` (`capacity`, `element` type) and `variant` (`cases`, each a `name` and its `members`) |
+| `fields` | the state variables. Types: `integer` (`min`, `max`), `boolean`, `enum` (`values`), `map` (`keys` as strings, `value` type), `record` (`members`, each a `name` and a `type`), `optional` (`value` type), `set` (`values`, the element type's values as strings), `list` (`capacity`, `element` type) and `variant` (`cases`, each a `name` and its `members`) |
 | `actions` | actions and their parameters, in declaration order |
 | `states` | the model states the plan refers to, as objects. Integers are JSON numbers, booleans JSON booleans, enum values strings, maps objects keyed by the key's text, records objects keyed by member name, an optional that is nothing `null`, a set an array of its members in the element type's order, a list an array of its items, an enumeration case with members an object whose one key is the case. State `0` is the initial state. Only states the plan uses are listed. |
 | `parents` | for each state, `[parent state, call]` on a shortest path from the initial state; `null` for state 0. Used to build the shortest reproduction. |
@@ -58,11 +59,7 @@ Written by `zin plan`. Compact JSON, one line.
 All integers fit in a JavaScript safe integer; `zin plan` refuses a
 specification whose values do not.
 
-A plan is `plan/2` exactly when some field's type is neither a scalar nor a map
-of scalars: it holds a record, a nested map, an optional value, a set, a list or an enumeration whose values carry members. Every other plan is `plan/1`,
-byte for byte as before, so a runner that reads only `plan/1` keeps working on
-specifications that do not use the newer types. `plan/2` adds these values to
-the vocabulary, and a runner that reads it compares all of them:
+Compound values use JSON's own structure, and a runner compares all of them:
 
 | JSON | Meaning |
 | --- | --- |
@@ -93,14 +90,13 @@ runner passes those cases before it ships.
      path (relative to the specification) and a newline for each source in
      byte order of `path`. A missing file is not fresh.
    - *Compatible:* every option the caller passed equals the plan's recorded
-     value (an older plan without the key is not compatible). For the sibling,
+     value. For the sibling,
      every coverage option left out (`cover`, `max_steps`, `step_budget`,
      `pair_limit`) must equal the plan's recorded `defaults` entry, so runners
      hold no defaults and a plan with weaker coverage is never chosen
-     silently; a sibling without `defaults` (written before 0.3.1) is not
-     compatible then. An explicit plan compares only the options passed:
+     silently. An explicit plan compares only the options passed:
      naming it is the opt-in to its coverage. `component` is identity: the
-     plan's (null when absent) must equal the requested one.
+     plan's must equal the requested one.
 3. An explicit plan that is not usable is an error naming the reason ("was
    derived from a different version of" or "was derived with different
    planning options") and the `zin plan` command that regenerates it.
@@ -182,8 +178,7 @@ that index on repeat forever. `up_to_symmetry` is `true` when `states` and
 `transitions` count representatives of interchangeable values.
 `attempted_calls` is `states` times `calls`, the work exploration did, and
 `relabelings` is the size of the relabeling tables it built (0 without
-reduction). These are added fields; readers of `check/1` should ignore fields
-they do not know.
+reduction). Readers of `check/1` ignore fields they do not know.
 
 With `--inductive`, a successful result also has an `inductive` object:
 
@@ -224,7 +219,7 @@ same rules. `zin explain <code>` explains each code; see
 `fixes` lists replacements that would fix the error, each a `span` to replace
 (same rules as above), the `replacement` text and a `label` such as
 ``did you mean `pending`?``. Several fixes for one error are alternatives:
-apply one. The list is empty when no fix is known; `fixes` is an added field.
+apply one. The list is empty when no fix is known.
 
 ## Trace events
 

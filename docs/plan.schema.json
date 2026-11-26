@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/enekos/zin/blob/main/docs/plan.schema.json",
-  "title": "Zin test plan (plan/1 and plan/2)",
-  "description": "The single definition of the plan file that `zin plan` writes and every runner reads. Keys marked optional are absent from plans written before 0.3; runners must accept both. A plan is plan/2 exactly when some field type is not a scalar or a map of scalars. See docs/plan-format.md for the meaning of each key and the runner contract.",
+  "title": "Zin test plan (plan/1)",
+  "description": "The single definition of the plan file that `zin plan` writes and every runner reads. See docs/plan-format.md for the meaning of each key and the runner contract.",
   "type": "object",
-  "required": ["zin", "system", "fingerprint", "cover", "fields", "actions", "states", "parents", "calls", "tests", "summary"],
+  "required": ["zin", "system", "fingerprint", "sources", "component", "cover", "max_steps", "step_budget", "pair_limit", "defaults", "fields", "actions", "states", "parents", "calls", "tests", "summary"],
   "properties": {
-    "zin": { "enum": ["plan/1", "plan/2"] },
+    "zin": { "enum": ["plan/1"] },
     "system": { "type": "string" },
     "fingerprint": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
     "sources": {
@@ -24,7 +24,7 @@
       "items": { "type": "string" }
     },
     "defaults": {
-      "description": "The planning options zin plan uses when none are given. Absent from plans written before 0.3.1.",
+      "description": "The planning options zin plan uses when none are given.",
       "type": "object",
       "required": ["cover", "max_steps", "step_budget", "pair_limit"],
       "properties": {
@@ -114,7 +114,7 @@
     },
     "summary": {
       "type": "object",
-      "required": ["states", "transitions", "tests", "accepted_steps", "rejected_steps"],
+      "required": ["states", "transitions", "refusals", "eligible_pairs", "covered_pairs", "tests", "accepted_steps", "rejected_steps"],
       "properties": {
         "states": { "type": "integer", "minimum": 0 },
         "transitions": { "type": "integer", "minimum": 0 },

@@ -266,7 +266,7 @@ def test_recorder_output_is_accepted_by_zin_trace(tmp_path):
 def test_pytest_reporter_tracks_filtered_and_failed_tests(tmp_path):
     import sys
 
-    plan = EXAMPLES.parent / "tests/fixtures/v0.2/switch.plan.json"
+    plan = EXAMPLES.parent / "tests/fixtures/switch.plan.json"
     test = tmp_path / "test_switch.py"
     test.write_text(
         f"""import zin
@@ -281,8 +281,8 @@ class Switch:
     env = dict(os.environ, PYTEST_DISABLE_PLUGIN_AUTOLOAD="1", PYTHONPATH=str(EXAMPLES.parent / "bindings/python"))
     command = [sys.executable, "-m", "pytest", "-q", "-p", "zin.pytest_plugin", "--zin-coverage", str(test), "-k"]
     for selector, code, row in [
-        ("start_only", 0, "operations 1/3 planned, 0 failed"),
-        ("cycle", 1, "operations 2/3 planned, 1 failed"),
+        ("start_only", 0, "operations 1/3 planned, 4 eligible, 0 failed"),
+        ("cycle", 1, "operations 2/3 planned, 4 eligible, 1 failed"),
     ]:
         done = subprocess.run([*command, selector], text=True, capture_output=True, env=env)
         assert done.returncode == code and row in done.stdout, done.stdout + done.stderr

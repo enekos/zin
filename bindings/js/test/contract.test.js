@@ -133,7 +133,7 @@ for (const item of [...json("observations.json"), ...json("native-observations.j
 
 test("plans have every key the schema requires", () => {
   const schema = JSON.parse(readFileSync(new URL("../../../docs/plan.schema.json", import.meta.url), "utf8"));
-  for (const name of ["latch.plan.json", "composed/main.plan.json", "v02/switch.plan.json"]) {
+  for (const name of ["latch.plan.json", "composed/main.plan.json"]) {
     const plan = loadPlan(at(name));
     for (const key of schema.required) assert.ok(key in plan, `${name}: ${key}`);
     for (const key of schema.properties.summary.required) assert.ok(key in plan.summary, `${name}: summary.${key}`);

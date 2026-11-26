@@ -148,19 +148,6 @@ impl FieldType {
         }
     }
 
-    /// Whether `plan/1` can carry this type: a scalar, or a map of scalars.
-    pub(crate) fn is_classic(&self) -> bool {
-        match self {
-            Self::Scalar(_) => true,
-            Self::Map { value, .. } => matches!(value.as_ref(), Self::Scalar(_)),
-            Self::Record(_)
-            | Self::Optional(_)
-            | Self::Set { .. }
-            | Self::List { .. }
-            | Self::Variant { .. } => false,
-        }
-    }
-
     /// The member `name` of a record: its first slot, counted from the
     /// record's, and its type.
     pub(crate) fn member(&self, name: &str) -> Option<(usize, &FieldType)> {

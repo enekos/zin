@@ -26,11 +26,11 @@ fn records_and_nested_maps_check_with_and_without_symmetry() {
 }
 
 #[test]
-fn plans_with_records_are_plan_2_and_nest_values() {
+fn plans_nest_record_values() {
     let verification = verify(&parse(ORDERS).unwrap()).unwrap();
     let plan = Plan::build(&verification, &PlanOptions::default()).unwrap();
     let json = plan.to_json(&verification);
-    assert_eq!(json.get("zin"), Some(&Json::str("plan/2")));
+    assert_eq!(json.get("zin"), Some(&Json::str("plan/1")));
     let fields = json.get("fields").unwrap().to_compact();
     assert!(
         fields.contains(r#"{"kind":"record","members":[{"name":"status","type":{"kind":"enum","values":["draft","paid","shipped"]}},{"name":"items","type":{"kind":"integer","min":0,"max":2}}]}"#),
@@ -47,17 +47,6 @@ fn plans_with_records_are_plan_2_and_nest_values() {
     assert_eq!(
         states[0].get("orders").unwrap().to_compact(),
         r#"{"ann":{"items":0,"status":"draft"},"ben":{"items":0,"status":"draft"}}"#
-    );
-}
-
-#[test]
-fn plans_without_compound_types_stay_plan_1() {
-    let source = include_str!("../examples/mutex.zin");
-    let verification = verify(&parse(source).unwrap()).unwrap();
-    let plan = Plan::build(&verification, &PlanOptions::default()).unwrap();
-    assert_eq!(
-        plan.to_json(&verification).get("zin"),
-        Some(&Json::str("plan/1"))
     );
 }
 
@@ -240,7 +229,6 @@ fn optional_values_have_one_encoding_under_symmetry() {
     assert_eq!(full.state(0).get("lease"), Some(&Value::Nothing));
     let plan = Plan::build(&full, &PlanOptions::default()).unwrap();
     let json = plan.to_json(&full);
-    assert_eq!(json.get("zin"), Some(&Json::str("plan/2")));
     let Some(Json::Array(states)) = json.get("states") else {
         panic!("no states")
     };

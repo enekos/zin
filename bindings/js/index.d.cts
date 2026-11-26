@@ -24,17 +24,21 @@ export interface PlanTest {
 }
 
 export interface Plan {
-  zin: "plan/1" | "plan/2";
+  zin: "plan/1";
   system: string;
   fingerprint: string;
-  /** Included files by path relative to the specification, each with its FNV-1a 64 hash. Absent before 0.3. */
-  sources?: Record<string, string>;
-  /** The composition block tested in isolation, or null for the whole system. Absent before 0.3. */
-  component?: string | null;
+  /** Included files by path relative to the specification, each with its FNV-1a 64 hash. */
+  sources: Record<string, string>;
+  /** The composition block tested in isolation, or null for the whole system. */
+  component: string | null;
   cover: Cover;
-  max_steps?: number;
-  step_budget?: number;
-  pair_limit?: number | null;
+  max_steps: number;
+  step_budget: number;
+  pair_limit: number | null;
+  /** The planning options `zin plan` uses when none are given. */
+  defaults: { cover: Cover; max_steps: number; step_budget: number; pair_limit: number | null };
+  /** Present only in plans from `zin plan --observe`: the fields observe() is taken to return. */
+  observe?: string[];
   fields: { name: string; type: unknown }[];
   actions: { name: string; params: { name: string; type: unknown }[] }[];
   states: Record<string, unknown>[];
@@ -44,9 +48,9 @@ export interface Plan {
   summary: {
     states: number;
     transitions: number;
-    refusals?: number;
-    eligible_pairs?: number | null;
-    covered_pairs?: number | null;
+    refusals: number;
+    eligible_pairs: number | null;
+    covered_pairs: number | null;
     tests: number;
     accepted_steps: number;
     rejected_steps: number;
