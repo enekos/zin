@@ -150,7 +150,7 @@ def test_observation(case):
 
 def test_plans_have_every_key_the_schema_requires():
     schema = json.loads((ROOT / "docs" / "plan.schema.json").read_text())
-    for name in ("latch.plan.json", "composed/main.plan.json", "v02/switch.plan.json"):
+    for name in ("latch.plan.json", "composed/main.plan.json"):
         plan = zin.load_plan(CONTRACT / name)
         assert set(schema["required"]) <= set(plan), name
         assert set(schema["properties"]["summary"]["required"]) <= set(plan["summary"]), name

@@ -24,8 +24,6 @@ const recorder = require("./recorder.cjs");
 const { plain, jsonable } = recorder;
 
 const PLAN_FORMAT = "plan/1";
-// plan/2 carries records, nested maps, optional values, sets and lists.
-const PLAN_FORMATS = [PLAN_FORMAT, "plan/2"];
 // How many of the latest steps a report lists before eliding earlier ones.
 const LISTED_STEPS = 8;
 // Pause between two observations while waiting for the expected state.
@@ -122,8 +120,8 @@ function compatible(plan, requested, explicit) {
 }
 
 function validate(plan, origin) {
-  if (plan === null || typeof plan !== "object" || !PLAN_FORMATS.includes(plan.zin)) {
-    throw new PlanError(`${origin} is not a ${PLAN_FORMATS.join(" or ")} file`);
+  if (plan === null || typeof plan !== "object" || plan.zin !== PLAN_FORMAT) {
+    throw new PlanError(`${origin} is not a ${PLAN_FORMAT} file`);
   }
   try {
     const params = new Map(plan.actions.map((action) => [action.name, action.params.length]));

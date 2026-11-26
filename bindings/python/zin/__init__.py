@@ -49,8 +49,6 @@ __all__ = [
 __version__ = "0.5.0"
 
 PLAN_FORMAT = "plan/1"
-# plan/2 carries records, nested maps, optional values, sets and lists.
-PLAN_FORMATS = (PLAN_FORMAT, "plan/2")
 # How many of the latest steps a report lists before eliding earlier ones.
 LISTED_STEPS = 8
 PathLike = Union[str, "os.PathLike[str]"]
@@ -140,8 +138,8 @@ def _compatible(plan: dict, options: dict, explicit: bool) -> bool:
 
 
 def _validate(plan: Any, origin: Any) -> dict:
-    if not isinstance(plan, dict) or plan.get("zin") not in PLAN_FORMATS:
-        raise PlanError(f"{origin} is not a {' or '.join(PLAN_FORMATS)} file")
+    if not isinstance(plan, dict) or plan.get("zin") != PLAN_FORMAT:
+        raise PlanError(f"{origin} is not a {PLAN_FORMAT} file")
     try:
         params = {action["name"]: len(action["params"]) for action in plan["actions"]}
         for index, call in enumerate(plan["calls"]):

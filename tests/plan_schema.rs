@@ -217,7 +217,7 @@ fn every_example_plan_matches_the_schema_for_every_coverage() {
 
 #[test]
 fn committed_plan_fixtures_match_the_schema() {
-    let mut paths = vec![root().join("tests/fixtures/v0.2/switch.plan.json")];
+    let mut paths = vec![root().join("tests/fixtures/switch.plan.json")];
     let mut pending = vec![root().join("bindings/fixtures/contract")];
     while let Some(directory) = pending.pop() {
         for entry in std::fs::read_dir(directory).unwrap() {

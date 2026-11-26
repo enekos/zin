@@ -40,8 +40,6 @@ import java.util.stream.Stream;
 public final class Zin {
     /** The plan file format this binding reads. */
     public static final String PLAN_FORMAT = "plan/1";
-    /** The format of plans whose state holds records, nested maps, optional values, sets or lists. */
-    public static final String PLAN_FORMAT_2 = "plan/2";
     // How many of the latest steps a report lists before eliding earlier ones.
     private static final int LISTED_STEPS = 8;
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -332,8 +330,8 @@ public final class Zin {
 
     private static JsonNode validate(JsonNode plan, Object origin) throws PlanException {
         String format = plan == null ? null : plan.path("zin").asText(null);
-        if (!PLAN_FORMAT.equals(format) && !PLAN_FORMAT_2.equals(format)) {
-            throw new PlanException(origin + " is not a " + PLAN_FORMAT + " or " + PLAN_FORMAT_2 + " file");
+        if (!PLAN_FORMAT.equals(format)) {
+            throw new PlanException(origin + " is not a " + PLAN_FORMAT + " file");
         }
         Map<String, Integer> params = new LinkedHashMap<>();
         for (JsonNode action : array(plan, "actions", origin)) {

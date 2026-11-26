@@ -125,8 +125,8 @@ parameters are, and may have any type.
   booleans and enums.
 
 Every slot of a record is part of the state: an order with two members takes
-two slots, a map from two customers to orders takes four. Plans for a
-specification with records or nested maps are [`plan/2`](plan-format.md).
+two slots, a map from two customers to orders takes four. In
+[plans](plan-format.md) a record is an object keyed by member name.
 
 ### Optional values
 

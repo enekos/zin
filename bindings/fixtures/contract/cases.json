@@ -172,38 +172,6 @@
       }
     },
     {
-      "name": "a plan from before 0.3 is read when named",
-      "spec": "v02/switch.zin",
-      "plan": "v02/switch.plan.json",
-      "expect": {
-        "fingerprint": "0fd132c61d49a16d",
-        "cover": "scenarios"
-      }
-    },
-    {
-      "name": "a sibling from before 0.3 does not record its defaults",
-      "spec": "v02/switch.zin",
-      "expect": {
-        "errors": [
-          "switch.plan.json was derived with different planning options",
-          "the zin binary was not found"
-        ]
-      }
-    },
-    {
-      "name": "a plan from before 0.3 does not record step options",
-      "spec": "v02/switch.zin",
-      "options": {
-        "max_steps": 200
-      },
-      "expect": {
-        "errors": [
-          "was derived with different planning options",
-          "the zin binary was not found"
-        ]
-      }
-    },
-    {
       "name": "a call whose arguments do not fit its action is malformed",
       "spec": "arity.plan.json",
       "expect": {

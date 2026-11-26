@@ -1,5 +1,5 @@
 import { verify } from "zin-verify/vitest";
-verify(new URL("../../../tests/fixtures/v0.2/switch.plan.json", import.meta.url), () => {
+verify(new URL("../../../tests/fixtures/switch.plan.json", import.meta.url), () => {
   let active = false;
   return {
     actions: {

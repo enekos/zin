@@ -11,9 +11,6 @@ mod identify;
 mod pairs;
 
 pub const PLAN_FORMAT: &str = "plan/1";
-/// The format of a plan whose state holds records or nested maps. Plans for
-/// specifications without them stay `plan/1`, byte for byte.
-pub const PLAN_FORMAT_2: &str = "plan/2";
 const DEFAULT_MAX_STEPS: usize = 200;
 const MAX_PLAN_STEPS: usize = 2_000_000;
 const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
@@ -802,16 +799,7 @@ impl Plan {
             })
             .collect();
         let mut plan = Json::object([
-            (
-                "zin",
-                Json::str(
-                    if model.fields.iter().all(|field| field.kind.is_classic()) {
-                        PLAN_FORMAT
-                    } else {
-                        PLAN_FORMAT_2
-                    },
-                ),
-            ),
+            ("zin", Json::str(PLAN_FORMAT)),
             ("system", Json::str(model.name.clone())),
             ("fingerprint", Json::str(model.fingerprint.clone())),
             (

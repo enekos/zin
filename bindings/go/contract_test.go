@@ -333,7 +333,7 @@ func TestContractPlansHaveTheSchemaKeys(t *testing.T) {
 	if err := json.Unmarshal(data, &schema); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"latch.plan.json", "composed/main.plan.json", "v02/switch.plan.json"} {
+	for _, name := range []string{"latch.plan.json", "composed/main.plan.json"} {
 		data, err := os.ReadFile(filepath.Join(contract, name))
 		if err != nil {
 			t.Fatal(err)

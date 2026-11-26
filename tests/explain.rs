@@ -94,12 +94,12 @@ fn every_code_is_explained_by_an_example_that_produces_it() {
 }
 
 #[test]
-fn the_index_lists_every_code_with_its_summary_and_release() {
+fn the_index_lists_every_code_with_its_summary() {
     let index = include_str!("../docs/errors/README.md");
     for explanation in explanations() {
         let row = format!(
-            "| [`{0}`]({0}.md) | {1} | {2} |",
-            explanation.code, explanation.summary, explanation.since
+            "| [`{0}`]({0}.md) | {1} |",
+            explanation.code, explanation.summary
         );
         assert!(index.contains(&row), "missing row: {row}");
     }
@@ -140,9 +140,11 @@ fn explain_prints_an_explanation_or_lists_the_codes() {
     let args = |list: &[&str]| list.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
     let output = zin::cli::run(&args(&["explain", "type.mismatch"]));
     assert_eq!(output.code, 0);
-    assert!(output.stdout.starts_with(
-        "type.mismatch: A value of one type where another is needed. (since 0.3.0)\n"
-    ));
+    assert!(
+        output
+            .stdout
+            .starts_with("type.mismatch: A value of one type where another is needed.\n")
+    );
     assert!(output.stdout.contains("## Example"));
     assert!(!output.stdout.contains("# `type.mismatch`"));
 

@@ -9,8 +9,6 @@
 pub struct Explanation {
     pub code: &'static str,
     pub summary: &'static str,
-    /// The release that introduced the code.
-    pub since: &'static str,
     /// Markdown: a failing specification, the error it gets, and a fix.
     pub text: &'static str,
 }
@@ -27,7 +25,7 @@ impl Explanation {
 }
 
 macro_rules! codes {
-    ($($variant:ident = $code:literal since $since:literal: $summary:literal;)*) => {
+    ($($variant:ident = $code:literal: $summary:literal;)*) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub(crate) enum Code {
             $($variant,)*
@@ -45,7 +43,6 @@ macro_rules! codes {
             $(Explanation {
                 code: $code,
                 summary: $summary,
-                since: $since,
                 text: include_str!(concat!("../docs/errors/", $code, ".md")),
             },)*
         ];
@@ -53,18 +50,18 @@ macro_rules! codes {
 }
 
 codes! {
-    Spec = "spec" since "0.3.0": "The specification cannot be read: a syntax error or a rule of the language it breaks.";
-    Usage = "usage" since "0.3.0": "The command line or a file it names cannot be used.";
-    ModelFault = "model.fault" since "0.3.0": "Some reachable step leaves a declared range, divides by zero or reads a value that is not there.";
-    Violation = "violation" since "0.3.0": "A property does not hold; the counterexample shows how.";
-    Limit = "limit" since "0.3.0": "Exploration stopped at a limit before it could decide.";
-    NameUnknown = "name.unknown" since "0.3.0": "A name that nothing declares.";
-    TypeMismatch = "type.mismatch" since "0.3.0": "A value of one type where another is needed.";
-    ComponentFieldConflict = "component.field_conflict" since "0.3.0": "Two system blocks declare the same state field.";
-    ComponentDuplicateAction = "component.duplicate_action" since "0.3.0": "One system block declares an action twice.";
-    ComponentForeignField = "component.foreign_field" since "0.3.0": "A system block touches a field that another block owns.";
-    ComponentTypeConflict = "component.type_conflict" since "0.3.0": "Two system blocks declare a type under one name with different values.";
-    ComponentParameterConflict = "component.parameter_conflict" since "0.3.0": "Two system blocks give a shared action's parameter different types.";
+    Spec = "spec": "The specification cannot be read: a syntax error or a rule of the language it breaks.";
+    Usage = "usage": "The command line or a file it names cannot be used.";
+    ModelFault = "model.fault": "Some reachable step leaves a declared range, divides by zero or reads a value that is not there.";
+    Violation = "violation": "A property does not hold; the counterexample shows how.";
+    Limit = "limit": "Exploration stopped at a limit before it could decide.";
+    NameUnknown = "name.unknown": "A name that nothing declares.";
+    TypeMismatch = "type.mismatch": "A value of one type where another is needed.";
+    ComponentFieldConflict = "component.field_conflict": "Two system blocks declare the same state field.";
+    ComponentDuplicateAction = "component.duplicate_action": "One system block declares an action twice.";
+    ComponentForeignField = "component.foreign_field": "A system block touches a field that another block owns.";
+    ComponentTypeConflict = "component.type_conflict": "Two system blocks declare a type under one name with different values.";
+    ComponentParameterConflict = "component.parameter_conflict": "Two system blocks give a shared action's parameter different types.";
 }
 
 /// Every diagnostic code, in the order of `docs/errors/README.md`.
