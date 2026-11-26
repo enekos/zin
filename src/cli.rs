@@ -584,10 +584,9 @@ fn explain(args: &[String]) -> Result<Output> {
         )
     })?;
     Ok(ok(format!(
-        "{}: {} (since {})\n{}",
+        "{}: {}\n{}",
         explanation.code,
         explanation.summary,
-        explanation.since,
         explanation.body()
     )))
 }
