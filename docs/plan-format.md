@@ -170,7 +170,8 @@ Written by `zin check --format json`.
      "message": "...",
      "trace": {"initial": {"status": "queued"},
                "steps": [{"call": "start", "state": {"status": "running"}}],
-               "loop_from": 0}}}
+               "loop_from": 0},
+     "fixes": []}}
 ]}
 ```
 
@@ -211,7 +212,13 @@ declarations. Both are `null` when the error has no location. A span's `file`
 is the file that holds the text (empty for standard input); `line` is a line of
 that file, and so is the top-level `line`. Columns count Unicode scalar values
 from one and `end_column` is exclusive. Property `line` and `span` follow the
-same rules.
+same rules. `zin explain <code>` explains each code; see
+[diagnostic codes](errors/README.md).
+
+`fixes` lists replacements that would fix the error, each a `span` to replace
+(same rules as above), the `replacement` text and a `label` such as
+``did you mean `pending`?``. Several fixes for one error are alternatives:
+apply one. The list is empty when no fix is known; `fixes` is an added field.
 
 ## Trace events
 

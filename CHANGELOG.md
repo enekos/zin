@@ -10,6 +10,22 @@
   raises), which points at the `always` that is missing. The result is
   informational: exit code 0 either way. `check/1` gains an `inductive`
   object. Rust: `check_induction`, `Induction`.
+- Suggested fixes. An unknown name suggests the closest declared name of a
+  kind that fits where it stands, and the text output shows the corrected
+  line. This covers fields, maps, record members, parameters, enum values
+  (quoted or not), `true`/`false`/`nothing`, named types, map keys in
+  literals, and actions and parameters in scenarios. A missing `include`
+  suggests the closest `.zin` file next to it. `zin check --fix` applies
+  every suggestion that is the only one for its error. `check/1` errors gain
+  a `fixes` list; Rust has `Error::fixes`, `Fix` and `Error::report`.
+- `zin explain <code>` explains every diagnostic code with a failing
+  specification, its exact output and a fix; `zin explain` lists the codes.
+  The pages are `docs/errors/<code>.md`, and the test suite runs each
+  example. Text output of an error with a code finer than its kind ends with
+  `= see: zin explain <code>`. Rust: `explanation`, `explanations`.
+- Unknown type names in declarations, unknown quoted enum values, unknown
+  members and keys in record and map literals, and unknown actions and
+  parameters in scenarios now have the code `name.unknown` instead of `spec`.
 
 ## 0.5.0 — 2026-11-25
 

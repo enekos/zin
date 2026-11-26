@@ -632,6 +632,10 @@ Every error names the file, line and column it refers to:
 ```console
 $ zin check entry.zin
 spec: parts/client.zin:7:21: unknown name pendng; declare it or use a quoted enum value
+  hint: did you mean `pending`?
+    7 |   requires status is pending
+      |                      ^^^^^^^
+  = see: zin explain name.unknown
 ```
 
 The parser records where each name, condition, assignment and declaration
@@ -644,6 +648,25 @@ declarations also gives the first one.
 `type.mismatch` or `component.field_conflict`), a `span` and a `related` span;
 see [wire formats](plan-format.md#check1). In Rust, `Error::code`,
 `Error::source_span` and `Error::related_span` return the same information.
+`zin explain <code>` shows an example of each code and its fix; the
+[list of codes](errors/README.md) has them all.
+
+### Suggested fixes
+
+When a name is unknown and a declared name of a kind that fits is close to it,
+the error suggests that name and shows the line as it would read. Names are
+close when they differ by one edit for names of up to four characters and two
+for longer ones (an insertion, a deletion, a substitution or a swap of
+neighbours), or only in case. A name of the wrong type is not suggested: in
+`status is pendng`, where `status` is a phase, only phases are. Equally close
+names are all offered. A missing `include` file suggests the closest `.zin`
+file next to it.
+
+`zin check --fix` applies each suggestion that is the only one for its error,
+checks again, and repeats until the specification checks or an error has no
+single fix. It prints each change. Alternatives stay for you to choose.
+`--format json` reports the fixes under `fixes`; Rust has `Error::fixes` and
+`Error::report`, which renders the error as `zin` prints it.
 Once an error leaves `parse`, `parse_file`, `Model::compile` or `verify`, its
 `line` is a line of the file in `source_span`. AST nodes carry `Span`s in the
 parser's coordinates; `Spec::source_span` resolves one to its file.

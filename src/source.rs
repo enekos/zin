@@ -69,6 +69,35 @@ impl Document {
         })
     }
 
+    /// Where `target` is in `span`, a span of this document: the one
+    /// occurrence of `target` inside it as a whole word, or else the one on
+    /// its line, since some errors cover only the statement's first name.
+    /// Also the text of the line.
+    fn find(&self, span: &SourceSpan, target: &str) -> Option<(SourceSpan, String)> {
+        let text = self.text(span.line)?;
+        let chars: Vec<char> = text.chars().collect();
+        let wanted: Vec<char> = target.chars().collect();
+        let start = span.column.checked_sub(1)?;
+        let end = span.end_column.checked_sub(1)?.min(chars.len());
+        let at = match occurrences(&chars, &wanted, start, end).as_slice() {
+            [at] => *at,
+            [] => match occurrences(&chars, &wanted, 0, chars.len()).as_slice() {
+                [at] => *at,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        Some((
+            SourceSpan {
+                file: self.path.clone(),
+                line: span.line,
+                column: at + 1,
+                end_column: at + 1 + wanted.len(),
+            },
+            text.to_owned(),
+        ))
+    }
+
     /// The whole statement on `line`, for diagnostics that have no token.
     fn statement(&self, line: usize) -> Option<SourceSpan> {
         let text = self.text(line)?;
@@ -82,6 +111,20 @@ impl Document {
             end_column: column + statement.get(indent..)?.chars().count(),
         })
     }
+}
+
+/// Where `wanted` starts in `chars` between `start` and `end`, not counting
+/// occurrences that are part of a longer word.
+fn occurrences(chars: &[char], wanted: &[char], start: usize, end: usize) -> Vec<usize> {
+    let word = |c: Option<&char>| c.is_some_and(|c| c.is_alphanumeric() || *c == '_');
+    (start..end)
+        .filter(|&at| {
+            at + wanted.len() <= end
+                && chars.get(at..at + wanted.len()) == Some(wanted)
+                && !(word(at.checked_sub(1).and_then(|i| chars.get(i))) && word(wanted.first()))
+                && !(word(chars.get(at + wanted.len())) && word(wanted.last()))
+        })
+        .collect()
 }
 
 impl SourceMap {
@@ -120,7 +163,29 @@ impl SourceMap {
 
     /// Resolve the parser's location of `error` to its file. Afterwards
     /// `error.line` numbers the line within that file.
-    pub(crate) fn locate(&self, mut error: Error) -> Error {
+    pub(crate) fn locate(&self, error: Error) -> Error {
+        if error.source_span().is_some() {
+            return error;
+        }
+        let line = error
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.at)
+            .map_or(error.line, |at| Some(at.line));
+        let error = self.locate_span(error);
+        let (Some((doc, _)), Some(span)) = (
+            line.and_then(|line| self.document(line)),
+            error.source_span().cloned(),
+        ) else {
+            return error;
+        };
+        if doc.path != span.file {
+            return error;
+        }
+        error.resolve_fixes(|target| doc.find(&span, target))
+    }
+
+    fn locate_span(&self, mut error: Error) -> Error {
         let (at, related) = match error.detail.as_deref() {
             Some(detail) if detail.source.is_some() => return error,
             Some(detail) => (detail.at, detail.related),
@@ -179,6 +244,39 @@ struct Loader {
 }
 
 impl Loader {
+    /// For an included file `child` that does not exist, the closest files
+    /// next to it, each written as `argument`, the quoted include path,
+    /// would write it.
+    fn nearest_file(&self, child: &Path, argument: &str) -> Vec<String> {
+        let written = Json::parse(argument)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        let prefix = written.rsplit_once('/').map_or("", |(dir, _)| dir);
+        let (Some(parent), Some(name)) = (child.parent(), child.file_name()) else {
+            return Vec::new();
+        };
+        let Ok(entries) = std::fs::read_dir(self.base.join(parent)) else {
+            return Vec::new();
+        };
+        let names: Vec<String> = entries
+            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+            .filter(|file| Path::new(file).extension().is_some_and(|e| e == "zin"))
+            .take(MAX_FILES)
+            .collect();
+        crate::explain::closest(&name.to_string_lossy(), names.iter().map(String::as_str))
+            .into_iter()
+            .map(|file| {
+                let path = if prefix.is_empty() {
+                    file
+                } else {
+                    format!("{prefix}/{file}")
+                };
+                Json::str(path).to_compact()
+            })
+            .collect()
+    }
+
     /// Append `relative` and, before it, everything it includes.
     fn file(&mut self, relative: PathBuf) -> Result<()> {
         if self.loaded.contains_key(&relative) {
@@ -241,12 +339,25 @@ impl Loader {
                             relative_path(relative.parent().unwrap_or(Path::new("")), &file)
                         })
                 };
+                let nearest = child
+                    .as_ref()
+                    .ok()
+                    .filter(|child| !self.base.join(child).is_file())
+                    .map(|child| self.nearest_file(child, argument))
+                    .unwrap_or_default();
                 child.and_then(|child| self.file(child)).map_err(|error| {
                     let span = document
                         .span_of(number, argument)
                         .filter(|_| !argument.is_empty())
                         .or_else(|| document.statement(number));
-                    error.located_at(span)
+                    let fixes = span.clone();
+                    error
+                        .located_at(span)
+                        .suggest(argument, nearest)
+                        .resolve_fixes(|target| {
+                            let span = fixes.as_ref()?;
+                            document.find(span, target)
+                        })
                 })?;
             } else {
                 if !started && !statement.is_empty() {

@@ -8,6 +8,7 @@
 //! everything else.
 
 use crate::ast::{Action, BinaryOperator, Condition, Expr, Field, Span, Spec, TypeDecl};
+use crate::explain::Code;
 use crate::{Error, Result};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -34,7 +35,7 @@ pub(crate) fn compose(components: Vec<Spec>) -> Result<Spec> {
                         component.name
                     ),
                 )
-                .coded("component.foreign_field")
+                .coded(Code::ComponentForeignField)
                 .spanned(span));
             }
         }
@@ -117,7 +118,7 @@ fn owners(components: &[Spec]) -> Result<HashMap<&str, (&str, Span)>> {
                         field.name
                     ),
                 )
-                .coded("component.field_conflict")
+                .coded(Code::ComponentFieldConflict)
                 .spanned(field.span)
                 .related(*first));
             }
@@ -130,7 +131,7 @@ fn owners(components: &[Spec]) -> Result<HashMap<&str, (&str, Span)>> {
                     action.line,
                     format!("duplicate action {} in {}", action.name, component.name),
                 )
-                .coded("component.duplicate_action")
+                .coded(Code::ComponentDuplicateAction)
                 .spanned(action.span)
                 .related(first));
             }
@@ -156,7 +157,7 @@ fn confine(action: &Action, component: &str, owners: &HashMap<&str, (&str, Span)
                 action.name
             ),
         )
-        .coded("component.foreign_field")
+        .coded(Code::ComponentForeignField)
         .spanned(span)
     };
     for condition in &action.requires {
@@ -272,7 +273,7 @@ fn merge_type(types: &mut Vec<TypeDecl>, declaration: TypeDecl, component: &str)
                     declaration.name
                 ),
             )
-            .coded("component.type_conflict")
+            .coded(Code::ComponentTypeConflict)
             .spanned(declaration.span)
             .related(other.span));
         }
@@ -307,7 +308,7 @@ fn merge_action(actions: &mut Vec<Action>, mut action: Action, component: &str) 
                         param.name, action.name, param.kind, other.kind
                     ),
                 )
-                .coded("component.parameter_conflict")
+                .coded(Code::ComponentParameterConflict)
                 .spanned(param.span)
                 .related(other.span));
             }
