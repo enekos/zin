@@ -277,6 +277,10 @@ a committed `<spec>.plan.json` so test machines need no Rust toolchain.
 
 ## Documentation
 
+The full documentation, with a tutorial, every construct of the language and every binding,
+is at **[enekos.github.io/zin](https://enekos.github.io/zin/)**. The pages in `docs/` are the
+reference it is built from:
+
 - [Language guide](docs/language.md): the complete grammar and semantics
 - [Conformance testing](docs/conformance.md): adapters, coverage, CI, traces
 - [Checking a web interface](docs/browser.md): Playwright, clicks, held requests

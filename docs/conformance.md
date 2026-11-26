@@ -103,7 +103,7 @@ For CommonJS Jest projects, use `const { verify } = require("zin-verify")`
 and `path.join(__dirname, "account.zin")`. Call `verify` at file scope: each
 scenario and tour is collected as its own native Jest test, with a fresh
 adapter and awaited cleanup. ESM Jest projects need Jest's VM-module setup;
-see the [complete Jest setup and example](../bindings/js/README.md#jest).
+see the [complete Jest setup and example](https://github.com/enekos/zin/blob/main/bindings/js/README.md#jest).
 
 For a page in a browser, `zin-verify/playwright` registers the plan with
 Playwright Test and adds helpers for clicks and held requests; see
@@ -220,7 +220,7 @@ Each plan test is a dynamic test. Put `account.zin`, and a committed
 `account.plan.json` if you want one, in `src/test/resources`. Arguments arrive
 by parameter name as `Long`, `Boolean` or `String`. Return `false` for a
 refusal; any exception fails the test. `zin init junit account.zin` prints
-this skeleton. See [the binding's README](../bindings/junit/README.md).
+this skeleton. See [the binding's README](https://github.com/enekos/zin/blob/main/bindings/junit/README.md).
 
 ## Where the plan comes from
 

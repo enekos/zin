@@ -1,0 +1,93 @@
+title: Zin
+description: Write the behavior once, in words. Prove it. Then let it test your code.
+remote_theme: just-the-docs/just-the-docs@v0.10.1
+plugins:
+  - jekyll-remote-theme
+  - jekyll-relative-links
+  - jekyll-optional-front-matter
+  - jekyll-readme-index
+url: https://enekos.github.io
+baseurl: /zin
+color_scheme: light
+search_enabled: true
+search:
+  heading_level: 3
+  button: true
+heading_anchors: true
+back_to_top: true
+back_to_top_text: Back to top
+relative_links:
+  enabled: true
+  collections: false
+optional_front_matter:
+  remove_originals: true
+readme_index:
+  enabled: true
+  remove_originals: true
+  with_frontmatter: true
+exclude:
+  - performance.md
+aux_links:
+  GitHub: https://github.com/enekos/zin
+  npm: https://www.npmjs.com/package/zin-verify
+  crates.io: https://crates.io/crates/zin-spec
+aux_links_new_tab: true
+gh_edit_link: true
+gh_edit_link_text: Edit this page on GitHub
+gh_edit_repository: https://github.com/enekos/zin
+gh_edit_branch: main
+gh_edit_source: docs
+gh_edit_view_mode: edit
+footer_content: 'MIT licensed. <a href="https://github.com/enekos/zin/blob/main/CHANGELOG.md">Changelog</a> · <a href="https://github.com/enekos/zin/releases">Releases</a>'
+callouts:
+  note:
+    title: Note
+    color: blue
+  tip:
+    title: Tip
+    color: green
+  warning:
+    title: Warning
+    color: yellow
+
+# The pages below predate the site and are read on GitHub and by `zin explain`
+# as they are, so their navigation lives here instead of in front matter.
+defaults:
+  - scope: { path: "language.md" }
+    values: { title: Language reference, parent: Reference, nav_order: 2 }
+  - scope: { path: "language-cases.md" }
+    values: { title: Executable language cases, parent: Reference, nav_order: 3 }
+  - scope: { path: "conformance.md" }
+    values: { title: Conformance testing, parent: Reference, nav_order: 4 }
+  - scope: { path: "browser.md" }
+    values: { title: Checking a web interface, parent: Reference, nav_order: 5 }
+  - scope: { path: "plan-format.md" }
+    values: { title: Wire formats, parent: Reference, nav_order: 6 }
+  - scope: { path: "design.md" }
+    values: { title: Design, parent: Reference, nav_order: 8 }
+  - scope: { path: "errors/README.md" }
+    values: { title: Diagnostic codes, parent: Reference, nav_order: 7, has_children: true }
+  - scope: { path: "errors/spec.md" }
+    values: { title: spec, nav_order: 1, parent: Diagnostic codes, grand_parent: Reference }
+  - scope: { path: "errors/usage.md" }
+    values: { title: usage, nav_order: 2, parent: Diagnostic codes, grand_parent: Reference }
+  - scope: { path: "errors/model.fault.md" }
+    values: { title: model.fault, nav_order: 3, parent: Diagnostic codes, grand_parent: Reference }
+  - scope: { path: "errors/violation.md" }
+    values: { title: violation, nav_order: 4, parent: Diagnostic codes, grand_parent: Reference }
+  - scope: { path: "errors/limit.md" }
+    values: { title: limit, nav_order: 5, parent: Diagnostic codes, grand_parent: Reference }
+  - scope: { path: "errors/name.unknown.md" }
+    values: { title: name.unknown, nav_order: 6, parent: Diagnostic codes, grand_parent: Reference }
+  - scope: { path: "errors/type.mismatch.md" }
+    values: { title: type.mismatch, nav_order: 7, parent: Diagnostic codes, grand_parent: Reference }
+  - scope: { path: "errors/component.field_conflict.md" }
+    values: { title: component.field_conflict, nav_order: 8, parent: Diagnostic codes, grand_parent: Reference }
+  - scope: { path: "errors/component.duplicate_action.md" }
+    values: { title: component.duplicate_action, nav_order: 9, parent: Diagnostic codes, grand_parent: Reference }
+  - scope: { path: "errors/component.foreign_field.md" }
+    values: { title: component.foreign_field, nav_order: 10, parent: Diagnostic codes, grand_parent: Reference }
+  - scope: { path: "errors/component.type_conflict.md" }
+    values: { title: component.type_conflict, nav_order: 11, parent: Diagnostic codes, grand_parent: Reference }
+  - scope: { path: "errors/component.parameter_conflict.md" }
+    values: { title: component.parameter_conflict, nav_order: 12, parent: Diagnostic codes, grand_parent: Reference }
