@@ -240,8 +240,9 @@ The bindings ship a `Recorder` that writes this format.
 ## Commands
 
 ```text
-zin check <spec>... [--format json] [--symmetry on|off]
-                                      prove every property over every reachable state
+zin check <spec>... [--format json] [--symmetry on|off] [--fix]
+                                      prove every property over every reachable state;
+                                      --fix applies the fixes errors suggest
 zin plan <spec> [--out FILE] [--cover transitions|states|actions|scenarios|pairs] [--max-steps N] [--step-budget N] [--pair-limit N]
          [--observe a,b]              also confirm each state reached under that observation
 zin observe <spec> [--fields a,b]     which states a test run can tell apart
@@ -250,6 +251,7 @@ zin audit <spec>                      list specification changes nothing notices
 zin init <framework> <spec>           print a conformance test skeleton
 zin report <spec>                     Markdown report with Mermaid diagrams
 zin diagram <spec> [scenario]         Mermaid state or sequence diagram
+zin explain [code]                    what a diagnostic code means, with an example and its fix
 ```
 
 Exit codes: `0` ok, `1` the specification or implementation is wrong, `2` the
