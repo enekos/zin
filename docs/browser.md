@@ -38,7 +38,7 @@ The checker explores every interleaving of the two, and the plan contains
 each one as an ordinary sequence of steps. In the test, the adapter holds the
 request and answers it when the plan says `server_ok`, so a race is replayed
 deterministically, with no sleeping and no luck. The full specification is
-[`examples/editor.zin`](../examples/editor.zin).
+[`examples/editor.zin`](https://github.com/enekos/zin/blob/main/examples/editor.zin).
 
 ## The adapter
 
@@ -177,7 +177,7 @@ Under Vitest with jsdom, give the specification as a path: Vite resolves
 
 Run the component suite on every change and the browser suite where the
 integration matters: routing, real requests, focus, what the bundle actually
-ships. [`examples/react-editor`](../examples/react-editor) has both against
+ships. [`examples/react-editor`](https://github.com/enekos/zin/tree/main/examples/react-editor) has both against
 one React application.
 
 ## Sessions nobody scripted

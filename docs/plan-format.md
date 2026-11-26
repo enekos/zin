@@ -72,7 +72,7 @@ Compound values use JSON's own structure, and a runner compares all of them:
 [`plan.schema.json`](plan.schema.json) is the one definition of the file. The
 Python, JavaScript, Go and JUnit runners all follow the contract below, and each runs
 the same executable cases in
-[`bindings/fixtures/contract`](../bindings/fixtures/contract/README.md). A new
+[`bindings/fixtures/contract`](https://github.com/enekos/zin/blob/main/bindings/fixtures/contract/README.md). A new
 runner passes those cases before it ships.
 
 **Loading.** Given a specification and the planning options the caller passed
