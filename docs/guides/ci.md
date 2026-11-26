@@ -26,8 +26,8 @@ The release binaries are the fastest way onto a CI machine:
 ```yaml
 - name: Install zin
   run: |
-    curl -fsSL https://github.com/enekos/zin/releases/download/v0.5.0/zin-v0.5.0-x86_64-unknown-linux-gnu.tar.gz \
-      | tar xz --strip-components=1 -C /usr/local/bin zin-v0.5.0-x86_64-unknown-linux-gnu/zin
+    curl -fsSL https://github.com/enekos/zin/releases/download/v0.6.0/zin-v0.6.0-x86_64-unknown-linux-gnu.tar.gz \
+      | tar xz --strip-components=1 -C /usr/local/bin zin-v0.6.0-x86_64-unknown-linux-gnu/zin
 ```
 
 Each release attaches `zin-<version>-<target>.tar.gz` for `x86_64` and `aarch64`, Linux and macOS,
@@ -136,8 +136,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install zin
         run: |
-          curl -fsSL https://github.com/enekos/zin/releases/download/v0.5.0/zin-v0.5.0-x86_64-unknown-linux-gnu.tar.gz \
-            | tar xz --strip-components=1 -C /usr/local/bin zin-v0.5.0-x86_64-unknown-linux-gnu/zin
+          curl -fsSL https://github.com/enekos/zin/releases/download/v0.6.0/zin-v0.6.0-x86_64-unknown-linux-gnu.tar.gz \
+            | tar xz --strip-components=1 -C /usr/local/bin zin-v0.6.0-x86_64-unknown-linux-gnu/zin
       - run: zin check specs/*.zin
       - run: for spec in specs/*.zin; do zin audit "$spec"; done
       - uses: actions/setup-python@v5

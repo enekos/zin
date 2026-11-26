@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — 2026-11-26
 
 - `zin check --inductive` asks whether the `always` and `never` properties
   together are an inductive invariant: whether every call from any

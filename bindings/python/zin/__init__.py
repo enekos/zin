@@ -46,7 +46,7 @@ __all__ = [
     "run_test",
     "verify",
 ]
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 PLAN_FORMAT = "plan/1"
 # How many of the latest steps a report lists before eliding earlier ones.
