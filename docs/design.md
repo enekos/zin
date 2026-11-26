@@ -53,6 +53,12 @@ scenarios, using the same idea as mutation testing of code.
   values computed in an expression need not be canonical.
 - `always` / `never` are checked as states are discovered and stop
   exploration at the first violation.
+- **Induction** (`check --inductive`) enumerates every well-typed state
+  instead of the reachable ones: the product of each field's values, each in
+  its one encoding. From each state where every `always` and `never` holds,
+  every enabled call must lead to such a state again, without a fault. Since
+  the reachable states already passed, a counterexample is always an
+  unreachable state.
 - **Symmetry.** Values of an `interchangeable` type cannot be named, so
   renaming them maps transitions to transitions and preserves every
   property. Exploration stores only the lexicographically smallest renaming

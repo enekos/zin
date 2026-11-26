@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- `zin check --inductive` asks whether the `always` and `never` properties
+  together are an inductive invariant: whether every call from any
+  well-typed state where they hold, reachable or not, leads to a state where
+  they hold again. When they are not, it shows the first counterexample to
+  induction (a state, a call and the property it breaks or the fault it
+  raises), which points at the `always` that is missing. The result is
+  informational: exit code 0 either way. `check/1` gains an `inductive`
+  object. Rust: `check_induction`, `Induction`.
+
 ## 0.5.0 — 2026-11-25
 
 - Records: `a record with (status is one of draft, paid, items is an integer

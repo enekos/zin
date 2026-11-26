@@ -370,6 +370,63 @@ never
 Checked in every reachable state. A violation comes with the shortest sequence
 of calls that reaches it.
 
+### Inductive invariants
+
+`zin check --inductive` also asks whether the `always` and `never`
+properties together are **inductive**: whether every call, from any
+well-typed state where they all hold, reachable or not, leads to a state
+where they all hold again.
+
+The plain check already proves the properties for every reachable state.
+Induction asks whether they also explain why: whether each action preserves
+them on its own, without help from facts about which states are reachable
+that the specification never states. A property that holds only because of
+such facts breaks far from where you change things, and it is not enough to
+reason about one action, or one method of the implementation, in isolation.
+
+```zin
+system "Lockstep"
+state
+  a is an integer from 0 to 3
+  b is an integer from 0 to 3
+initially
+  a is 0
+  b is 0
+always
+  b is at most 2
+action step
+  requires a < 2
+  a becomes a + 1
+  b becomes b + 1
+```
+
+```console
+$ zin check --inductive lockstep.zin
+ok Lockstep: 3 states, 2 transitions, 1 property, 0 scenarios
+  not inductive: step breaks 'always b is at most 2' (lockstep.zin:9) from a state where the always/never property holds
+    state: a=0, b=2
+    step  ->  a=1, b=3
+  no reachable state looks like this one, but the properties do not rule it out; add an 'always' that does, so that each call preserves them on its own
+```
+
+`b is at most 2` holds because `b` always equals `a`, and `a` stops at 2.
+Saying so makes the properties inductive:
+
+```zin
+always
+  b is at most 2
+  a is b
+```
+
+The counterexample is the first one found, trying states in the order their
+fields are declared and each field's values in their declared order. A state
+where evaluating a property faults does not satisfy the properties; a call that
+faults from a state that does is a counterexample. A specification without
+`always` or `never` properties gets a note instead. Every well-typed state is
+tried, so the number of them may not exceed the state limit. A specification
+that is not inductive still passes `check` (exit code 0): every reachable
+state satisfies its properties.
+
 ### Reachability
 
 ```zin
