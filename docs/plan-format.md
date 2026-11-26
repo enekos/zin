@@ -163,7 +163,7 @@ Written by `zin check --format json`.
    "attempted_calls": 30, "relabelings": 0, "transitions": 9, "up_to_symmetry": false, "terminal_states": 4,
    "properties": [{"property": "eventually ...", "line": 22,
      "span": {"file": "job.zin", "line": 22, "column": 1, "end_column": 41}}],
-   "scenarios": ["Third time lucky"], "notes": []},
+   "scenarios": ["Third time lucky"], "notes": [], "unguarded_reads": []},
   {"file": "stuck.zin", "ok": false, "error": {
      "kind": "violation", "code": "violation", "line": 13,
      "span": {"file": "stuck.zin", "line": 13, "column": 1, "end_column": 30}, "related": null,
@@ -200,6 +200,12 @@ Otherwise it gives a satisfying state, a call from it, and either the state
 the call leads to (`next`) and the `property` it breaks, or `next: null` or a
 state and the `fault` the call or a property raised. `file` and `line` locate
 the property or the fault.
+
+`unguarded_reads` lists the reads that can find no value and that nothing
+guards, which `notes` also holds as text: each has `code`
+(`read.unguarded`), `read` (`left of lease`), `subject` (`lease`), `span` (the
+name that starts the read) and `message`. See
+[notes](language.md#notes).
 
 `code` is a stable identifier for the diagnostic: `name.unknown`,
 `type.mismatch`, `component.field_conflict`, `component.type_conflict`,

@@ -113,6 +113,9 @@ struct Analysis<'a> {
     model: &'a Model,
     /// What each local can hold; `None` means unknown.
     locals: Vec<Option<Values>>,
+    /// How many `or else` reads enclose the expression: an absent value
+    /// there is no fault.
+    recovering: usize,
 }
 
 impl Analysis<'_> {
@@ -173,6 +176,31 @@ impl Analysis<'_> {
                 can_fault: true,
                 order_sensitive: false,
             },
+            Ir::Absent(_) => Facts {
+                values: Values::Range(0, 0),
+                can_fault: self.recovering == 0,
+                order_sensitive: false,
+            },
+            Ir::Recover {
+                probe,
+                value,
+                default,
+            } => {
+                self.recovering += 1;
+                let mut facts = self.facts(value);
+                for part in probe {
+                    let part = self.facts(part);
+                    facts.can_fault |= part.can_fault;
+                    facts.order_sensitive |= part.order_sensitive;
+                }
+                self.recovering -= 1;
+                let default = self.facts(default);
+                Facts {
+                    values: facts.values.union(default.values),
+                    can_fault: facts.can_fault || default.can_fault,
+                    order_sensitive: facts.order_sensitive || default.order_sensitive,
+                }
+            }
             Ir::Tuple(parts) => {
                 let mut facts = Facts::total(BOOLEAN);
                 for part in parts {
@@ -296,6 +324,7 @@ pub(crate) fn order_sensitive(model: &Model) -> bool {
     let mut analysis = Analysis {
         model,
         locals: Vec::new(),
+        recovering: 0,
     };
     let global = model.properties.iter().any(|property| {
         analysis.order_sensitive(&property.condition.ir)
@@ -316,6 +345,7 @@ pub(crate) fn order_sensitive(model: &Model) -> bool {
                     .iter()
                     .map(|param| Some(Values::of(&param.domain)))
                     .collect(),
+                recovering: 0,
             };
             action
                 .requires

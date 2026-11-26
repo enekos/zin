@@ -1293,7 +1293,16 @@ fn parse_unary(tokens: &mut Tokens) -> Result<Expr> {
             value: Box::new(tokens.nested(parse_unary)?),
         })
     } else {
-        parse_primary(tokens)
+        let value = parse_primary(tokens)?;
+        if tokens.peek_word(0) == Some("or") && tokens.peek_word(1) == Some("else") {
+            tokens.index += 2;
+            Ok(Expr::OrElse {
+                value: Box::new(value),
+                default: Box::new(tokens.nested(parse_unary)?),
+            })
+        } else {
+            Ok(value)
+        }
     }
 }
 

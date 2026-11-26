@@ -1,6 +1,6 @@
 use crate::ast::{
     Action, ActionCall, Assignment, BinaryOperator, CallArguments, Condition, Expr, Fairness,
-    PropertyKind, Quantifier, ScenarioStep, Spec, TypeDecl, TypeExpr, UnaryOperator, Value,
+    PropertyKind, Quantifier, ScenarioStep, Span, Spec, TypeDecl, TypeExpr, UnaryOperator, Value,
     display_call,
 };
 use crate::explain::{self, Code};
@@ -223,8 +223,19 @@ pub(crate) enum Ir {
     /// A compound value, one expression per slot. Compiled code takes it
     /// apart; it is never evaluated as a whole.
     Tuple(Vec<Ir>),
-    /// A model fault with this message, such as reading the value of nothing.
+    /// A model fault with this message, such as appending to a full list.
     Fail(String),
+    /// A model fault because a value is absent: the value of nothing, a
+    /// member of a case that does not have it, or an item of an empty list.
+    Absent(String),
+    /// `value`, or `default` when evaluating `probe` and then `value` finds
+    /// an absent value. `probe` holds the other slots of a compound read, so
+    /// every slot of the value falls back together.
+    Recover {
+        probe: Vec<Ir>,
+        value: Box<Ir>,
+        default: Box<Ir>,
+    },
     /// The option at `key`'s position in `keys`; `what` names the keys in
     /// the fault when `key` is not one of them.
     Select {
@@ -314,6 +325,29 @@ pub(crate) struct Fault {
     pub message: String,
 }
 
+/// Why a read can find no value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Absence {
+    /// The optional can be nothing.
+    Nothing,
+    /// The enumeration can hold one of `others`; only `holders` have the member.
+    Case {
+        holders: Vec<String>,
+        others: Vec<String>,
+    },
+    /// The list can be empty.
+    Empty,
+}
+
+/// A read that faults when `subject` is absent, recorded at the name that
+/// starts it.
+#[derive(Debug, Clone)]
+pub(crate) struct PartialRead {
+    pub span: Span,
+    pub subject: String,
+    pub absence: Absence,
+}
+
 #[derive(Debug, Clone)]
 pub struct Model {
     pub name: String,
@@ -336,6 +370,8 @@ pub struct Model {
     pub(crate) locals: usize,
     /// Raw values of each `interchangeable` type; empty when there are none.
     pub(crate) interchangeable: Vec<Vec<i64>>,
+    /// Reads in actions, properties and terminal conditions that fault when a value is absent.
+    pub(crate) partial_reads: Vec<PartialRead>,
 }
 
 pub(crate) fn index32(value: usize) -> u32 {
@@ -678,9 +714,18 @@ fn locate(
     state: &[i64],
     locals: &mut [i64],
 ) -> std::result::Result<usize, String> {
+    find(offset, steps, state, locals).map_err(Stop::message)
+}
+
+fn find(
+    offset: usize,
+    steps: &[KeyStep],
+    state: &[i64],
+    locals: &mut [i64],
+) -> std::result::Result<usize, Stop> {
     let mut slot = offset;
     for step in steps {
-        let key = eval(&step.key, state, locals)?;
+        let key = run(&step.key, state, locals)?;
         slot = key_slot(slot, &step.keys, step.stride, key, &step.field)?;
     }
     Ok(slot)
@@ -747,36 +792,81 @@ fn fetch(values: &[i64], index: usize) -> std::result::Result<i64, String> {
         .ok_or_else(|| "internal error: value out of range".to_string())
 }
 
+/// Why evaluation stopped.
+enum Stop {
+    Absent(String),
+    Fault(String),
+}
+
+impl Stop {
+    fn message(self) -> String {
+        match self {
+            Self::Absent(message) | Self::Fault(message) => message,
+        }
+    }
+}
+
+impl From<String> for Stop {
+    fn from(message: String) -> Self {
+        Self::Fault(message)
+    }
+}
+
+impl From<&str> for Stop {
+    fn from(message: &str) -> Self {
+        Self::Fault(message.to_string())
+    }
+}
+
 pub(crate) fn eval(ir: &Ir, state: &[i64], locals: &mut [i64]) -> std::result::Result<i64, String> {
+    run(ir, state, locals).map_err(Stop::message)
+}
+
+fn run(ir: &Ir, state: &[i64], locals: &mut [i64]) -> std::result::Result<i64, Stop> {
     Ok(match ir {
         Ir::Const(raw) => *raw,
         Ir::Slot(slot) => fetch(state, *slot)?,
         Ir::Local(local) => fetch(locals, *local)?,
-        Ir::Index { offset, steps } => fetch(state, locate(*offset, steps, state, locals)?)?,
-        Ir::Tuple(_) => return Err("internal error: a compound value was evaluated".to_string()),
-        Ir::Fail(message) => return Err(message.clone()),
+        Ir::Index { offset, steps } => fetch(state, find(*offset, steps, state, locals)?)?,
+        Ir::Tuple(_) => return Err("internal error: a compound value was evaluated".into()),
+        Ir::Fail(message) => return Err(Stop::Fault(message.clone())),
+        Ir::Absent(message) => return Err(Stop::Absent(message.clone())),
+        Ir::Recover {
+            probe,
+            value,
+            default,
+        } => {
+            let found = probe
+                .iter()
+                .try_for_each(|part| run(part, state, locals).map(drop))
+                .and_then(|()| run(value, state, locals));
+            match found {
+                Err(Stop::Absent(_)) => run(default, state, locals)?,
+                other => other?,
+            }
+        }
         Ir::Select {
             key,
             keys,
             options,
             what,
         } => {
-            let key = eval(key, state, locals)?;
+            let key = run(key, state, locals)?;
             let option = keys
                 .position(key)
                 .and_then(|position| options.get(position))
                 .ok_or_else(|| format!("{key} is not {what}"))?;
-            eval(option, state, locals)?
+            run(option, state, locals)?
         }
-        Ir::Not(value) => i64::from(eval(value, state, locals)? == 0),
-        Ir::Negate(value) => eval(value, state, locals)?
+        Ir::Not(value) => i64::from(run(value, state, locals)? == 0),
+        Ir::Negate(value) => run(value, state, locals)?
             .checked_neg()
             .ok_or("integer overflow")?,
         Ir::If(condition, then, otherwise) => {
-            if eval(condition, state, locals)? != 0 {
-                eval(then, state, locals)?
+            if run(condition, state, locals)? != 0 {
+                run(then, state, locals)?
             } else {
-                eval(otherwise, state, locals)?
+                run(otherwise, state, locals)?
             }
         }
         Ir::Quantified {
@@ -790,7 +880,7 @@ pub(crate) fn eval(ir: &Ir, state: &[i64], locals: &mut [i64]) -> std::result::R
                 if let Some(cell) = locals.get_mut(*local) {
                     *cell = *value;
                 }
-                if eval(body, state, locals)? != 0 {
+                if run(body, state, locals)? != 0 {
                     count += 1;
                     if *quantifier == Quantifier::Some {
                         return Ok(1);
@@ -806,14 +896,14 @@ pub(crate) fn eval(ir: &Ir, state: &[i64], locals: &mut [i64]) -> std::result::R
             }
         }
         Ir::Binary(operator, left, right) => {
-            let left = eval(left, state, locals)?;
+            let left = run(left, state, locals)?;
             match operator {
                 BinaryOperator::And if left == 0 => return Ok(0),
                 BinaryOperator::Or if left != 0 => return Ok(1),
                 BinaryOperator::Implies if left == 0 => return Ok(1),
                 _ => {}
             }
-            let right = eval(right, state, locals)?;
+            let right = run(right, state, locals)?;
             match operator {
                 BinaryOperator::And | BinaryOperator::Or | BinaryOperator::Implies => right,
                 BinaryOperator::Equal => i64::from(left == right),
@@ -827,12 +917,12 @@ pub(crate) fn eval(ir: &Ir, state: &[i64], locals: &mut [i64]) -> std::result::R
                 BinaryOperator::Multiply => left.checked_mul(right).ok_or("integer overflow")?,
                 BinaryOperator::Divide => {
                     if right == 0 {
-                        return Err("division by zero".to_string());
+                        return Err("division by zero".into());
                     }
                     left.checked_div(right).ok_or("integer overflow")?
                 }
                 BinaryOperator::Has | BinaryOperator::With | BinaryOperator::Without => {
-                    return Err("internal error: a set operator was evaluated".to_string());
+                    return Err("internal error: a set operator was evaluated".into());
                 }
             }
         }
@@ -1369,20 +1459,54 @@ fn unwrap(ir: Ir, ty: Ty, message: &str) -> (Ir, Ty) {
             Ir::If(
                 Box::new(tag.clone()),
                 Box::new(part),
-                Box::new(Ir::Fail(message.to_string())),
+                Box::new(Ir::Absent(message.to_string())),
             )
         })
         .collect();
     unwrap(tuple(inner), *value, message)
 }
 
+/// The name that starts the read `expr`, if it is one.
+fn read_span(expr: &Expr) -> Option<Span> {
+    match expr {
+        Expr::Name { span, .. } | Expr::Index { span, .. } => Some(*span),
+        Expr::Subscript { base, .. } => read_span(base),
+        _ => None,
+    }
+}
+
+/// Whether evaluating `ir` can find an absent value.
+fn can_be_absent(ir: &Ir) -> bool {
+    match ir {
+        Ir::Absent(_) => true,
+        Ir::Const(_) | Ir::Slot(_) | Ir::Local(_) | Ir::Fail(_) => false,
+        Ir::Index { steps, .. } => steps.iter().any(|step| can_be_absent(&step.key)),
+        Ir::Tuple(parts) => parts.iter().any(can_be_absent),
+        Ir::Select { key, options, .. } => can_be_absent(key) || options.iter().any(can_be_absent),
+        Ir::Not(value) | Ir::Negate(value) => can_be_absent(value),
+        Ir::Binary(_, left, right) => can_be_absent(left) || can_be_absent(right),
+        Ir::If(condition, then, otherwise) => {
+            can_be_absent(condition) || can_be_absent(then) || can_be_absent(otherwise)
+        }
+        Ir::Quantified { body, .. } => can_be_absent(body),
+        Ir::Recover { default, .. } => can_be_absent(default),
+    }
+}
+
 /// How a fault message names the value `expr` reads.
-fn describe_expr(expr: &Expr) -> String {
+pub(crate) fn describe_expr(expr: &Expr) -> String {
     match expr {
         Expr::Name { name, .. } => name.clone(),
         Expr::Index { map, key, .. } => format!("{map} of {}", describe_expr(key)),
         Expr::Subscript { base, key } => format!("{}[{}]", describe_expr(base), describe_expr(key)),
         Expr::Literal(value) => value.source(),
+        Expr::OrElse { value, default } => {
+            format!(
+                "{} or else {}",
+                describe_expr(value),
+                describe_expr(default)
+            )
+        }
         _ => "a value".to_string(),
     }
 }
@@ -1483,6 +1607,9 @@ struct Compiler<'a> {
     unnamed: HashMap<u32, String>,
     /// Every enumeration written in the specification, with its line.
     enums: Vec<(Vec<u32>, usize)>,
+    /// The name that starts the read being compiled.
+    reading: Option<Span>,
+    partial_reads: Vec<PartialRead>,
 }
 
 impl<'a> Compiler<'a> {
@@ -1502,6 +1629,8 @@ impl<'a> Compiler<'a> {
             constant_only: false,
             unnamed: HashMap::new(),
             enums: Vec::new(),
+            reading: None,
+            partial_reads: Vec::new(),
         }
     }
 
@@ -1569,6 +1698,7 @@ impl<'a> Compiler<'a> {
                 .into_iter()
                 .map(|(_, ids, _)| ids.into_iter().map(i64::from).collect())
                 .collect(),
+            partial_reads: self.partial_reads,
         };
         crate::symmetry::validate(&model)?;
         let mut scenarios = Compiler {
@@ -1586,6 +1716,8 @@ impl<'a> Compiler<'a> {
             constant_only: false,
             unnamed: HashMap::new(),
             enums: Vec::new(),
+            reading: None,
+            partial_reads: Vec::new(),
         };
         for scenario in &spec.scenarios {
             let mut steps = Vec::new();
@@ -2340,6 +2472,11 @@ impl<'a> Compiler<'a> {
         if !matches!(ty, Ty::Optional(_)) {
             return Ok((ir, ty));
         }
+        if let Some(span) = read_span(expr) {
+            let saved = self.reading.replace(span);
+            self.partial(&describe_expr(expr), Absence::Nothing);
+            self.reading = saved;
+        }
         Ok(unwrap(
             ir,
             ty,
@@ -2428,7 +2565,12 @@ impl<'a> Compiler<'a> {
             Expr::Name { name, span } => self
                 .name(name, line)
                 .map_err(|e| self.suggest_name(e, name, want).within(*span)),
-            Expr::Index { map, key, span } => self.of(map, key, line).map_err(|e| e.within(*span)),
+            Expr::Index { map, key, span } => {
+                let saved = self.reading.replace(*span);
+                let operand = self.of(map, key, line).map_err(|e| e.within(*span));
+                self.reading = saved;
+                operand
+            }
             Expr::Subscript { base, key } => match self.operand(base, None, line)? {
                 Operand::Place(place) => Ok(Operand::Place(self.index(place, key, line)?)),
                 Operand::Value(_, ty) => Err(Error::at(
@@ -2544,6 +2686,7 @@ impl<'a> Compiler<'a> {
                 domain,
                 body,
             } => self.quantified(*quantifier, variable, domain, body, line),
+            Expr::OrElse { value, default } => self.or_else(value, default, line),
         }
     }
 
@@ -2768,6 +2911,7 @@ impl<'a> Compiler<'a> {
             };
             let base = match base {
                 Ok(Operand::Value(ir, ty @ Ty::Optional(_))) => {
+                    self.partial(&describe_expr(key), Absence::Nothing);
                     let (ir, ty) = unwrap(ir, ty, &format!("{} is nothing", describe_expr(key)));
                     Ok(Operand::Value(ir, ty))
                 }
@@ -2784,10 +2928,22 @@ impl<'a> Compiler<'a> {
             };
             if let Ok(Operand::Value(ir, ty @ (Ty::Set(_) | Ty::List { .. } | Ty::Variant(_)))) =
                 &base
-                && let Some(result) = collection_property(name, ir, ty, &describe_expr(key), line)
-                    .or_else(|| self.case_member(name, ir, ty, &describe_expr(key), line))
             {
-                return result.map(|(ir, ty)| Operand::Value(ir, ty));
+                let what = describe_expr(key);
+                if let Some(result) = collection_property(name, ir, ty, &what, line) {
+                    if result.is_ok() && matches!(name, "first" | "last" | "rest") {
+                        self.partial(&what, Absence::Empty);
+                    }
+                    return result.map(|(ir, ty)| Operand::Value(ir, ty));
+                }
+                if let Some(result) = self.case_member(name, ir, ty, &what, line) {
+                    if result.is_ok()
+                        && let Some(absence) = self.missing_member(name, ty)
+                    {
+                        self.partial(&what, absence);
+                    }
+                    return result.map(|(ir, ty)| Operand::Value(ir, ty));
+                }
             }
             match base {
                 Ok(Operand::Place(place)) if place.kind.member(name).is_some() => {
@@ -3531,7 +3687,7 @@ impl<'a> Compiler<'a> {
             .iter()
             .map(|(case, _)| self.symbols.get(at(*case)).cloned().unwrap_or_default())
             .collect();
-        let missing = Ir::Fail(format!(
+        let missing = Ir::Absent(format!(
             "{what} is not {}, so it has no {name}",
             names.join(" or ")
         ));
@@ -3550,6 +3706,87 @@ impl<'a> Compiler<'a> {
             })
             .collect();
         Some(Ok((tuple(read), member_ty)))
+    }
+
+    /// The cases of `ty` that lack the member `name`, when some do.
+    fn missing_member(&self, name: &str, ty: &Ty) -> Option<Absence> {
+        let Ty::Variant(cases) = ty else {
+            return None;
+        };
+        let (holders, others): (Vec<_>, Vec<_>) = cases
+            .iter()
+            .partition(|(_, members)| members.iter().any(|(member, _)| member == name));
+        let names = |cases: Vec<&(u32, Vec<(String, Ty)>)>| -> Vec<String> {
+            cases
+                .into_iter()
+                .map(|(case, _)| self.symbols.get(at(*case)).cloned().unwrap_or_default())
+                .collect()
+        };
+        (!others.is_empty()).then(|| Absence::Case {
+            holders: names(holders),
+            others: names(others),
+        })
+    }
+
+    /// Records that the read being compiled faults when `subject` is absent.
+    fn partial(&mut self, subject: &str, absence: Absence) {
+        if let Some(span) = self.reading {
+            self.partial_reads.push(PartialRead {
+                span,
+                subject: subject.to_string(),
+                absence,
+            });
+        }
+    }
+
+    /// `value or else default`: every slot of `value`, or of `default` where
+    /// reading `value` finds an absent value.
+    fn or_else(&mut self, value: &Expr, default: &Expr, line: usize) -> Result<(Ir, Ty)> {
+        let (read, ty) = self.expr(value, line)?;
+        if !can_be_absent(&read) {
+            return Err(Error::at(
+                line,
+                format!(
+                    "'or else' gives a default for a value that can be absent: the value of an optional, a member of an enumeration case, or first, last or rest of a list; {} is always there",
+                    describe_expr(value)
+                ),
+            ));
+        }
+        let (fallback, fallback_ty) = self.expr_as(default, Some(&ty), line)?;
+        let (fallback, fallback_ty) = unwrap(
+            fallback,
+            fallback_ty,
+            &format!("{} is nothing", describe_expr(default)),
+        );
+        let Some(joined) = ty.join(&fallback_ty) else {
+            return Err(Error::at(
+                line,
+                format!(
+                    "the default after 'or else' must be {}, like {}, not {}",
+                    ty.noun(),
+                    describe_expr(value),
+                    fallback_ty.noun()
+                ),
+            )
+            .coded(Code::TypeMismatch));
+        };
+        let read = coerce(parts(read), &ty, &joined);
+        let fallback = coerce(parts(fallback), &fallback_ty, &joined);
+        let probe = if read.len() > 1 {
+            read.clone()
+        } else {
+            Vec::new()
+        };
+        let slots = read
+            .into_iter()
+            .zip(fallback)
+            .map(|(value, default)| Ir::Recover {
+                probe: probe.clone(),
+                value: Box::new(value),
+                default: Box::new(default),
+            })
+            .collect();
+        Ok((tuple(slots), joined))
     }
 
     fn quantified(
@@ -3696,7 +3933,7 @@ fn collection_property(
                 Ir::If(
                     Box::new(longer(&length, 0)),
                     Box::new(part),
-                    Box::new(Ir::Fail(empty.clone())),
+                    Box::new(Ir::Absent(empty.clone())),
                 )
             };
             Some(match name {

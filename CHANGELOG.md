@@ -26,6 +26,21 @@
 - Unknown type names in declarations, unknown quoted enum values, unknown
   members and keys in record and map literals, and unknown actions and
   parameters in scenarios now have the code `name.unknown` instead of `spec`.
+- `read or else default`: the read, or the default where reading it finds no
+  value: an optional that is nothing (`left of lease or else 0`), a case
+  without the member (`attempt of job or else 0`) or an empty list (`first of
+  queue or else ping`, `rest of queue or else []`). It binds more tightly than
+  arithmetic, the default is evaluated only when used, and only absence falls
+  back: overflow and division by zero still fault. A read that can never be
+  absent is an error. Symmetry reduction stays on for quantifiers whose reads
+  have defaults.
+- `zin check` notes each read that can find no value and that no earlier
+  condition guards (`lease is not nothing`, `job is running`, `queue is not
+  []`, `length of queue > 0`, ...), with the guard and the default to write.
+  `check/1` lists them under `unguarded_reads` with the code
+  `read.unguarded`; Rust: `Verification::unguarded`.
+- Rust API: `ast::Expr::OrElse`. **Breaking** for code that matches `Expr`
+  exhaustively.
 
 ## 0.5.0 — 2026-11-25
 

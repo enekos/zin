@@ -227,6 +227,17 @@ fn variants(expr: &Expr) -> Vec<(String, Expr)> {
             domain: domain.clone(),
             body,
         }),
+        Expr::OrElse { value, default } => {
+            let mut all = boxed(variants(value), |value| Expr::OrElse {
+                value,
+                default: default.clone(),
+            });
+            all.extend(boxed(variants(default), |default| Expr::OrElse {
+                value: value.clone(),
+                default,
+            }));
+            all
+        }
     }
 }
 

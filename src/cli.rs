@@ -285,6 +285,24 @@ fn verification_json(path: &str, spec: Option<&Spec>, verification: &Verificatio
             "notes",
             Json::Array(verification.notes.iter().map(Json::str).collect()),
         ),
+        (
+            "unguarded_reads",
+            Json::Array(
+                verification
+                    .unguarded
+                    .iter()
+                    .map(|read| {
+                        Json::object([
+                            ("code", Json::str("read.unguarded")),
+                            ("read", Json::str(read.read.clone())),
+                            ("subject", Json::str(read.subject.clone())),
+                            ("span", read.span.as_ref().map_or(Json::Null, span_json)),
+                            ("message", Json::str(read.message.clone())),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
     ])
 }
 
