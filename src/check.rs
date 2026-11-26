@@ -1,6 +1,6 @@
 use crate::ast::{Fairness, PropertyKind, Spec};
 use crate::explore::{Graph, explore};
-use crate::model::{CompiledStep, Model, index32};
+use crate::model::{Absence, CompiledStep, Model, index32};
 use crate::properties::check_properties;
 use crate::symmetry::Symmetry;
 use crate::{Error, ErrorKind, Result, Trace, TraceStep};
@@ -44,6 +44,21 @@ impl Default for Options {
     }
 }
 
+/// A read that faults when a value is absent and that no condition before
+/// it guards. No reachable state makes it fault, or the check would have
+/// failed, but nothing in the specification rules it out either.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnguardedRead {
+    /// The expression that reads, such as `left of lease`.
+    pub read: String,
+    /// What can be absent, such as `lease`.
+    pub subject: String,
+    /// The name that starts the read.
+    pub span: Option<crate::SourceSpan>,
+    /// The note `zin check` prints, without its location.
+    pub message: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Verification {
     pub model: Model,
@@ -54,6 +69,9 @@ pub struct Verification {
     pub properties: Vec<PropertyResult>,
     pub scenarios: Vec<ScenarioRun>,
     pub notes: Vec<String>,
+    /// Reads that fault when a value is absent and that nothing guards; each
+    /// is also in [`Self::notes`].
+    pub unguarded: Vec<UnguardedRead>,
     pub terminal_states: usize,
 }
 
@@ -130,6 +148,17 @@ fn verify_unlocated(spec: &Spec, options: Options) -> Result<Verification> {
         }
     }
     let scenarios = run_scenarios(&model, &graph)?;
+    let unguarded = unguarded_reads(spec, &model);
+    notes.extend(unguarded.iter().map(|read| match &read.span {
+        Some(span) if !span.file.is_empty() => {
+            format!(
+                "{}:{}:{}: {}",
+                span.file, span.line, span.column, read.message
+            )
+        }
+        Some(span) => format!("line {}: {}", span.line, read.message),
+        None => read.message.clone(),
+    }));
     Ok(Verification {
         model,
         reduced: graph.reduced(),
@@ -137,8 +166,42 @@ fn verify_unlocated(spec: &Spec, options: Options) -> Result<Verification> {
         properties: checked.results,
         scenarios,
         notes,
+        unguarded,
         terminal_states,
     })
+}
+
+fn unguarded_reads(spec: &Spec, model: &Model) -> Vec<UnguardedRead> {
+    crate::presence::unguarded(spec, model)
+        .into_iter()
+        .map(|read| {
+            let fault = match &read.absence {
+                Absence::Nothing => format!("{} is nothing", read.subject),
+                Absence::Empty => format!("{} is empty", read.subject),
+                Absence::Case { others, .. } => {
+                    format!("{} is {}", read.subject, others.join(" or "))
+                }
+            };
+            let guard = match &read.absence {
+                Absence::Nothing => format!("{} is not nothing", read.subject),
+                Absence::Empty => format!("{} is not []", read.subject),
+                Absence::Case { holders, .. } => format!(
+                    "{} is {}",
+                    read.subject,
+                    holders.first().map_or("?", String::as_str)
+                ),
+            };
+            UnguardedRead {
+                message: format!(
+                    "'{}' faults if {fault}; no reachable state gets there, but nothing guards it: write '{guard} and ...' before it, or '{} or else ...'",
+                    read.read, read.read
+                ),
+                span: spec.source_span(read.span),
+                read: read.read,
+                subject: read.subject,
+            }
+        })
+        .collect()
 }
 
 fn check_terminal(model: &Model, graph: &Graph) -> Result<usize> {

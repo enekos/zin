@@ -34,6 +34,11 @@
   back: overflow and division by zero still fault. A read that can never be
   absent is an error. Symmetry reduction stays on for quantifiers whose reads
   have defaults.
+- `zin check` notes each read that can find no value and that no earlier
+  condition guards (`lease is not nothing`, `job is running`, `queue is not
+  []`, `length of queue > 0`, ...), with the guard and the default to write.
+  `check/1` lists them under `unguarded_reads` with the code
+  `read.unguarded`; Rust: `Verification::unguarded`.
 - Rust API: `ast::Expr::OrElse`. **Breaking** for code that matches `Expr`
   exhaustively.
 

@@ -702,3 +702,37 @@ limited to 64.
 
 After a successful check the tool also notes actions that are never enabled in
 any reachable state, since these are usually mistakes.
+
+It also notes each read that can find no value and that nothing guards. In
+this lease, `tick` is enabled only while there is a lease, but only because
+`ticks` happens to be 1 exactly then:
+
+```zin
+action acquire(w is a worker)
+  requires lease is nothing
+  lease becomes {holder: w, left: 2}
+  ticks becomes 1
+action tick
+  requires ticks is 1
+  ticks becomes left of lease
+  lease becomes nothing
+```
+
+```console
+$ zin check lease.zin
+ok Lease: 4 states, 6 transitions, 0 properties, 0 scenarios
+  note: lease.zin:16:17: 'left of lease' faults if lease is nothing; no reachable state gets there, but nothing guards it: write 'lease is not nothing and ...' before it, or 'left of lease or else ...'
+```
+
+No reachable state makes such a read fault, or the check would have failed,
+but nothing in the specification rules it out, so a change elsewhere can. A
+read is guarded when a condition evaluated before it establishes that the
+value is there: `lease is not nothing`, `last is w`, `job is running`, `job is
+not idle` for every case without the member, `queue is not []`, `length of
+queue > 0` or `queue has m`. The condition counts when it is an earlier
+`requires` of the same action, the left side of `and` or `implies`, the left
+side of `or` (which must then be false), or the condition of an `if` (false
+for the `else` branch). Conditions are matched by the text of what they read,
+so a guard on `lease of w` does not cover `lease of v`, and comparing with
+another state field establishes nothing. `zin check --format json` lists them under
+`unguarded_reads` as well.

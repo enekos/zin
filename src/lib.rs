@@ -15,6 +15,7 @@ mod model;
 mod observe;
 mod parser;
 mod plan;
+mod presence;
 mod properties;
 mod report;
 mod scaffold;
@@ -25,7 +26,8 @@ mod trace;
 pub use ast::{Spec, Value};
 pub use audit::{Audit, Distinction, Mutant, MutantFate, audit};
 pub use check::{
-    Options, PropertyResult, ScenarioEvent, ScenarioRun, Verification, verify, verify_with,
+    Options, PropertyResult, ScenarioEvent, ScenarioRun, UnguardedRead, Verification, verify,
+    verify_with,
 };
 pub use component::verify_component;
 pub use explain::{Explanation, explanation, explanations};

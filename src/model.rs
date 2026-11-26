@@ -1,6 +1,6 @@
 use crate::ast::{
     Action, ActionCall, Assignment, BinaryOperator, CallArguments, Condition, Expr, Fairness,
-    PropertyKind, Quantifier, ScenarioStep, Spec, TypeDecl, TypeExpr, UnaryOperator, Value,
+    PropertyKind, Quantifier, ScenarioStep, Span, Spec, TypeDecl, TypeExpr, UnaryOperator, Value,
     display_call,
 };
 use crate::explain::{self, Code};
@@ -325,6 +325,29 @@ pub(crate) struct Fault {
     pub message: String,
 }
 
+/// Why a read can find no value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Absence {
+    /// The optional can be nothing.
+    Nothing,
+    /// The enumeration can hold one of `others`; only `holders` have the member.
+    Case {
+        holders: Vec<String>,
+        others: Vec<String>,
+    },
+    /// The list can be empty.
+    Empty,
+}
+
+/// A read that faults when `subject` is absent, recorded at the name that
+/// starts it.
+#[derive(Debug, Clone)]
+pub(crate) struct PartialRead {
+    pub span: Span,
+    pub subject: String,
+    pub absence: Absence,
+}
+
 #[derive(Debug, Clone)]
 pub struct Model {
     pub name: String,
@@ -347,6 +370,8 @@ pub struct Model {
     pub(crate) locals: usize,
     /// Raw values of each `interchangeable` type; empty when there are none.
     pub(crate) interchangeable: Vec<Vec<i64>>,
+    /// Reads in actions, properties and terminal conditions that fault when a value is absent.
+    pub(crate) partial_reads: Vec<PartialRead>,
 }
 
 pub(crate) fn index32(value: usize) -> u32 {
@@ -1441,6 +1466,15 @@ fn unwrap(ir: Ir, ty: Ty, message: &str) -> (Ir, Ty) {
     unwrap(tuple(inner), *value, message)
 }
 
+/// The name that starts the read `expr`, if it is one.
+fn read_span(expr: &Expr) -> Option<Span> {
+    match expr {
+        Expr::Name { span, .. } | Expr::Index { span, .. } => Some(*span),
+        Expr::Subscript { base, .. } => read_span(base),
+        _ => None,
+    }
+}
+
 /// Whether evaluating `ir` can find an absent value.
 fn can_be_absent(ir: &Ir) -> bool {
     match ir {
@@ -1460,7 +1494,7 @@ fn can_be_absent(ir: &Ir) -> bool {
 }
 
 /// How a fault message names the value `expr` reads.
-fn describe_expr(expr: &Expr) -> String {
+pub(crate) fn describe_expr(expr: &Expr) -> String {
     match expr {
         Expr::Name { name, .. } => name.clone(),
         Expr::Index { map, key, .. } => format!("{map} of {}", describe_expr(key)),
@@ -1573,6 +1607,9 @@ struct Compiler<'a> {
     unnamed: HashMap<u32, String>,
     /// Every enumeration written in the specification, with its line.
     enums: Vec<(Vec<u32>, usize)>,
+    /// The name that starts the read being compiled.
+    reading: Option<Span>,
+    partial_reads: Vec<PartialRead>,
 }
 
 impl<'a> Compiler<'a> {
@@ -1592,6 +1629,8 @@ impl<'a> Compiler<'a> {
             constant_only: false,
             unnamed: HashMap::new(),
             enums: Vec::new(),
+            reading: None,
+            partial_reads: Vec::new(),
         }
     }
 
@@ -1659,6 +1698,7 @@ impl<'a> Compiler<'a> {
                 .into_iter()
                 .map(|(_, ids, _)| ids.into_iter().map(i64::from).collect())
                 .collect(),
+            partial_reads: self.partial_reads,
         };
         crate::symmetry::validate(&model)?;
         let mut scenarios = Compiler {
@@ -1676,6 +1716,8 @@ impl<'a> Compiler<'a> {
             constant_only: false,
             unnamed: HashMap::new(),
             enums: Vec::new(),
+            reading: None,
+            partial_reads: Vec::new(),
         };
         for scenario in &spec.scenarios {
             let mut steps = Vec::new();
@@ -2430,6 +2472,11 @@ impl<'a> Compiler<'a> {
         if !matches!(ty, Ty::Optional(_)) {
             return Ok((ir, ty));
         }
+        if let Some(span) = read_span(expr) {
+            let saved = self.reading.replace(span);
+            self.partial(&describe_expr(expr), Absence::Nothing);
+            self.reading = saved;
+        }
         Ok(unwrap(
             ir,
             ty,
@@ -2518,7 +2565,12 @@ impl<'a> Compiler<'a> {
             Expr::Name { name, span } => self
                 .name(name, line)
                 .map_err(|e| self.suggest_name(e, name, want).within(*span)),
-            Expr::Index { map, key, span } => self.of(map, key, line).map_err(|e| e.within(*span)),
+            Expr::Index { map, key, span } => {
+                let saved = self.reading.replace(*span);
+                let operand = self.of(map, key, line).map_err(|e| e.within(*span));
+                self.reading = saved;
+                operand
+            }
             Expr::Subscript { base, key } => match self.operand(base, None, line)? {
                 Operand::Place(place) => Ok(Operand::Place(self.index(place, key, line)?)),
                 Operand::Value(_, ty) => Err(Error::at(
@@ -2859,6 +2911,7 @@ impl<'a> Compiler<'a> {
             };
             let base = match base {
                 Ok(Operand::Value(ir, ty @ Ty::Optional(_))) => {
+                    self.partial(&describe_expr(key), Absence::Nothing);
                     let (ir, ty) = unwrap(ir, ty, &format!("{} is nothing", describe_expr(key)));
                     Ok(Operand::Value(ir, ty))
                 }
@@ -2875,10 +2928,22 @@ impl<'a> Compiler<'a> {
             };
             if let Ok(Operand::Value(ir, ty @ (Ty::Set(_) | Ty::List { .. } | Ty::Variant(_)))) =
                 &base
-                && let Some(result) = collection_property(name, ir, ty, &describe_expr(key), line)
-                    .or_else(|| self.case_member(name, ir, ty, &describe_expr(key), line))
             {
-                return result.map(|(ir, ty)| Operand::Value(ir, ty));
+                let what = describe_expr(key);
+                if let Some(result) = collection_property(name, ir, ty, &what, line) {
+                    if result.is_ok() && matches!(name, "first" | "last" | "rest") {
+                        self.partial(&what, Absence::Empty);
+                    }
+                    return result.map(|(ir, ty)| Operand::Value(ir, ty));
+                }
+                if let Some(result) = self.case_member(name, ir, ty, &what, line) {
+                    if result.is_ok()
+                        && let Some(absence) = self.missing_member(name, ty)
+                    {
+                        self.partial(&what, absence);
+                    }
+                    return result.map(|(ir, ty)| Operand::Value(ir, ty));
+                }
             }
             match base {
                 Ok(Operand::Place(place)) if place.kind.member(name).is_some() => {
@@ -3641,6 +3706,37 @@ impl<'a> Compiler<'a> {
             })
             .collect();
         Some(Ok((tuple(read), member_ty)))
+    }
+
+    /// The cases of `ty` that lack the member `name`, when some do.
+    fn missing_member(&self, name: &str, ty: &Ty) -> Option<Absence> {
+        let Ty::Variant(cases) = ty else {
+            return None;
+        };
+        let (holders, others): (Vec<_>, Vec<_>) = cases
+            .iter()
+            .partition(|(_, members)| members.iter().any(|(member, _)| member == name));
+        let names = |cases: Vec<&(u32, Vec<(String, Ty)>)>| -> Vec<String> {
+            cases
+                .into_iter()
+                .map(|(case, _)| self.symbols.get(at(*case)).cloned().unwrap_or_default())
+                .collect()
+        };
+        (!others.is_empty()).then(|| Absence::Case {
+            holders: names(holders),
+            others: names(others),
+        })
+    }
+
+    /// Records that the read being compiled faults when `subject` is absent.
+    fn partial(&mut self, subject: &str, absence: Absence) {
+        if let Some(span) = self.reading {
+            self.partial_reads.push(PartialRead {
+                span,
+                subject: subject.to_string(),
+                absence,
+            });
+        }
     }
 
     /// `value or else default`: every slot of `value`, or of `default` where
