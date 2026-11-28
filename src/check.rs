@@ -120,7 +120,25 @@ pub fn verify_with(spec: &Spec, options: Options) -> Result<Verification> {
     verify_unlocated(spec, options).map_err(|e| spec.locate(e))
 }
 
+/// A counterexample found on symmetry representatives that does not replay
+/// as a real run would be reported wrongly, so the check is repeated on the
+/// full state space instead.
 fn verify_unlocated(spec: &Spec, options: Options) -> Result<Verification> {
+    match verify_once(spec, options) {
+        Err(error) if error.unlifted() => {
+            let mut verification = verify_once(spec, Options { symmetry: false })?;
+            verification.notes.insert(
+                0,
+                "symmetry reduction is off: a counterexample on representatives did not replay as a real run, so the full state space was checked"
+                    .to_string(),
+            );
+            Ok(verification)
+        }
+        result => result,
+    }
+}
+
+fn verify_once(spec: &Spec, options: Options) -> Result<Verification> {
     let model = Model::compile_unlocated(spec)?;
     let mut notes = Vec::new();
     let symmetry = if options.symmetry && !model.interchangeable.is_empty() {
@@ -220,7 +238,7 @@ fn check_terminal(model: &Model, graph: &Graph) -> Result<usize> {
             .holds(terminal, graph.state(id), &mut locals)
             .map_err(|fault| {
                 Error::of(ErrorKind::Model, Some(fault.line), fault.message)
-                    .with_trace(graph.trace_to(model, id))
+                    .with_counterexample(graph.trace_to(model, id))
             })?;
         if !allowed {
             return Err(Error::of(
@@ -231,7 +249,7 @@ fn check_terminal(model: &Model, graph: &Graph) -> Result<usize> {
                     terminal.source
                 ),
             )
-            .with_trace(graph.trace_to(model, id)));
+            .with_counterexample(graph.trace_to(model, id)));
         }
     }
     Ok(count)

@@ -72,7 +72,12 @@ impl Graph {
         path_to(&self.parents, state)
     }
 
-    pub(crate) fn trace(&self, model: &Model, path: &[Edge], loop_from: Option<usize>) -> Trace {
+    pub(crate) fn trace(
+        &self,
+        model: &Model,
+        path: &[Edge],
+        loop_from: Option<usize>,
+    ) -> Counterexample {
         trace(model, self, path, loop_from)
     }
 
@@ -84,7 +89,7 @@ impl Graph {
         }
     }
 
-    pub(crate) fn trace_to(&self, model: &Model, state: u32) -> Trace {
+    pub(crate) fn trace_to(&self, model: &Model, state: u32) -> Counterexample {
         self.trace(model, &self.path_to(state), None)
     }
 
@@ -116,13 +121,31 @@ fn path_to(parents: &[Option<(u32, u32)>], state: u32) -> Vec<Edge> {
     path
 }
 
-fn trace(model: &Model, graph: &Graph, path: &[Edge], loop_from: Option<usize>) -> Trace {
-    if let Some(symmetry) = &graph.symmetry
-        && let Some((trace, _)) = symmetry.lift(model, &graph.states, path, loop_from)
-    {
-        return trace;
+/// A trace to report, and whether it is a real run of the specification.
+/// Under symmetry a path through representatives is a run only once lifted;
+/// a path that does not lift means the reduction was unsound for this model.
+pub(crate) struct Counterexample {
+    pub(crate) trace: Trace,
+    pub(crate) lifted: bool,
+}
+
+fn trace(model: &Model, graph: &Graph, path: &[Edge], loop_from: Option<usize>) -> Counterexample {
+    let Some(symmetry) = &graph.symmetry else {
+        return Counterexample {
+            trace: representative_trace(model, graph, path, loop_from),
+            lifted: true,
+        };
+    };
+    match symmetry.lift(model, &graph.states, path, loop_from) {
+        Some((trace, _)) => Counterexample {
+            trace,
+            lifted: true,
+        },
+        None => Counterexample {
+            trace: representative_trace(model, graph, path, loop_from),
+            lifted: false,
+        },
     }
-    representative_trace(model, graph, path, loop_from)
 }
 
 fn representative_trace(
@@ -154,7 +177,7 @@ struct Explorer<'a> {
 impl Explorer<'_> {
     fn fail(&self, kind: ErrorKind, line: usize, message: String, state: u32) -> Error {
         Error::of(kind, Some(line).filter(|line| *line > 0), message)
-            .with_trace(self.graph.trace_to(self.model, state))
+            .with_counterexample(self.graph.trace_to(self.model, state))
     }
 
     /// A model fault while taking `call` from `state`. Under symmetry the
@@ -174,12 +197,10 @@ impl Explorer<'_> {
                         Some(fault.line).filter(|l| *l > 0),
                         message,
                     )
-                    .with_trace(representative_trace(
-                        model,
-                        &self.graph,
-                        &path,
-                        None,
-                    ))
+                    .with_counterexample(Counterexample {
+                        trace: representative_trace(model, &self.graph, &path, None),
+                        lifted: false,
+                    })
                 });
         }
         let message = format!("{}: {}", model.call_text(call), fault.message);

@@ -304,3 +304,50 @@ fn bounded_arithmetic_in_quantifiers_keeps_the_reduction() {
     assert!(verification.reduced, "{:?}", verification.notes);
     assert_eq!(verification.graph.state_count(), 9);
 }
+
+const MARKED: &str = "\
+system \"Marked\"
+types
+  interchangeable worker is one of ann, ben, cid
+state
+  load is a map from worker to an integer from 0 to 2
+  mark is a worker or nothing
+initially
+  load of every worker is 0
+  mark is nothing
+never some w in worker satisfies mark is w and load of w is 2
+action pick(w is a worker)
+  requires mark is nothing
+  mark becomes w
+action skew
+  requires mark is not nothing
+  load becomes {ann: 0, ben: 0, cid: 0}
+";
+
+#[test]
+fn a_map_literal_cannot_give_interchangeable_keys_different_values() {
+    let uniform = reduced(MARKED).unwrap();
+    assert!(uniform.reduced);
+    for (needle, replacement, line) in [
+        (
+            "load becomes {ann: 0, ben: 0, cid: 0}",
+            "load becomes {ann: 0, ben: 0, cid: 2}",
+            16,
+        ),
+        (
+            "never some w",
+            "never load is {ann: 1, ben: 0, cid: 0}\nnever some w",
+            10,
+        ),
+        (
+            "  load of every worker is 0\n",
+            "  load is {ann: 0, ben: 1, cid: 0}\n",
+            8,
+        ),
+    ] {
+        let error = full(&MARKED.replacen(needle, replacement, 1)).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Spec);
+        assert_eq!(error.line, Some(line), "{error}");
+        assert!(error.message.contains("singles them out"), "{error}");
+    }
+}

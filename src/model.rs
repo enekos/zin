@@ -2765,6 +2765,7 @@ impl<'a> Compiler<'a> {
                 .coded(Code::NameUnknown)
                 .suggest_closest(extra, names.iter().map(String::as_str)));
         }
+        self.check_symmetric_map_literal(members, keys, line)?;
         let mut irs = Vec::new();
         let mut joined = value.clone();
         for name in names {
@@ -2784,6 +2785,35 @@ impl<'a> Compiler<'a> {
                 keys: keys.clone(),
                 value: Box::new(joined),
             },
+        ))
+    }
+
+    /// A map literal names each key, so over an interchangeable type it
+    /// singles values out unless every key gets the same value.
+    fn check_symmetric_map_literal(
+        &self,
+        members: &[(String, Expr)],
+        keys: &Domain,
+        line: usize,
+    ) -> Result<()> {
+        let Domain::Enum(ids) = keys else {
+            return Ok(());
+        };
+        let Some(kind) = ids.iter().find_map(|id| self.unnamed.get(id)) else {
+            return Ok(());
+        };
+        let mut entries = members.iter().map(|(_, entry)| entry);
+        let first = entries.next();
+        if entries.all(|entry| Some(entry) == first) {
+            return Ok(());
+        }
+        Err(Error::at(
+            line,
+            format!(
+                "this map is keyed by the interchangeable type {kind}, so giving its keys \
+                 different values singles them out; give every key the same value, or set \
+                 entries through a parameter or a quantifier"
+            ),
         ))
     }
 

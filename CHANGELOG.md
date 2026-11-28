@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Fix: a map literal keyed by an interchangeable type could give its keys
+  different values (`load becomes {ann: 0, ben: 0, cid: 2}`), which singles
+  values out. Symmetry reduction then explored the wrong representatives:
+  `zin check` could pass a specification that `--symmetry off` rejects, or
+  print a counterexample that was not a real run. Such literals are now a
+  specification error, in `initially`, actions and properties alike.
+- A counterexample found on symmetry representatives that does not replay as
+  a real run is no longer printed. The check is repeated on the full state
+  space, with a note.
+
 ## 0.6.0 — 2026-11-26
 
 - `zin check --inductive` asks whether the `always` and `never` properties

@@ -204,6 +204,10 @@ The checker holds you to the promise:
   spec: sym-name.zin:12:18: ann is an interchangeable worker, so the specification cannot single it out; refer to it through a parameter or a quantifier
   ```
 
+- **A map literal keyed by an interchangeable type gives every key the same
+  value.** `load becomes {ann: 0, ben: 0, cid: 0}` is fine;
+  `{ann: 0, ben: 0, cid: 2}` names `cid` as surely as `load of cid` does.
+
 - **Another enumeration holds all of the values or none.** `holder is one of
   ann, ben, cid, dot, nobody` is fine; a subset is not:
 
