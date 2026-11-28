@@ -2766,7 +2766,7 @@ impl<'a> Compiler<'a> {
                 .suggest_closest(extra, names.iter().map(String::as_str)));
         }
         self.check_symmetric_map_literal(members, keys, line)?;
-        let mut irs = Vec::new();
+        let mut entries = Vec::with_capacity(names.len());
         let mut joined = value.clone();
         for name in names {
             let Some((_, entry)) = members.iter().find(|(member, _)| *member == name) else {
@@ -2776,9 +2776,16 @@ impl<'a> Compiler<'a> {
                 ));
             };
             let (ir, ty) = self.expr_as(entry, Some(value), line)?;
-            joined = joined.join(&ty).unwrap_or(ty);
-            irs.extend(parts(ir));
+            joined = joined.join(&ty).unwrap_or_else(|| ty.clone());
+            entries.push((ir, ty));
         }
+        // Every entry takes the same slots, so each is laid out as the joined
+        // type: `{a: 1, b: nothing}` must not pack an integer next to an
+        // absent optional.
+        let irs = entries
+            .into_iter()
+            .flat_map(|(ir, ty)| coerce(parts(ir), &ty, &joined))
+            .collect();
         Ok((
             tuple(irs),
             Ty::Map {

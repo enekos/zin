@@ -8,6 +8,12 @@
   `zin check` could pass a specification that `--symmetry off` rejects, or
   print a counterexample that was not a real run. Such literals are now a
   specification error, in `initially`, actions and properties alike.
+- Fix: a map literal whose entries have different types
+  (`{ka: 1, kb: nothing}`, `{ka: idle, kb: run with {n: 2}}`) was laid out
+  with each entry in its own width, so values landed in the wrong keys:
+  assignments stored the wrong map, comparisons with it were wrong, and
+  `initially` rejected valid values. Each entry now takes the map's value
+  layout.
 - A counterexample found on symmetry representatives that does not replay as
   a real run is no longer printed. The check is repeated on the full state
   space, with a note.
