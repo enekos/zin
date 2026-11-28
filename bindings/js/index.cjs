@@ -21,7 +21,7 @@ const { basename, dirname, join } = require("node:path");
 const { fileURLToPath } = require("node:url");
 const recorder = require("./recorder.cjs");
 
-const { plain, jsonable } = recorder;
+const { Unawaited, plain, jsonable } = recorder;
 
 const PLAN_FORMAT = "plan/1";
 // How many of the latest steps a report lists before eliding earlier ones.
@@ -253,25 +253,69 @@ function show(value) {
   return String(value);
 }
 
-function same(expected, observed) {
+const own = (object, key) => Object.hasOwn(object, key);
+
+/** The plan type of one entry inside `type`: a map value, record member or variant case. */
+function inner(type, key) {
+  switch (type?.kind) {
+    case "map":
+      return type.value;
+    case "record":
+      return type.members?.find((member) => member.name === key)?.type;
+    case "variant": {
+      const found = type.cases?.find((item) => item.name === key);
+      return found === undefined ? undefined : { kind: "record", members: found.members };
+    }
+    default:
+      return undefined;
+  }
+}
+
+/** Whether each observed item pairs with its own expected item: a bijection (sizes already equal). */
+function paired(expected, observed) {
+  const owner = new Array(expected.length).fill(-1);
+  const assign = (at, seen) => {
+    for (let index = 0; index < expected.length; index++) {
+      if (seen[index] || !same(expected[index], observed[at])) continue;
+      seen[index] = true;
+      if (owner[index] < 0 || assign(owner[index], seen)) {
+        owner[index] = at;
+        return true;
+      }
+    }
+    return false;
+  };
+  return observed.every((_, at) => assign(at, new Array(expected.length).fill(false)));
+}
+
+/**
+ * Whether an observed value matches the model's. A reported value must be
+ * complete: a map lists exactly the expected keys and a record exactly its
+ * members, at every depth. A `Set` matches as a set, unless `type` (the
+ * field's plan type, when known) says the value is a list.
+ */
+function same(expected, observed, type) {
+  if (type?.kind === "optional") type = type.value;
   if (expected === null) return observed === null || observed === undefined;
   if (Array.isArray(expected)) {
     if (observed instanceof Set) {
-      return observed.size === expected.length && [...observed].every((item) => expected.some((wanted) => same(wanted, item)));
+      if (type?.kind === "list") return false;
+      return observed.size === expected.length && paired(expected, [...observed]);
     }
     return (
       Array.isArray(observed) &&
       observed.length === expected.length &&
-      observed.every((item, index) => same(expected[index], item))
+      observed.every((item, index) => same(expected[index], item, type?.kind === "list" ? type.element : undefined))
     );
   }
   if (typeof expected === "object") {
+    if (observed === null || typeof observed !== "object" || Array.isArray(observed) || observed instanceof Set) {
+      return false;
+    }
+    const keys = Object.keys(observed);
     return (
-      observed !== null &&
-      typeof observed === "object" &&
-      !Array.isArray(observed) &&
-      !(observed instanceof Set) &&
-      Object.entries(observed).every(([key, item]) => key in expected && same(expected[key], item))
+      keys.length === Object.keys(expected).length &&
+      keys.every((key) => own(expected, key) && same(expected[key], observed[key], inner(type, key)))
     );
   }
   return expected === observed;
@@ -290,6 +334,8 @@ class Runner {
     this.params = new Map(
       plan.actions.map((action) => [action.name, action.params.map((param) => param.name)]),
     );
+    // Field types from the plan, so a `Set` observed for a list is a mismatch.
+    this.types = new Map((plan.fields ?? []).map((field) => [field.name, field.type]));
   }
 
   text([call, to]) {
@@ -310,18 +356,27 @@ class Runner {
   async mismatch(adapter, state, after, progress) {
     const observed = await adapter.observe();
     if (observed === null || observed === undefined) return null;
-    if (typeof observed !== "object") {
-      return { message: `observe() must return an object of state fields, not ${typeof observed}` };
+    if (typeof observed !== "object" || Array.isArray(observed) || observed instanceof Set) {
+      const kind = Array.isArray(observed) ? "an array" : observed instanceof Set ? "a set" : typeof observed;
+      return { message: `observe() must return an object of state fields, not ${kind}` };
     }
     const expected = this.plan.states[state];
-    for (const [field, raw] of Object.entries(plain(observed))) {
-      if (!(field in expected)) {
+    const fields = observed instanceof Map ? [...observed].map(([key, item]) => [String(key), item]) : Object.entries(observed);
+    for (const [field, raw] of fields) {
+      if (!own(expected, field)) {
         return { message: `observe() returned '${field}', which is not a state field of the specification` };
       }
+      let value;
+      try {
+        value = plain(raw, field);
+      } catch (error) {
+        if (error instanceof Unawaited) return { message: `observe() returned ${error.message}` };
+        throw error;
+      }
       progress?.fields.add(field);
-      if (!same(expected[field], raw)) {
+      if (!same(expected[field], value, this.types.get(field))) {
         return {
-          message: `${after}, ${field} is ${show(raw)}, but the specification says ${show(expected[field])}`,
+          message: `${after}, ${field} is ${show(value)}, but the specification says ${show(expected[field])}`,
           waitable: true,
         };
       }

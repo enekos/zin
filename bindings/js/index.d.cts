@@ -7,7 +7,11 @@ export interface Adapter {
   actions: Record<string, (args: Record<string, Scalar>) => Awaitable<unknown>>;
   /** Which thrown errors mean "the implementation refused this action". */
   rejects?: (error: unknown) => boolean;
-  /** Any subset of the specification's state fields. */
+  /**
+   * Any subset of the specification's state fields, each one complete: a map
+   * lists every key and a record every member, at every depth. Await values
+   * first; an observed promise, or an array in place of the object, fails the test.
+   */
   observe?: () => Awaitable<Observed | null | undefined>;
   /** Awaited after every action, before the state is observed: wait here for the implementation to come to rest. */
   settle?: () => Awaitable<void>;

@@ -125,7 +125,7 @@ compared. Values are normalized:
 | a `fmt.Stringer` | its `String()` (enums) |
 | `nil`, a nil pointer | nothing |
 | a non-nil pointer | what it points to |
-| `map[K]V` | a map, keys as text; may be partial |
+| `map[K]V` | a map, keys as text; lists every key |
 | a struct | a record of its exported fields, named by a `zin` tag, else a `json` tag, else the field name with a lower-case first letter |
 | a slice or array | a list, in order |
 | `zin.Set{...}` | a set, in any order |

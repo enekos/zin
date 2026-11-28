@@ -128,7 +128,8 @@ fn reduced_and_full_checks_agree_on_a_broken_record_model() {
 }
 
 /// An order book that keeps each order as a tuple, observed as nested maps.
-/// It does not track payment days, so it never observes `paid_on`.
+/// It does not track payment days, so it never observes `paid_on`; the
+/// fields it does observe are complete.
 #[derive(Default)]
 struct Book {
     orders: BTreeMap<String, (String, i64)>,
@@ -156,19 +157,19 @@ impl Adapter for Book {
     }
 
     fn observe(&self) -> Option<State> {
-        let orders = self
-            .orders
-            .iter()
-            .map(|(customer, (status, items))| {
-                let order = if status == "draft" {
-                    BTreeMap::from([("items".to_string(), Value::Integer(*items))])
-                } else {
-                    BTreeMap::from([
-                        ("status".to_string(), Value::Symbol(status.clone())),
-                        ("items".to_string(), Value::Integer(*items)),
-                    ])
-                };
-                (customer.clone(), Value::Map(order))
+        let orders = ["ann", "ben"]
+            .into_iter()
+            .map(|customer| {
+                let (status, items) = self
+                    .orders
+                    .get(customer)
+                    .cloned()
+                    .unwrap_or_else(|| ("draft".into(), 0));
+                let order = BTreeMap::from([
+                    ("status".to_string(), Value::Symbol(status)),
+                    ("items".to_string(), Value::Integer(items)),
+                ]);
+                (customer.to_string(), Value::Map(order))
             })
             .collect();
         let mut state = State::from([("orders".to_string(), Value::Map(orders))]);

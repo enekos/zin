@@ -36,9 +36,11 @@ committed `queue.plan.json` if you want test runs without the binary, in
 Implement `Zin.Adapter`: `call(action, arguments)` performs one action, with
 arguments by parameter name as `Long`, `Boolean` or `String`, and returns
 `false` for a refusal; any exception fails the test with that exception.
-`observe()` returns any subset of the state fields (enum constants compare by
-`toString()`, map keys by their text), or `null` to compare nothing. `close()`
-releases the implementation.
+`observe()` returns any subset of the state fields, or `null` to compare
+nothing. A field it returns must be complete: a map lists every key and a
+record every member, all the way down (enum constants compare by `toString()`,
+map keys by their text). A `Set` matches a set field in any order but never a
+list field. `close()` releases the implementation.
 
 `Zin.load(spec, new Zin.Options().cover("pairs").pairLimit(50))` passes
 planning options (`cover`, `maxSteps`, `stepBudget`, `pairLimit`,

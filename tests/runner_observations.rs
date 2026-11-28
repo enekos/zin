@@ -34,7 +34,7 @@ fn state(json: &Json) -> State {
 }
 
 /// The declared type of a fixture value. Objects become records, which match
-/// observations the way maps do: a subset of the keys, every key known.
+/// observations the way maps do: every key, and nothing else.
 fn kind(item: &Value) -> String {
     match item {
         Value::Boolean(_) => "a boolean".into(),
@@ -104,4 +104,30 @@ fn rust_and_trace_replay_share_the_runner_observation_contract() {
             "{case:?}"
         );
     }
+}
+
+#[test]
+fn a_set_observation_holds_each_member_once() {
+    let src = "\
+system \"Rooms\"
+types
+  person is one of ann, ben
+state
+  inside is a set of person
+initially
+  inside is []
+action enter(p is a person)
+  requires not inside has p
+  inside becomes inside with p
+";
+    let checked = verify(&parse(src).unwrap()).unwrap();
+    let run = |second: &str| {
+        let trace = format!(
+            "{{\"action\":\"enter\",\"args\":[\"ann\"],\"state\":{{\"inside\":[\"ann\"]}}}}\n\
+             {{\"action\":\"enter\",\"args\":[\"ben\"],\"state\":{{\"inside\":{second}}}}}\n"
+        );
+        check_trace(&checked.model, &trace)
+    };
+    assert!(run("[\"ben\",\"ann\"]").is_ok());
+    assert!(run("[\"ann\",\"ann\"]").is_err());
 }

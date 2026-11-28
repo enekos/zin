@@ -135,7 +135,7 @@ A `Map<String, ?>` keyed by field name. Values are normalized:
 | `Boolean`, `String` | themselves |
 | an enum constant | its `toString()` |
 | `null`, empty `Optional` | nothing; a present `Optional` is its value |
-| `Map` | a map (keys by their text) or a record; may be partial |
+| `Map` | a map (keys by their text) or a record; lists every key |
 | a `record` | a record of its components |
 | `Set` | a set, in any order |
 | other `Collection` (`List`) | a list, in order |

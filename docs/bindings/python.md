@@ -143,7 +143,7 @@ Values are normalized first:
 | `int`, `bool`, `str` | themselves; `True` is not `1`, `False` is not `0` |
 | `None` | nothing (an optional without a value) |
 | `enum.Enum` member | its value if that is a `str`, else its name |
-| `dict` | a map (keys as text: `True` → `"true"`) or a record; may be partial |
+| `dict` | a map (keys as text: `True` → `"true"`) or a record; lists every key |
 | dataclass instance, named tuple | a record of its fields |
 | `set`, `frozenset` | a set, in any order |
 | `list`, `tuple` | a list, in order |

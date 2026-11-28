@@ -8,6 +8,14 @@
   `zin check` could pass a specification that `--symmetry off` rejects, or
   print a counterexample that was not a real run. Such literals are now a
   specification error, in `initially`, actions and properties alike.
+- Breaking: a field an adapter observes must be complete. An observed map
+  lists every key, a record every member, a variant its case and that case's
+  members, at every depth; to observe less, leave the whole field out. Before,
+  `observe()` returning `{}` for a map, record or variant matched any value, so
+  an implementation that reported nothing passed. A native set now matches
+  only with each member once (`zin.Set{"ann", "ann"}` no longer matches
+  `[ann, ben]`) and is a mismatch for a list field. The same rule applies in
+  every runner (Rust, Python, JavaScript, Go, JUnit) and in `zin trace`.
 - Fix: a map literal whose entries have different types
   (`{ka: 1, kb: nothing}`, `{ka: idle, kb: run with {n: 2}}`) was laid out
   with each entry in its own width, so values landed in the wrong keys:

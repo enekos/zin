@@ -619,25 +619,27 @@ impl Model {
 }
 
 /// Whether an observed value agrees with the specification's value of type
-/// `kind`. Maps and records may list a subset of their keys; a set matches
-/// in any order.
+/// `kind`. An observed map or record lists every key, and a set matches in
+/// any order with each member once.
 pub(crate) fn observation_matches(kind: &FieldType, expected: &Value, actual: &Value) -> bool {
     match (kind, expected, actual) {
         (FieldType::Map { value, .. }, Value::Map(wanted), Value::Map(observed)) => {
-            observed.iter().all(|(key, item)| {
-                wanted
-                    .get(key)
-                    .is_some_and(|wanted| observation_matches(value, wanted, item))
-            })
+            observed.len() == wanted.len()
+                && observed.iter().all(|(key, item)| {
+                    wanted
+                        .get(key)
+                        .is_some_and(|wanted| observation_matches(value, wanted, item))
+                })
         }
         (FieldType::Record(members), Value::Map(wanted), Value::Map(observed)) => {
-            observed.iter().all(|(key, item)| {
-                members
-                    .iter()
-                    .find(|(member, _)| member == key)
-                    .zip(wanted.get(key))
-                    .is_some_and(|((_, kind), wanted)| observation_matches(kind, wanted, item))
-            })
+            observed.len() == wanted.len()
+                && observed.iter().all(|(key, item)| {
+                    members
+                        .iter()
+                        .find(|(member, _)| member == key)
+                        .zip(wanted.get(key))
+                        .is_some_and(|((_, kind), wanted)| observation_matches(kind, wanted, item))
+                })
         }
         (FieldType::Optional(value), wanted, observed) if *wanted != Value::Nothing => {
             observation_matches(value, wanted, observed)
@@ -663,7 +665,7 @@ pub(crate) fn observation_matches(kind: &FieldType, expected: &Value, actual: &V
                     })
         }
         (FieldType::Set { .. }, Value::List(wanted), Value::List(observed)) => {
-            observed.len() == wanted.len() && observed.iter().all(|item| wanted.contains(item))
+            same_members(wanted, observed)
         }
         (FieldType::List { element, .. }, Value::List(wanted), Value::List(observed)) => {
             observed.len() == wanted.len()
@@ -674,6 +676,22 @@ pub(crate) fn observation_matches(kind: &FieldType, expected: &Value, actual: &V
         }
         _ => expected == actual,
     }
+}
+
+/// Whether `observed` holds the members of `wanted` in some order, each once.
+pub(crate) fn same_members<T: PartialEq>(wanted: &[T], observed: &[T]) -> bool {
+    let mut used = vec![false; wanted.len()];
+    observed.len() == wanted.len()
+        && observed.iter().all(|item| {
+            let unused = wanted
+                .iter()
+                .zip(&used)
+                .position(|(member, used)| !used && member == item);
+            unused.and_then(|at| used.get_mut(at)).is_some_and(|slot| {
+                *slot = true;
+                true
+            })
+        })
 }
 
 pub(crate) struct Write {

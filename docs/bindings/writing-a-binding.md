@@ -116,7 +116,10 @@ For each test:
 
 Observation rules:
 
-- Observed maps and records may list a subset of keys; every key must exist.
+- Observed maps, records and variants are complete: exactly the expected keys,
+  members and case, at every depth. Only whole fields may be left out.
+- A native set matches an array as a set (each member once); for a list field
+  it is a mismatch.
 - Types compare strictly: `false` is not `0`, nothing is not `0`.
 - An observed list matches an array of the same length element by element.
 - An observed native set matches an array with the same elements in any order.
@@ -168,7 +171,7 @@ before any action, <field> is <value>, but the specification says <value>
 | --- | --- |
 | `cases.json` `load` | fresh and stale plans, included-file fingerprints, option compatibility, `.json` paths, malformed calls; runs with a binary path that does not exist |
 | `cases.json` `replay` | replay and reporting against a scripted adapter: exact report text, errors that must propagate, the number of implementations built |
-| `observations.json` | matching observations: partial maps, unknown keys, strict types |
+| `observations.json` | matching observations: complete maps, records and variants, unknown keys, strict types |
 | `native-observations.json` | normalizing native values: `{"$enum": name}` is your enum-like value, `{"$map": [[k, v], ...]}` a map with non-string keys |
 
 Option names in the cases are the plan's keys (`max_steps`); map them to your
