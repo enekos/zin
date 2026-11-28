@@ -48,7 +48,7 @@ as a rejection.
 **What state can be seen?** `observe` is optional and may return any subset of
 the specification's fields; only the returned fields are compared. Maps are
 dictionaries / objects / Go maps keyed by the specification's key names, and
-may also be partial. Without `observe`, wrong state is still detected once it
+list every key: a field is either left out or reported in full. Without `observe`, wrong state is still detected once it
 changes which calls are accepted, only later and with a less direct message.
 How much later, and whether at all, is what [`zin observe`](#what-observe-can-tell-apart)
 answers.

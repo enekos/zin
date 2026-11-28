@@ -117,9 +117,10 @@ def native(value):
     return value
 
 
-def matches(expected, observed):
+def matches(expected, observed, fields=()):
     plan = {
         "system": "Observation",
+        "fields": list(fields),
         "actions": [],
         "calls": [],
         "states": [expected],
@@ -145,7 +146,7 @@ def matches(expected, observed):
     ids=lambda case: case["name"],
 )
 def test_observation(case):
-    assert matches(case["expected"], native(case["observed"])) is case["matches"]
+    assert matches(case["expected"], native(case["observed"]), case.get("fields", ())) is case["matches"]
 
 
 def test_plans_have_every_key_the_schema_requires():

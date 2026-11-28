@@ -15,6 +15,13 @@ an error wrapping `zin.ErrRejected` when the implementation refuses; implement
 `zin` binary (`ZIN_BIN` or `PATH`) or from a committed `account.plan.json`. See
 [conformance testing](https://github.com/enekos/zin/blob/main/docs/conformance.md).
 
+`Observe` may return any subset of the state fields, but each field it returns
+must be complete: a map with exactly the specification's keys, a record
+(struct or map) with every member, a variant as its bare case name or
+`{"case": {members}}`. Integers must be Go integer kinds; a float never matches.
+Return a list as a slice (compared in order) and a set as `zin.Set` (any order,
+each element once); a `zin.Set` for a list field is a mismatch.
+
 ## Planning options and committed plans
 
 `WithCover`, `WithMaxSteps`, `WithStepBudget`, `WithPairLimit` and

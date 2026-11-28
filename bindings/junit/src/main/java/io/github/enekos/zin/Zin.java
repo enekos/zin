@@ -54,7 +54,10 @@ public final class Zin {
          */
         boolean call(String action, Map<String, Object> arguments) throws Exception;
 
-        /** Any subset of the specification's state fields, or null to compare nothing. */
+        /**
+         * Any subset of the specification's state fields, each complete (every map
+         * key and record member), or null to compare nothing.
+         */
         default Map<String, ?> observe() throws Exception {
             return null;
         }
@@ -394,6 +397,7 @@ public final class Zin {
         private final String fingerprint;
         private final String cover;
         private final List<JsonNode> states = new ArrayList<>();
+        private final Map<String, JsonNode> fields = new LinkedHashMap<>();
         private final List<Step> parents = new ArrayList<>();
         private final List<Call> calls = new ArrayList<>();
         private final List<Test> tests = new ArrayList<>();
@@ -403,6 +407,7 @@ public final class Zin {
             fingerprint = plan.path("fingerprint").asText("");
             cover = plan.path("cover").asText();
             plan.get("states").forEach(states::add);
+            plan.path("fields").forEach(field -> fields.put(field.path("name").asText(), field.get("type")));
             for (JsonNode parent : plan.get("parents")) {
                 parents.add(parent.isNull() ? null : new Step(parent.get(1).asInt(), parent.get(0).asInt()));
             }
@@ -524,7 +529,7 @@ public final class Zin {
                     return "observe() returned '" + entry.getKey() + "', which is not a state field of the specification";
                 }
                 Object actual = plain(entry.getValue());
-                if (!same(wanted, actual)) {
+                if (!same(wanted, actual, fields.get(entry.getKey()))) {
                     return after + ", " + entry.getKey() + " is " + show(actual) + ", but the specification says "
                             + show(plain(JSON.convertValue(wanted, Object.class)));
                 }
@@ -547,7 +552,6 @@ public final class Zin {
         }
     }
 
-    /** An observed value in the plan's vocabulary: Long, Boolean, String or a map of them. */
     /**
      * An observed value in the plan's vocabulary. A {@link Set} stays a set and
      * matches in any order; another collection is a list; a record is a map of
@@ -590,29 +594,32 @@ public final class Zin {
         return value;
     }
 
-    private static boolean same(JsonNode expected, Object observed) {
+    /**
+     * Whether {@code observed} is exactly {@code expected}: a map or record lists
+     * every expected key, a set matches as a set, a list in order. {@code type}
+     * is the plan's field type, or null when it is unknown; a {@link Set} for a
+     * list type never matches.
+     */
+    private static boolean same(JsonNode expected, Object observed, JsonNode type) {
+        while (kind(type).equals("optional")) type = type.get("value");
         if (expected.isNull()) return observed == null;
         if (expected.isArray()) {
+            JsonNode element = kind(type).equals("list") ? type.get("element") : null;
             if (observed instanceof Set<?> set) {
-                if (set.size() != expected.size()) return false;
-                for (Object item : set) {
-                    boolean found = false;
-                    for (JsonNode wanted : expected) found |= same(wanted, item);
-                    if (!found) return false;
-                }
-                return true;
+                return !kind(type).equals("list") && set.size() == expected.size()
+                        && matching(new ArrayList<>(set), 0, expected, new boolean[expected.size()]);
             }
             if (!(observed instanceof List<?> list) || list.size() != expected.size()) return false;
             for (int index = 0; index < list.size(); index++) {
-                if (!same(expected.get(index), list.get(index))) return false;
+                if (!same(expected.get(index), list.get(index), element)) return false;
             }
             return true;
         }
         if (expected.isObject()) {
-            if (!(observed instanceof Map<?, ?> map)) return false;
+            if (!(observed instanceof Map<?, ?> map) || map.size() != expected.size()) return false;
             for (var entry : map.entrySet()) {
                 JsonNode wanted = expected.get((String) entry.getKey());
-                if (wanted == null || !same(wanted, entry.getValue())) return false;
+                if (wanted == null || !same(wanted, entry.getValue(), member(type, (String) entry.getKey()))) return false;
             }
             return true;
         }
@@ -620,6 +627,44 @@ public final class Zin {
         if (expected.isIntegralNumber()) return observed instanceof Long number && number == expected.longValue();
         if (expected.isTextual()) return expected.textValue().equals(observed);
         return false;
+    }
+
+    /** Whether the items from {@code from} on pair off with unused expected elements, each used once. */
+    private static boolean matching(List<?> items, int from, JsonNode expected, boolean[] used) {
+        if (from == items.size()) return true;
+        for (int index = 0; index < expected.size(); index++) {
+            if (used[index] || !same(expected.get(index), items.get(from), null)) continue;
+            used[index] = true;
+            if (matching(items, from + 1, expected, used)) return true;
+            used[index] = false;
+        }
+        return false;
+    }
+
+    private static String kind(JsonNode type) {
+        return type == null ? "" : type.path("kind").asText();
+    }
+
+    /** The type behind {@code key} of a map, record or variant type, or null when it is unknown. */
+    private static JsonNode member(JsonNode type, String key) {
+        switch (kind(type)) {
+            case "map":
+                return type.get("value");
+            case "record":
+                for (JsonNode member : type.path("members")) {
+                    if (member.path("name").asText().equals(key)) return member.get("type");
+                }
+                return null;
+            case "variant":
+                for (JsonNode option : type.path("cases")) {
+                    if (option.path("name").asText().equals(key)) {
+                        return JSON.createObjectNode().put("kind", "record").set("members", option.path("members"));
+                    }
+                }
+                return null;
+            default:
+                return null;
+        }
     }
 
     private static String show(Object value) {

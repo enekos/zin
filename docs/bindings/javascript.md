@@ -111,7 +111,7 @@ name that is not a field fails the test. Values:
 | --- | --- |
 | `number`, `boolean`, `string` | themselves, strictly (`false` is not `0`) |
 | `null`, `undefined` | nothing |
-| plain object | a map (keys as text) or a record; may be partial |
+| plain object | a map (keys as text) or a record; lists every key |
 | `Map` | a map, keys converted with `String(key)` |
 | `Set` | a set, in any order |
 | array | a list, in order |

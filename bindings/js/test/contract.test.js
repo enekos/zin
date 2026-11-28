@@ -107,9 +107,10 @@ function native(value) {
   return value;
 }
 
-async function matches(expected, observed) {
+async function matches(expected, observed, fields = []) {
   const plan = {
     system: "Observation",
+    fields,
     actions: [],
     calls: [],
     states: [expected],
@@ -127,7 +128,7 @@ async function matches(expected, observed) {
 
 for (const item of [...json("observations.json"), ...json("native-observations.json")]) {
   test(`observation: ${item.name}`, async () => {
-    assert.equal(await matches(item.expected, native(item.observed)), item.matches);
+    assert.equal(await matches(item.expected, native(item.observed), item.fields), item.matches);
   });
 }
 

@@ -24,7 +24,7 @@ pub(crate) fn evaluate(
             .holds(condition, state, &mut locals)
             .map_err(|fault| {
                 Error::of(ErrorKind::Model, Some(fault.line), fault.message)
-                    .with_trace(graph.trace_to(model, index32(index)))
+                    .with_counterexample(graph.trace_to(model, index32(index)))
             })?;
         result.push(holds);
     }
@@ -69,7 +69,7 @@ pub(crate) fn check_properties(model: &Model, graph: &Graph) -> Result<Checked> 
                             property.text
                         ),
                     )
-                    .with_trace(graph.trace_to(model, index32(stuck))));
+                    .with_counterexample(graph.trace_to(model, index32(stuck))));
                 }
             }
         }
@@ -178,7 +178,7 @@ fn liveness(
                 property.text
             ),
         )
-        .with_trace(graph.trace(model, &path, None)));
+        .with_counterexample(graph.trace(model, &path, None)));
     }
     let component = component_of.get(at(end)).copied().unwrap_or(UNVISITED);
     let loop_from = path.len();
@@ -191,7 +191,7 @@ fn liveness(
             property.text
         ),
     )
-    .with_trace(graph.trace(model, &path, Some(loop_from))))
+    .with_counterexample(graph.trace(model, &path, Some(loop_from))))
 }
 
 fn fair_calls(model: &Model) -> Vec<Fairness> {

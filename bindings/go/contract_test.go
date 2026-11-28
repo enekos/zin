@@ -166,7 +166,7 @@ type observing struct{ *scripted }
 func (o observing) Observe() map[string]any {
 	copied := make(map[string]any, len(o.state))
 	for key, value := range o.state {
-		copied[key] = value
+		copied[key] = native(value)
 	}
 	return copied
 }
@@ -236,9 +236,19 @@ type token string
 
 func (t token) String() string { return string(t) }
 
-// native turns the fixture's $enum and $map markers into Go values: a named
-// string type and maps with non-string keys.
+// native turns the fixture's values into Go values: numbers into int64, $enum
+// into a named string type, $map into a map with non-string keys.
 func native(value any) any {
+	switch typed := value.(type) {
+	case float64:
+		return int64(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for index, item := range typed {
+			out[index] = native(item)
+		}
+		return out
+	}
 	object, ok := value.(map[string]any)
 	if !ok {
 		return value
@@ -278,6 +288,7 @@ func (f fixedObserver) Observe() map[string]any { return f }
 
 type observationCase struct {
 	Name     string         `json:"name"`
+	Fields   []Field        `json:"fields"`
 	Expected map[string]any `json:"expected"`
 	Observed map[string]any `json:"observed"`
 	Matches  bool           `json:"matches"`
@@ -300,6 +311,7 @@ func TestContractObservations(t *testing.T) {
 		t.Run(item.Name, func(t *testing.T) {
 			plan := &Plan{
 				System:  "Observation",
+				Fields:  item.Fields,
 				States:  []map[string]any{item.Expected},
 				Parents: []*[2]int{nil},
 				Tests:   []Test{{Name: "t"}},
@@ -373,7 +385,22 @@ func TestStructsAreObservedAsRecords(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("plain = %#v", got)
 	}
-	if !same(plain([]any{"ann", "ben"}), Set{"ben", "ann"}) || same(plain([]any{"ann", "ben"}), []any{"ben", "ann"}) {
+	if !same(plain([]any{"ann", "ben"}), Set{"ben", "ann"}, nil) || same(plain([]any{"ann", "ben"}), []any{"ben", "ann"}, nil) {
 		t.Fatal("a Set matches in any order, a slice in order")
+	}
+}
+
+func TestAFloatIsNotAnInteger(t *testing.T) {
+	expected := plain(planned(map[string]any{"count": float64(1), "load": map[string]any{"ann": float64(2)}}))
+	for _, observed := range []map[string]any{
+		{"count": float64(1), "load": map[string]int{"ann": 2}},
+		{"count": 1, "load": map[string]float64{"ann": 2}},
+	} {
+		if same(expected, plain(observed), nil) {
+			t.Fatalf("%v matched %v", observed, expected)
+		}
+	}
+	if !same(expected, plain(map[string]any{"count": uint8(1), "load": map[string]int32{"ann": 2}}), nil) {
+		t.Fatal("Go integer kinds are integers")
 	}
 }

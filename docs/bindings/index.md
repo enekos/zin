@@ -98,8 +98,9 @@ Native values are normalized before comparing:
   order the element type declares its values, so prefer the native set.
 
 Types compare strictly: `false` is not `0`, nothing is not `0`, and in Python
-`True` is not `1`. Observed maps and records may list a subset of keys, but
-every key must exist in the specification.
+`True` is not `1`. An observed map, record or variant is complete: every key,
+member and case member, and nothing else. To observe less, leave the whole
+field out.
 
 ## Where the plan comes from
 

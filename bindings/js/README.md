@@ -25,6 +25,11 @@ API: `verify`, `check`, `loadPlan`, `runTest`, `Recorder`, `Rejected`,
 `Divergence`, `PlanError`. `zin-verify/recorder` exports the `Recorder` alone,
 with no Node.js dependency, for recording in a browser.
 
+`observe()` may leave state fields out, but a field it returns must be
+complete: a map lists every key and a record every member, at every depth. A
+`Set` matches a set field in any order, never a list field. Await values before
+returning them; a promise fails the test.
+
 For an implementation that reaches its new state after the action returns,
 give the adapter a `settle()` and pass `{ observeTimeout: 2000 }`; see
 [implementations that settle later](https://github.com/enekos/zin/blob/main/docs/conformance.md#implementations-that-settle-later).

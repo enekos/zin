@@ -1,14 +1,18 @@
 [
   {"name":"enum member","expected":{"status":"open"},"observed":{"status":{"$enum":"open"}},"matches":true},
   {"name":"different enum member","expected":{"status":"open"},"observed":{"status":{"$enum":"closed"}},"matches":false},
-  {"name":"boolean map keys","expected":{"flags":{"false":0,"true":1}},"observed":{"flags":{"$map":[[true,1]]}},"matches":true},
-  {"name":"integer map keys","expected":{"slots":{"1":true,"2":false}},"observed":{"slots":{"$map":[[2,false]]}},"matches":true},
-  {"name":"enum map keys and values","expected":{"at":{"ann":"idle","ben":"busy"}},"observed":{"at":{"$map":[[{"$enum":"ben"},{"$enum":"busy"}]]}},"matches":true},
+  {"name":"boolean map keys","expected":{"flags":{"false":0,"true":1}},"observed":{"flags":{"$map":[[true,1],[false,0]]}},"matches":true},
+  {"name":"integer map keys","expected":{"slots":{"1":true,"2":false}},"observed":{"slots":{"$map":[[2,false],[1,true]]}},"matches":true},
+  {"name":"enum map keys and values","expected":{"at":{"ann":"idle","ben":"busy"}},"observed":{"at":{"$map":[[{"$enum":"ben"},{"$enum":"busy"}],[{"$enum":"ann"},{"$enum":"idle"}]]}},"matches":true},
+  {"name":"native map missing a key","expected":{"at":{"ann":"idle","ben":"busy"}},"observed":{"at":{"$map":[[{"$enum":"ben"},{"$enum":"busy"}]]}},"matches":false},
   {"name":"wrong value behind a native key","expected":{"at":{"ann":"idle"}},"observed":{"at":{"$map":[[{"$enum":"ann"},{"$enum":"busy"}]]}},"matches":false},
   {"name":"a boolean is not an integer","expected":{"count":1},"observed":{"count":true},"matches":false},
   {"name":"native set in any order","expected":{"holders":["ann","ben"]},"observed":{"holders":{"$set":[{"$enum":"ben"},{"$enum":"ann"}]}},"matches":true},
   {"name":"native set missing a member","expected":{"holders":["ann","ben"]},"observed":{"holders":{"$set":["ann"]}},"matches":false},
   {"name":"native set with another member","expected":{"holders":["ann","ben"]},"observed":{"holders":{"$set":["ann","cid"]}},"matches":false},
+  {"name":"native set with a repeated member","expected":{"holders":["ann","ben"]},"observed":{"holders":{"$set":["ann","ann"]}},"matches":false},
+  {"name":"native set for a list","fields":[{"name":"queue","type":{"kind":"list","capacity":2,"element":{"kind":"enum","values":["ann","ben"]}}}],"expected":{"queue":["ann","ben"]},"observed":{"queue":{"$set":[{"$enum":"ben"},{"$enum":"ann"}]}},"matches":false},
+  {"name":"native set for a set field","fields":[{"name":"holders","type":{"kind":"set","values":["ann","ben"]}}],"expected":{"holders":["ann","ben"]},"observed":{"holders":{"$set":[{"$enum":"ben"},{"$enum":"ann"}]}},"matches":true},
   {"name":"native record","expected":{"order":{"status":"paid","items":2}},"observed":{"order":{"$record":{"status":{"$enum":"open"},"items":2}}},"matches":false},
   {"name":"native record with enum members","expected":{"order":{"status":"open","items":2}},"observed":{"order":{"$record":{"status":{"$enum":"open"},"items":2}}},"matches":true}
 ]

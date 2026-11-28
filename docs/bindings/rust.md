@@ -122,7 +122,7 @@ design. A panic in `call` is a crash and fails the test.
 | --- | --- |
 | integer, boolean, enum | `Integer`, `Boolean`, `Symbol` |
 | optional | the value, or `Value::Nothing` |
-| map, record | `Value::Map(BTreeMap<String, Value>)`; may be partial |
+| map, record | `Value::Map(BTreeMap<String, Value>)`; lists every key |
 | set | `Value::List`, in any order |
 | list | `Value::List`, in order |
 | case with members | `Value::Tagged { tag, members }` |

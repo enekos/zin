@@ -111,12 +111,14 @@ runner passes those cases before it ships.
 **Replaying.** For each test build a fresh implementation, then for each step
 perform the call, classify the result as accepted or rejected, compare with
 `to`, and compare any observed fields with the current model state (after a
-rejection: the unchanged state). Observed maps and records may list a subset
-of the keys, but every key must exist; types compare strictly (`false` is not
-`0`, nothing is not `0`). An observed list matches an array of the same
-length element by element; an observed native set (a Python `set`, a
-JavaScript `Set`, a Java `Set`, a Go `zin.Set`) matches an array with the
-same elements in any order. Native values are normalized first: enum members
+rejection: the unchanged state). The observation may leave out whole fields,
+but a field it reports is complete: an observed map lists every key, a record
+every member, a variant its case and all of that case's members, at every
+depth. Types compare strictly (`false` is not `0`, nothing is not `0`). An
+observed list matches an array of the same length element by element; an
+observed native set (a Python `set`, a JavaScript `Set`, a Java `Set`, a Go
+`zin.Set`) matches an array with the same elements in any order, each once,
+and is a mismatch for a list field. Native values are normalized first: enum members
 to their name, map keys to their text, records (a Python dataclass or named
 tuple, a Java record, a Go struct) to an object of their members. Anything that is neither an acceptance nor a recognized rejection
 fails the test with that error.

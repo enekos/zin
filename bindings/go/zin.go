@@ -28,7 +28,8 @@ import (
 const PlanFormat = "plan/1"
 
 // Set marks an observed value as a set: it matches the specification's set
-// in any order. Observe a list as an ordinary slice.
+// in any order, each element exactly once. Observe a list as an ordinary
+// slice; a Set observed for a list field is a mismatch.
 type Set []any
 
 // listedSteps is how many of the latest steps a report lists before eliding
@@ -85,8 +86,10 @@ type Adapter interface {
 }
 
 // Observer is optionally implemented by an Adapter to expose any subset of
-// the specification's state fields. Integers, booleans, strings,
-// fmt.Stringers and maps of those are understood.
+// the specification's state fields. A field it returns must be complete: a
+// map with every key, a record with every member. Integers, booleans,
+// strings, fmt.Stringers, maps, slices, Sets and structs of those are
+// understood.
 type Observer interface {
 	Observe() map[string]any
 }
@@ -104,6 +107,7 @@ type Plan struct {
 	StepBudget  *int              `json:"step_budget"`
 	PairLimit   *int              `json:"pair_limit"`
 	Defaults    *Defaults         `json:"defaults"`
+	Fields      []Field           `json:"fields"`
 	Actions     []Action          `json:"actions"`
 	States      []map[string]any  `json:"states"`
 	Parents     []*[2]int         `json:"parents"`
@@ -118,6 +122,58 @@ type Defaults struct {
 	MaxSteps   *int   `json:"max_steps"`
 	StepBudget *int   `json:"step_budget"`
 	PairLimit  *int   `json:"pair_limit"`
+}
+
+// Field is a state variable of the specification.
+type Field struct {
+	Name string `json:"name"`
+	Type Type   `json:"type"`
+}
+
+// Type is a state variable's type: integer, boolean, enum, map, record,
+// optional, set, list or variant.
+type Type struct {
+	Kind     string   `json:"kind"`
+	Min      *int     `json:"min"`
+	Max      *int     `json:"max"`
+	Values   []string `json:"values"`
+	Keys     []string `json:"keys"`
+	Value    *Type    `json:"value"`
+	Members  []Field  `json:"members"`
+	Capacity int      `json:"capacity"`
+	Element  *Type    `json:"element"`
+	Cases    []Case   `json:"cases"`
+}
+
+// Case is one case of a variant type.
+type Case struct {
+	Name    string  `json:"name"`
+	Members []Field `json:"members"`
+}
+
+// member is the type of a map value, record member or variant case's members
+// under key, or nil when unknown.
+func (t *Type) member(key string) *Type {
+	if t == nil {
+		return nil
+	}
+	switch t.Kind {
+	case "map":
+		return t.Value
+	case "record":
+		for index := range t.Members {
+			if t.Members[index].Name == key {
+				return &t.Members[index].Type
+			}
+		}
+	case "variant":
+		for _, item := range t.Cases {
+			if item.Name == key {
+				return &Type{Kind: "record", Members: item.Members}
+			}
+		}
+	}
+	return nil
 }
 
 // Action is one action of the specification.
@@ -459,10 +515,33 @@ func LoadPlan(spec string, options ...Option) (*Plan, error) {
 	return parsePlan(output, resolved)
 }
 
+// planned converts a value decoded from the plan, whose numbers are integers
+// that encoding/json reads as float64, into the vocabulary of plain.
+func planned(value any) any {
+	switch typed := value.(type) {
+	case float64:
+		return int64(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for index, item := range typed {
+			out[index] = planned(item)
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			out[key] = planned(item)
+		}
+		return out
+	}
+	return value
+}
+
 // plain converts a value into the plan's vocabulary: int64, bool, string,
 // nil, []any, Set, or map[string]any of those. A struct becomes a map of its
 // exported fields, named by a `zin` tag, else a `json` tag, else the field
-// name with its first letter in lower case.
+// name with its first letter in lower case. Only Go integer kinds become
+// int64; a float stays a float and matches no integer.
 func plain(value any) any {
 	switch typed := value.(type) {
 	case nil:
@@ -473,11 +552,6 @@ func plain(value any) any {
 			out[index] = plain(item)
 		}
 		return out
-	case float64:
-		if typed == float64(int64(typed)) {
-			return int64(typed)
-		}
-		return typed
 	case fmt.Stringer:
 		return typed.String()
 	}
@@ -560,56 +634,53 @@ func show(value any) string {
 	return "{" + strings.Join(parts, ", ") + "}"
 }
 
-func same(expected, observed any) bool {
-	if items, ok := expected.([]any); ok {
-		return sameItems(items, observed)
+// same compares a complete observed value with the expected one; kind is
+// the value's type from the plan's fields, or nil when unknown.
+func same(expected, observed any, kind *Type) bool {
+	if kind != nil && kind.Kind == "optional" {
+		kind = kind.Value
 	}
-	wanted, ok := expected.(map[string]any)
-	if !ok {
-		if observed != nil && !reflect.TypeOf(observed).Comparable() {
+	switch wanted := expected.(type) {
+	case []any:
+		return sameItems(wanted, observed, kind)
+	case map[string]any:
+		actual, ok := observed.(map[string]any)
+		if !ok || len(actual) != len(wanted) {
 			return false
 		}
-		return expected == observed
-	}
-	actual, ok := observed.(map[string]any)
-	if !ok {
-		return false
-	}
-	for key, item := range actual {
-		want, known := wanted[key]
-		if !known || !same(want, item) {
-			return false
-		}
-	}
-	return true
-}
-
-// sameItems compares a list in order, and a Set in any order.
-func sameItems(expected []any, observed any) bool {
-	switch typed := observed.(type) {
-	case Set:
-		if len(typed) != len(expected) {
-			return false
-		}
-		for _, item := range typed {
-			found := false
-			for _, want := range expected {
-				if same(want, item) {
-					found = true
-					break
-				}
-			}
-			if !found {
+		for key, want := range wanted {
+			item, found := actual[key]
+			if !found || !same(want, item, kind.member(key)) {
 				return false
 			}
 		}
 		return true
+	}
+	if observed != nil && !reflect.TypeOf(observed).Comparable() {
+		return false
+	}
+	return expected == observed
+}
+
+// sameItems compares a list in order, and a Set in any order with each
+// expected element matched exactly once. A Set never matches a list field.
+func sameItems(expected []any, observed any, kind *Type) bool {
+	var element *Type
+	if kind != nil && kind.Kind == "list" {
+		element = kind.Element
+	}
+	switch typed := observed.(type) {
+	case Set:
+		if kind != nil && kind.Kind == "list" {
+			return false
+		}
+		return sameSet(expected, typed, element)
 	case []any:
 		if len(typed) != len(expected) {
 			return false
 		}
 		for index, item := range typed {
-			if !same(expected[index], item) {
+			if !same(expected[index], item, element) {
 				return false
 			}
 		}
@@ -618,9 +689,41 @@ func sameItems(expected []any, observed any) bool {
 	return false
 }
 
+// sameSet pairs every observed element with its own expected element.
+func sameSet(expected []any, observed Set, element *Type) bool {
+	if len(observed) != len(expected) {
+		return false
+	}
+	owner := make([]int, len(expected))
+	for index := range owner {
+		owner[index] = -1
+	}
+	var assign func(item int, tried []bool) bool
+	assign = func(item int, tried []bool) bool {
+		for index, want := range expected {
+			if tried[index] || !same(want, observed[item], element) {
+				continue
+			}
+			tried[index] = true
+			if owner[index] < 0 || assign(owner[index], tried) {
+				owner[index] = item
+				return true
+			}
+		}
+		return false
+	}
+	for item := range observed {
+		if !assign(item, make([]bool, len(expected))) {
+			return false
+		}
+	}
+	return true
+}
+
 type runner struct {
 	plan   *Plan
 	params map[string][]string
+	types  map[string]*Type
 }
 
 func newRunner(plan *Plan) (*runner, error) {
@@ -635,7 +738,11 @@ func newRunner(plan *Plan) (*runner, error) {
 		}
 		params[action.Name] = names
 	}
-	return &runner{plan: plan, params: params}, nil
+	types := make(map[string]*Type, len(plan.Fields))
+	for index := range plan.Fields {
+		types[plan.Fields[index].Name] = &plan.Fields[index].Type
+	}
+	return &runner{plan: plan, params: params, types: types}, nil
 }
 
 func (r *runner) text(step [2]int) string {
@@ -678,8 +785,9 @@ func (r *runner) compare(adapter Adapter, state int, after string) string {
 			return fmt.Sprintf("Observe() returned %q, which is not a state field of the specification", field)
 		}
 		actual := plain(observed[field])
-		if !same(plain(wanted), actual) {
-			return fmt.Sprintf("%s, %s is %s, but the specification says %s", after, field, show(actual), show(plain(wanted)))
+		want := plain(planned(wanted))
+		if !same(want, actual, r.types[field]) {
+			return fmt.Sprintf("%s, %s is %s, but the specification says %s", after, field, show(actual), show(want))
 		}
 	}
 	return ""
@@ -697,7 +805,7 @@ func (r *runner) run(adapter Adapter, steps [][2]int) (int, string, error) {
 		names := r.params[call.Action]
 		args := make(Args, len(call.Args))
 		for position, value := range call.Args {
-			args[names[position]] = plain(value)
+			args[names[position]] = plain(planned(value))
 		}
 		err := adapter.Call(call.Action, args)
 		if err != nil && !errors.Is(err, ErrRejected) {

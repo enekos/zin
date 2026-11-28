@@ -128,7 +128,8 @@ fn reduced_and_full_checks_agree_on_a_broken_record_model() {
 }
 
 /// An order book that keeps each order as a tuple, observed as nested maps.
-/// It does not track payment days, so it never observes `paid_on`.
+/// It does not track payment days, so it never observes `paid_on`; the
+/// fields it does observe are complete.
 #[derive(Default)]
 struct Book {
     orders: BTreeMap<String, (String, i64)>,
@@ -156,19 +157,19 @@ impl Adapter for Book {
     }
 
     fn observe(&self) -> Option<State> {
-        let orders = self
-            .orders
-            .iter()
-            .map(|(customer, (status, items))| {
-                let order = if status == "draft" {
-                    BTreeMap::from([("items".to_string(), Value::Integer(*items))])
-                } else {
-                    BTreeMap::from([
-                        ("status".to_string(), Value::Symbol(status.clone())),
-                        ("items".to_string(), Value::Integer(*items)),
-                    ])
-                };
-                (customer.clone(), Value::Map(order))
+        let orders = ["ann", "ben"]
+            .into_iter()
+            .map(|customer| {
+                let (status, items) = self
+                    .orders
+                    .get(customer)
+                    .cloned()
+                    .unwrap_or_else(|| ("draft".into(), 0));
+                let order = BTreeMap::from([
+                    ("status".to_string(), Value::Symbol(status)),
+                    ("items".to_string(), Value::Integer(items)),
+                ]);
+                (customer.to_string(), Value::Map(order))
             })
             .collect();
         let mut state = State::from([("orders".to_string(), Value::Map(orders))]);
@@ -668,4 +669,35 @@ fn an_implementation_with_an_enum_conforms() {
         }
     }
     check(RETRY, &PlanOptions::default(), Runner::default).unwrap();
+}
+
+#[test]
+fn map_literal_entries_of_different_types_share_one_layout() {
+    let source = "\
+system \"Mixed\"
+types
+  key is one of ka, kb, kc
+  phase is one of idle, run with (n is an integer from 0 to 3)
+state
+  level is a map from key to an integer from 0 to 3 or nothing
+  task is a map from key to a phase
+  hold is a map from key to a record with (a is a boolean or nothing, b is an integer from 0 to 3)
+initially
+  level is {ka: nothing, kb: 2, kc: nothing}
+  task is {ka: idle, kb: run with {n: 2}, kc: idle}
+  hold of every key is {a: nothing, b: 0}
+always level is {ka: nothing, kb: 2, kc: nothing} or level is {ka: 1, kb: nothing, kc: 1}
+always task is {ka: idle, kb: run with {n: 2}, kc: idle}
+action set
+  level becomes {ka: 1, kb: nothing, kc: 1}
+  hold becomes {ka: {a: nothing, b: 1}, kb: {a: true, b: 2}, kc: {a: nothing, b: 3}}
+scenario \"set\"
+  expect level of kb is 2 and level of ka is nothing
+  expect task of kb is run with {n: 2}
+  set
+  expect level of ka is 1 and level of kb is nothing and level of kc is 1
+  expect hold of kb is {a: true, b: 2} and hold of ka is {a: nothing, b: 1}
+";
+    let verification = verify(&parse(source).unwrap()).unwrap();
+    assert_eq!(verification.graph.state_count(), 2);
 }

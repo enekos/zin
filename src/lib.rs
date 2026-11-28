@@ -137,6 +137,9 @@ struct ErrorDetail {
     /// `at` and `related` resolved to their files.
     source: Option<SourceSpan>,
     related_source: Option<SourceSpan>,
+    /// The trace runs through symmetry representatives and could not be
+    /// replayed as a real run.
+    unlifted: bool,
 }
 
 impl Error {
@@ -317,6 +320,17 @@ impl Error {
     pub fn with_trace(mut self, trace: Trace) -> Self {
         self.trace = Some(trace);
         self
+    }
+
+    pub(crate) fn with_counterexample(mut self, counterexample: explore::Counterexample) -> Self {
+        if !counterexample.lifted {
+            self.details().unlifted = true;
+        }
+        self.with_trace(counterexample.trace)
+    }
+
+    pub(crate) fn unlifted(&self) -> bool {
+        self.detail.as_ref().is_some_and(|detail| detail.unlifted)
     }
 }
 

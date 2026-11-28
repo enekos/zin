@@ -619,25 +619,27 @@ impl Model {
 }
 
 /// Whether an observed value agrees with the specification's value of type
-/// `kind`. Maps and records may list a subset of their keys; a set matches
-/// in any order.
+/// `kind`. An observed map or record lists every key, and a set matches in
+/// any order with each member once.
 pub(crate) fn observation_matches(kind: &FieldType, expected: &Value, actual: &Value) -> bool {
     match (kind, expected, actual) {
         (FieldType::Map { value, .. }, Value::Map(wanted), Value::Map(observed)) => {
-            observed.iter().all(|(key, item)| {
-                wanted
-                    .get(key)
-                    .is_some_and(|wanted| observation_matches(value, wanted, item))
-            })
+            observed.len() == wanted.len()
+                && observed.iter().all(|(key, item)| {
+                    wanted
+                        .get(key)
+                        .is_some_and(|wanted| observation_matches(value, wanted, item))
+                })
         }
         (FieldType::Record(members), Value::Map(wanted), Value::Map(observed)) => {
-            observed.iter().all(|(key, item)| {
-                members
-                    .iter()
-                    .find(|(member, _)| member == key)
-                    .zip(wanted.get(key))
-                    .is_some_and(|((_, kind), wanted)| observation_matches(kind, wanted, item))
-            })
+            observed.len() == wanted.len()
+                && observed.iter().all(|(key, item)| {
+                    members
+                        .iter()
+                        .find(|(member, _)| member == key)
+                        .zip(wanted.get(key))
+                        .is_some_and(|((_, kind), wanted)| observation_matches(kind, wanted, item))
+                })
         }
         (FieldType::Optional(value), wanted, observed) if *wanted != Value::Nothing => {
             observation_matches(value, wanted, observed)
@@ -663,7 +665,7 @@ pub(crate) fn observation_matches(kind: &FieldType, expected: &Value, actual: &V
                     })
         }
         (FieldType::Set { .. }, Value::List(wanted), Value::List(observed)) => {
-            observed.len() == wanted.len() && observed.iter().all(|item| wanted.contains(item))
+            same_members(wanted, observed)
         }
         (FieldType::List { element, .. }, Value::List(wanted), Value::List(observed)) => {
             observed.len() == wanted.len()
@@ -674,6 +676,22 @@ pub(crate) fn observation_matches(kind: &FieldType, expected: &Value, actual: &V
         }
         _ => expected == actual,
     }
+}
+
+/// Whether `observed` holds the members of `wanted` in some order, each once.
+pub(crate) fn same_members<T: PartialEq>(wanted: &[T], observed: &[T]) -> bool {
+    let mut used = vec![false; wanted.len()];
+    observed.len() == wanted.len()
+        && observed.iter().all(|item| {
+            let unused = wanted
+                .iter()
+                .zip(&used)
+                .position(|(member, used)| !used && member == item);
+            unused.and_then(|at| used.get_mut(at)).is_some_and(|slot| {
+                *slot = true;
+                true
+            })
+        })
 }
 
 pub(crate) struct Write {
@@ -2765,7 +2783,8 @@ impl<'a> Compiler<'a> {
                 .coded(Code::NameUnknown)
                 .suggest_closest(extra, names.iter().map(String::as_str)));
         }
-        let mut irs = Vec::new();
+        self.check_symmetric_map_literal(members, keys, line)?;
+        let mut entries = Vec::with_capacity(names.len());
         let mut joined = value.clone();
         for name in names {
             let Some((_, entry)) = members.iter().find(|(member, _)| *member == name) else {
@@ -2775,15 +2794,51 @@ impl<'a> Compiler<'a> {
                 ));
             };
             let (ir, ty) = self.expr_as(entry, Some(value), line)?;
-            joined = joined.join(&ty).unwrap_or(ty);
-            irs.extend(parts(ir));
+            joined = joined.join(&ty).unwrap_or_else(|| ty.clone());
+            entries.push((ir, ty));
         }
+        // Every entry takes the same slots, so each is laid out as the joined
+        // type: `{a: 1, b: nothing}` must not pack an integer next to an
+        // absent optional.
+        let irs = entries
+            .into_iter()
+            .flat_map(|(ir, ty)| coerce(parts(ir), &ty, &joined))
+            .collect();
         Ok((
             tuple(irs),
             Ty::Map {
                 keys: keys.clone(),
                 value: Box::new(joined),
             },
+        ))
+    }
+
+    /// A map literal names each key, so over an interchangeable type it
+    /// singles values out unless every key gets the same value.
+    fn check_symmetric_map_literal(
+        &self,
+        members: &[(String, Expr)],
+        keys: &Domain,
+        line: usize,
+    ) -> Result<()> {
+        let Domain::Enum(ids) = keys else {
+            return Ok(());
+        };
+        let Some(kind) = ids.iter().find_map(|id| self.unnamed.get(id)) else {
+            return Ok(());
+        };
+        let mut entries = members.iter().map(|(_, entry)| entry);
+        let first = entries.next();
+        if entries.all(|entry| Some(entry) == first) {
+            return Ok(());
+        }
+        Err(Error::at(
+            line,
+            format!(
+                "this map is keyed by the interchangeable type {kind}, so giving its keys \
+                 different values singles them out; give every key the same value, or set \
+                 entries through a parameter or a quantifier"
+            ),
         ))
     }
 

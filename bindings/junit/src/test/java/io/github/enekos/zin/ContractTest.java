@@ -164,6 +164,7 @@ class ContractTest {
         return all.stream().map(item -> DynamicTest.dynamicTest(item.get("name").asText(), () -> {
             var plan = JSON.createObjectNode();
             plan.put("zin", "plan/1").put("system", "Observation").put("fingerprint", "0000000000000000");
+            if (item.has("fields")) plan.set("fields", item.get("fields"));
             plan.putArray("actions");
             plan.putArray("calls");
             plan.putArray("states").add(item.get("expected"));

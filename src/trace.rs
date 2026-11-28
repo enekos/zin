@@ -54,24 +54,21 @@ fn arguments(event: &Json, line: usize) -> Result<CallArguments> {
 }
 
 /// Whether an observed value agrees with the specification's value of type
-/// `kind`: maps and records may list a subset of their keys, and a set
-/// matches in any order.
+/// `kind`. An observed map or record lists every key, and a set matches in
+/// any order with each member once.
 fn matches(kind: &FieldType, expected: &Json, observed: &Json) -> bool {
     match (kind, expected, observed) {
-        (FieldType::Map { value, .. }, Json::Object(_), Json::Object(entries)) => {
-            entries.iter().all(|(key, item)| {
-                expected
-                    .get(key)
-                    .is_some_and(|wanted| matches(value, wanted, item))
+        (FieldType::Map { value, .. }, Json::Object(wanted), Json::Object(entries)) => {
+            complete(wanted, entries, |_, wanted, item| {
+                matches(value, wanted, item)
             })
         }
-        (FieldType::Record(members), Json::Object(_), Json::Object(entries)) => {
-            entries.iter().all(|(key, item)| {
+        (FieldType::Record(members), Json::Object(wanted), Json::Object(entries)) => {
+            complete(wanted, entries, |key, wanted, item| {
                 members
                     .iter()
                     .find(|(member, _)| member == key)
-                    .zip(expected.get(key))
-                    .is_some_and(|((_, kind), wanted)| matches(kind, wanted, item))
+                    .is_some_and(|(_, kind)| matches(kind, wanted, item))
             })
         }
         (FieldType::Optional(value), wanted, observed) if *wanted != Json::Null => {
@@ -89,7 +86,7 @@ fn matches(kind: &FieldType, expected: &Json, observed: &Json) -> bool {
             }
         }
         (FieldType::Set { .. }, Json::Array(wanted), Json::Array(items)) => {
-            items.len() == wanted.len() && items.iter().all(|item| wanted.contains(item))
+            crate::model::same_members(wanted, items)
         }
         (FieldType::List { element, .. }, Json::Array(wanted), Json::Array(items)) => {
             items.len() == wanted.len()
@@ -100,6 +97,23 @@ fn matches(kind: &FieldType, expected: &Json, observed: &Json) -> bool {
         }
         _ => expected == observed,
     }
+}
+
+/// Whether `entries` holds each key of `wanted` exactly once and nothing
+/// else, with every value matching.
+fn complete(
+    wanted: &[(String, Json)],
+    entries: &[(String, Json)],
+    item_matches: impl Fn(&str, &Json, &Json) -> bool,
+) -> bool {
+    entries.len() == wanted.len()
+        && wanted.iter().all(|(key, wanted)| {
+            let mut found = entries.iter().filter(|(other, _)| other == key);
+            matches!(
+                (found.next(), found.next()),
+                (Some((_, item)), None) if item_matches(key, wanted, item)
+            )
+        })
 }
 
 /// Checks a recorded execution, one JSON event per line, against the model.

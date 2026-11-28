@@ -308,23 +308,61 @@ def _show(value: Any) -> str:
     return str(value)
 
 
-def _same(expected: Any, observed: Any) -> bool:
+def _same(expected: Any, observed: Any, kind: Optional[dict] = None) -> bool:
+    """Whether `observed` is exactly `expected`; `kind` is the plan type, if known.
+
+    Every map, record and variant member must be reported. A set may be
+    observed in any order, but a list field may not be observed as a set.
+    """
+    kind = kind or {}
+    if kind.get("kind") == "optional":
+        kind = kind.get("value") or {}
     if isinstance(expected, dict):
-        return isinstance(observed, dict) and all(
-            key in expected and _same(expected[key], item) for key, item in observed.items()
-        )
+        if not isinstance(observed, dict) or observed.keys() != expected.keys():
+            return False
+        return all(_same(item, observed[key], _member(kind, key)) for key, item in expected.items())
     if isinstance(expected, list):
+        element = kind.get("element") if kind.get("kind") == "list" else None
         if isinstance(observed, frozenset):
-            return len(observed) == len(expected) and all(
-                any(_same(wanted, item) for wanted in expected) for item in observed
-            )
+            return kind.get("kind") != "list" and _bijection(expected, list(observed))
         return (
             isinstance(observed, list)
             and len(observed) == len(expected)
-            and all(_same(wanted, item) for wanted, item in zip(expected, observed))
+            and all(_same(wanted, item, element) for wanted, item in zip(expected, observed))
         )
     # bool is an int in Python; the specification keeps them apart.
     return type(expected) is type(observed) and expected == observed
+
+
+def _member(kind: dict, key: str) -> Optional[dict]:
+    """The type behind `key` of a map, record or variant value of type `kind`."""
+    if kind.get("kind") == "map":
+        return kind.get("value")
+    if kind.get("kind") == "record":
+        return {member["name"]: member["type"] for member in kind.get("members", ())}.get(key)
+    if kind.get("kind") == "variant":
+        for case in kind.get("cases", ()):
+            if case["name"] == key:
+                return {"kind": "record", "members": case.get("members", [])}
+    return None
+
+
+def _bijection(expected: list, observed: list) -> bool:
+    """Whether each observed member matches a distinct expected one, and all are used."""
+    if len(observed) != len(expected):
+        return False
+    owner: list = [None] * len(expected)
+
+    def claim(index: int, seen: set) -> bool:
+        for slot, wanted in enumerate(expected):
+            if slot not in seen and _same(wanted, observed[index]):
+                seen.add(slot)
+                if owner[slot] is None or claim(owner[slot], seen):
+                    owner[slot] = index
+                    return True
+        return False
+
+    return all(claim(index, set()) for index in range(len(observed)))
 
 
 def _python_name(name: str) -> str:
@@ -337,6 +375,7 @@ class _Runner:
         self.params = {
             action["name"]: [param["name"] for param in action["params"]] for action in plan["actions"]
         }
+        self.types = {field["name"]: field["type"] for field in plan.get("fields") or ()}
 
     def text(self, step: list) -> str:
         call = self.plan["calls"][step[0]]["text"]
@@ -358,7 +397,7 @@ class _Runner:
             if progress is not None:
                 progress["fields"].add(field)
             actual = _plain(actual)
-            if not _same(expected[field], actual):
+            if not _same(expected[field], actual, self.types.get(field)):
                 return (
                     f"{after}, {field} is {_show(actual)}, "
                     f"but the specification says {_show(expected[field])}"

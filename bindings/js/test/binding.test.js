@@ -146,7 +146,7 @@ test("zin-verify/recorder runs without Node.js and matches its CommonJS twin", a
   // Everything between the header comment and the export line.
   const body = (file) => {
     const source = readFileSync(new URL(file, import.meta.url), "utf8");
-    return source.slice(source.indexOf("/** Maps"), source.lastIndexOf("\n", source.length - 2));
+    return source.slice(source.indexOf("/** A value that was observed"), source.lastIndexOf("\n", source.length - 2));
   };
   assert.equal(body("../recorder.js"), body("../recorder.cjs"));
   assert.doesNotMatch(readFileSync(new URL("../recorder.js", import.meta.url), "utf8"), /require\(|from "|node:/);
@@ -161,6 +161,10 @@ test("zin-verify/recorder runs without Node.js and matches its CommonJS twin", a
     recorder.text(),
     '{"action":"deposit","args":{"amount":5},"outcome":"accepted","state":{"balance":5,"owners":{"a":1}}}\n' +
       '{"action":"close","args":[],"outcome":"rejected"}\n{"reset":true}\n',
+  );
+  assert.throws(
+    () => recorder.event("deposit", [5], { state: { order: Promise.resolve(1) } }),
+    /the deposit event got a promise for state\.order; await it/,
   );
   const streamed = [];
   new Plain((line) => streamed.push(line)).event("close");
@@ -212,6 +216,48 @@ test("a malformed observation fails at once instead of waiting", async () => {
     diverges(/'glow', which is not a state field/),
   );
   assert.ok(Date.now() - started < 2000);
+});
+
+// One model state, observed once before any action.
+const observing = (state, observed, fields = []) => {
+  const plan = { system: "Shape", fields, actions: [], calls: [], states: [state], parents: [null], tests: [{ name: "t", steps: [] }] };
+  return runTest(plan, plan.tests[0], () => ({ actions: {}, observe: () => observed }));
+};
+
+test("an observation that is not a settled object of fields fails as an adapter error", async () => {
+  await assert.rejects(observing({ order: { items: 2 } }, { order: Promise.resolve({ items: 2 }) }), diverges(/observe\(\) returned a promise for order; await it/));
+  await assert.rejects(observing({ order: [1] }, { order: [{ then() {} }] }), diverges(/a promise for order\[0\]; await it/));
+  await assert.rejects(observing({ count: 0 }, []), diverges(/must return an object of state fields, not an array/));
+  await assert.rejects(observing({ count: 0 }, [0]), diverges(/not an array/));
+  for (const field of ["constructor", "toString", "hasOwnProperty"]) {
+    await assert.rejects(observing({ count: 0 }, { [field]: 1 }), diverges(new RegExp(`'${field}', which is not a state field`)));
+  }
+  await assert.rejects(observing({ m: { a: 1 } }, { m: { a: 1, constructor: 1 } }), diverges(/m is \{a: 1, constructor: 1\}/));
+});
+
+test("a reported value must be complete; a set never stands in for a list", async () => {
+  class Order {
+    constructor() {
+      this.items = 2;
+      this.status = "paid";
+    }
+  }
+  await observing({ order: { status: "paid", items: 2 } }, { order: new Order() });
+  await assert.rejects(observing({ order: { status: "paid" } }, { order: new (class {})() }), diverges(/order is \{\}/));
+  await observing({ lit: { hall: false, porch: true } }, { lit: new Map([["porch", true], ["hall", false]]) });
+  await assert.rejects(observing({ lit: { hall: false, porch: true } }, { lit: new Map([["hall", false]]) }), Divergence);
+
+  const queue = { name: "queue", type: { kind: "list", capacity: 2, element: { kind: "enum", values: ["ann", "ben"] } } };
+  await assert.rejects(observing({ queue: ["ann", "ben"] }, { queue: new Set(["ann", "ben"]) }, [queue]), Divergence);
+  await observing({ queue: ["ann", "ben"] }, { queue: new Set(["ben", "ann"]) });
+  const nested = {
+    name: "rows",
+    type: { kind: "map", keys: ["a"], value: { kind: "record", members: [{ name: "q", type: queue.type }] } },
+  };
+  await assert.rejects(observing({ rows: { a: { q: ["ann"] } } }, { rows: { a: { q: new Set(["ann"]) } } }, [nested]), Divergence);
+  await observing({ rows: { a: { q: ["ann"] } } }, { rows: { a: { q: ["ann"] } } }, [nested]);
+  const held = { name: "held", type: { kind: "optional", value: { kind: "set", values: ["ann", "ben"] } } };
+  await observing({ held: ["ann", "ben"] }, { held: new Set(["ben", "ann"]) }, [held]);
 });
 
 test("settle runs after every action and step wraps every step", async () => {
